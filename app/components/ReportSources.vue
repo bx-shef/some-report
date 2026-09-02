@@ -47,6 +47,16 @@ const totals = computed(() => {
   }
 })
 
+/**
+ * ⚠ Точность процентов в строке «Итого» и в строках выше РАЗНАЯ, и это не забытая унификация.
+ *
+ * Строки источников читают, чтобы сравнить источники между собой: там целых процентов достаточно,
+ * а дробные превращают колонку в шум. Итог — то самое число, которое цитируют и которое стоит
+ * рядом в сводке, поэтому он обязан совпадать со сводкой ЗНАК В ЗНАК. Округлённый до целого итог
+ * печатал «50 %» там, где сводка показывала «49,6 %», — одно и то же число двумя способами на
+ * одном экране, что читается как ошибка отчёта.
+ */
+
 /** Сколько выручки принесли сделки без лида-родителя — то есть чего в таблице нет и почему. */
 const revenueOutsideSources = computed(() => props.report.summary.revenue - totals.value.revenue)
 </script>
@@ -170,13 +180,13 @@ const revenueOutsideSources = computed(() => props.report.summary.revenue - tota
               {{ formatCount(totals.qualified) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatPercent(totals.crToDeal, 0) }}
+              {{ formatPercent(totals.crToDeal) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatCount(totals.won) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatPercent(totals.crToSale, 0) }}
+              {{ formatPercent(totals.crToSale) }}
             </td>
             <td class="py-2 text-right tabular-nums">
               {{ formatMoney(totals.revenue, currencyId) }}

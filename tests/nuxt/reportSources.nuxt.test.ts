@@ -57,6 +57,19 @@ describe('ReportSources', () => {
     expect(nbsp(wrapper.text())).toContain('7 000 BYN')
   })
 
+  /**
+   * ⚠ Регрессия, замеченная на скриншоте. Итог печатался с округлением до целого и показывал
+   * «50 %» там, где сводка на том же экране показывала «49,6 %». Одно и то же число двумя
+   * способами рядом читается как ошибка отчёта, а не как разная точность.
+   */
+  it('итог по конверсии совпадает со сводкой знак в знак', async () => {
+    const report = buildReport(dataset.leads, dataset.deals, { conversionBase: 'all-leads' })
+    const cells = (await render({ report })).findAll('tfoot td').map(td => nbsp(td.text()))
+    // 620 / 1250 = 49,6 % — ровно то, что стоит на плитке «Успешные сделки» в сводке.
+    expect(cells).toContain('49,6 %')
+    expect(cells).not.toContain('50 %')
+  })
+
   it('пустой период показывает объяснение вместо пустой таблицы', async () => {
     const report = buildReport([], [], { conversionBase: 'all-leads' })
     expect((await render({ report })).text()).toContain('За период лидов нет')
