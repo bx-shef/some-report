@@ -1,0 +1,18 @@
+{
+  // Проход типов для тестов, живущих ВНЕ приложения (`tests/*.test.ts`) и `vitest.config.ts`.
+  // Без него `pnpm typecheck` на них просто не смотрел бы — а ядро отчёта проверяется именно
+  // тестами, и опечатка в тесте молча превратила бы его в «зелёный, но ничего не проверяет».
+  //
+  // ⚠ `app/**` и `tests/nuxt/**` сюда НЕ входят, и это не упущение. Их уже проверяет ОСНОВНОЙ
+  // проход (`vue-tsc --noEmit` по `.nuxt/tsconfig.json`, куда Nuxt сам включает и `app/**`, и
+  // `tests/nuxt/**`), и только у него подключены авто-импорты Nuxt (`ref`, `computed`,
+  // `useRoute`). Продублировав их здесь, мы получили бы «Cannot find name 'computed'» на
+  // совершенно рабочем коде. Что каждый файл покрыт ровно одним проходом, сторожит
+  // `tests/typecheckCoverage.test.ts`.
+  "extends": "./.nuxt/tsconfig.json",
+  "include": ["tests/**/*.ts", "scripts/**/*.ts", "vitest.config.ts"],
+  "exclude": ["node_modules", "tests/nuxt"],
+  "compilerOptions": {
+    "types": ["node"]
+  }
+}

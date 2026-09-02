@@ -1,0 +1,14 @@
+# Обновления зависимостей. `github-actions` тоже включён: SHA сторонних actions пинятся вручную,
+# и без Dependabot они тихо устаревают вместе с их уязвимостями.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
