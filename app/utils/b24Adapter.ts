@@ -82,15 +82,27 @@ function toSemantic(value: unknown): B24Semantic {
  * завысило бы такие сделки в сто раз — и в отчёте это выглядело бы как обычное большое число.
  */
 export function currencyRates(rows: B24CurrencyRow[]): Record<string, number> {
-  const rates: Record<string, number> = {}
+  // `Object.create(null)` — защита в глубину: ключи приходят из портала, и словарь без прототипа
+  // не даст записи вроде `__proto__` вести себя иначе, чем все остальные.
+  const rates: Record<string, number> = Object.create(null)
   for (const row of rows) {
     const code = toText(row.CURRENCY)
     if (!code) continue
     const amount = toNumber(row.AMOUNT)
-    const count = toNumber(row.AMOUNT_CNT) || 1
-    // Курс 0 означал бы, что все сделки в этой валюте стоят ноль. Такую строку игнорируем:
-    // отсутствие курса честнее молчаливого обнуления выручки.
-    rates[code] = amount > 0 ? amount / count : 1
+    const count = toNumber(row.AMOUNT_CNT)
+    /**
+     * ⚠ Битую строку курса ПРОПУСКАЕМ, а не подменяем единицей.
+     *
+     * Раньше здесь стояло `amount > 0 ? amount / count : 1`, и это был самый дорогой дефект
+     * адаптера: валюта с пустым `AMOUNT` получала курс 1 к базовой, сделка на 456 000 RUB
+     * превращалась в 456 000 BYN (завышение в 28 раз) — и `unconvertedDeals` при этом оставался
+     * нулём, то есть отчёт об этом МОЛЧАЛ. Пропущенная строка уводит такую сделку в ветку
+     * «неизвестная валюта»: сумма остаётся как есть и попадает в счётчик оговорок.
+     *
+     * Отрицательный `AMOUNT_CNT` отсекается тем же условием: он дал бы отрицательный курс и
+     * отрицательную выручку, неотличимую в отчёте от честного возврата.
+     */
+    if (amount > 0 && count > 0) rates[code] = amount / count
   }
   return rates
 }
@@ -121,7 +133,8 @@ export function toBaseAmount(
 
 /** Справочник `crm.status.list` → код: имя. */
 export function statusNames(rows: B24StatusRow[]): Record<string, string> {
-  const names: Record<string, string> = {}
+  // Без прототипа: ключи приходят из портала (см. `currencyRates`).
+  const names: Record<string, string> = Object.create(null)
   for (const row of rows) {
     const id = toText(row.STATUS_ID)
     if (id) names[id] = toText(row.NAME) || id
@@ -151,10 +164,32 @@ export function leadOutcome(semantic: B24Semantic, hasDeal: boolean): LeadOutcom
 export interface AdapterWarnings {
   /** Сделки в валюте, курса которой в портале нет: суммы взяты как есть, без конвертации. */
   unconvertedDeals: number
-  /** Лиды со стадией «успех», но без найденной сделки (конверсия в контакт/компанию или период). */
-  convertedWithoutDeal: number
-  /** Сделки без лида-родителя: в разрез источников они не попадают. */
+  /**
+   * Лиды со стадией «успех», но без найденной сделки.
+   *
+   * ⚠ Имя про СТАДИЮ, а не про исход: сам лид получает `outcome: 'lost'` и попадает в «Потери до
+   * сделки». Назвать поле `convertedWithoutDeal` значило бы спорить с типом `LeadOutcome`, где
+   * `converted` означает «квалифицирован», то есть ровно обратное.
+   */
+  wonStageWithoutDeal: number
+  /** Сделки без лида-родителя (`LEAD_ID` пуст): в разрез источников они не попадают. */
   dealsWithoutLead: number
+  /**
+   * Сделки, чей `LEAD_ID` указывает на лид ВНЕ выборки: он создан до начала периода либо удалён.
+   *
+   * ⚠ Считается отдельно от `dealsWithoutLead`, хотя для пользователя следствие то же — выручка
+   * выпадает из разреза источников. Раньше такие сделки не считались вовсе: `LEAD_ID` непустой,
+   * значит «с лидом», — и отчёт уверял, что осиротевших сделок ноль, пока они молча выпадали.
+   */
+  dealsWithMissingLead: number
+  /**
+   * Первое действие по лидам не выбиралось вовсе (`input.firstResponse` не передан).
+   *
+   * ⚠ Без этого признака блок «Обработка лидов» показал бы «обработано 0 %, просрочено 100 %» —
+   * как факт о работе отдела, хотя это факт о том, что данных не запрашивали. Разные утверждения,
+   * и первое клевещет на живых людей.
+   */
+  firstResponseNotFetched: boolean
 }
 
 export interface AdaptedData {
@@ -175,6 +210,14 @@ export interface AdapterInput {
   leadStatuses: B24StatusRow[]
   /** `crm.status.list` с `ENTITY_ID = DEAL_STAGE` — стадии сделки; они же причины проигрыша. */
   dealStages: B24StatusRow[]
+  /**
+   * Первое действие по лиду: идентификатор лида → ISO-дата. Собирается отдельно
+   * (`crm.activity.list`), потому что в самих лидах этого поля нет.
+   *
+   * Не передан — блок «Обработка лидов» честно скажет, что данных не выбирали, вместо того чтобы
+   * показать ноль обработанных.
+   */
+  firstResponse?: Record<number, string>
 }
 
 /**
@@ -189,7 +232,9 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
   const currencyId = baseCurrency(input.currencies)
 
   const dealsByLead = new Map<number, number[]>()
+  const knownLeadIds = new Set(input.leads.map(row => toNumber(row.ID)))
   let dealsWithoutLead = 0
+  let dealsWithMissingLead = 0
   let unconvertedDeals = 0
 
   const deals: ReportDeal[] = input.deals.map((row) => {
@@ -199,10 +244,19 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
     const { value, converted } = toBaseAmount(toNumber(row.OPPORTUNITY), dealCurrency, rates)
     if (!converted && dealCurrency !== currencyId) unconvertedDeals++
 
-    if (leadId > 0) {
-      dealsByLead.set(leadId, [...(dealsByLead.get(leadId) ?? []), id])
-    } else {
+    if (leadId <= 0) {
       dealsWithoutLead++
+    } else if (!knownLeadIds.has(leadId)) {
+      // Лид вне выборки: создан до начала периода либо удалён. Для пользователя следствие то же,
+      // что и у сделки без лида, — выручка выпадает из разреза источников, — поэтому молчать
+      // нельзя. Раньше такая сделка не считалась нигде: `LEAD_ID` непустой, значит «с лидом».
+      dealsWithMissingLead++
+    } else {
+      // `push` в существующий массив, а не пересборка через spread: у лида с N сделками
+      // пересборка давала бы O(N²) на ровном месте.
+      const existing = dealsByLead.get(leadId)
+      if (existing) existing.push(id)
+      else dealsByLead.set(leadId, [id])
     }
 
     const semantic = toSemantic(row.STAGE_SEMANTIC_ID)
@@ -220,14 +274,14 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
     }
   })
 
-  let convertedWithoutDeal = 0
+  let wonStageWithoutDeal = 0
 
   const leads: ReportLead[] = input.leads.map((row) => {
     const id = toNumber(row.ID)
     const semantic = toSemantic(row.STATUS_SEMANTIC_ID)
     const dealIds = dealsByLead.get(id) ?? []
     const outcome = leadOutcome(semantic, dealIds.length > 0)
-    if (semantic === 'S' && dealIds.length === 0) convertedWithoutDeal++
+    if (semantic === 'S' && dealIds.length === 0) wonStageWithoutDeal++
 
     return {
       id,
@@ -236,6 +290,7 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
       assignedById: toNumber(row.ASSIGNED_BY_ID),
       outcome,
       dealIds,
+      ...(input.firstResponse?.[id] ? { firstResponseAt: input.firstResponse[id] } : {}),
       // Причина брака — сама стадия. Отдельного поля причины отказа у лида в Битрикс24 нет
       // (docs/PORTAL.md §1).
       ...(outcome === 'junk' ? { junkReasonId: toText(row.STATUS_ID) } : {})
@@ -251,6 +306,12 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
       junkReasons: statusNames(input.leadStatuses),
       lossReasons: statusNames(input.dealStages)
     },
-    warnings: { unconvertedDeals, convertedWithoutDeal, dealsWithoutLead }
+    warnings: {
+      unconvertedDeals,
+      wonStageWithoutDeal,
+      dealsWithoutLead,
+      dealsWithMissingLead,
+      firstResponseNotFetched: input.firstResponse === undefined
+    }
   }
 }

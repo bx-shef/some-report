@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { buildReport } from '~/utils/metrics'
 import type { AdapterInput, B24CurrencyRow } from '~/utils/b24Adapter'
 import {
   adaptPortalData,
@@ -12,7 +13,7 @@ import {
 
 /**
  * Формы данных здесь — НЕ выдуманные: это то, что реально отдал тестовый портал
- * (`bel.bitrix24.by`, только чтение) при замере. В частности: идентификаторы приходят строками,
+ * при замере (только чтение). В частности: идентификаторы приходят строками,
  * `LEAD_ID` бывает `null`, а курс рубля задан за сотню единиц.
  */
 const CURRENCIES: B24CurrencyRow[] = [
@@ -27,9 +28,18 @@ describe('toNumber', () => {
     ['дробная строка', '10300.50', 10300.5],
     ['число', 42, 42],
     ['null', null, 0],
+    ['undefined', undefined, 0],
     ['пустая строка', '', 0],
     ['мусор', 'не число', 0],
-    ['NaN', Number.NaN, 0]
+    ['NaN', Number.NaN, 0],
+    // ⚠ Классическая ловушка JS: `Number(['5']) === 5`, `Number([]) === 0`. Защита держится на
+    // проверке `typeof value === 'string'`; «упрощение» до `Number(value) || 0` протащило бы
+    // массив из REST как число, и тест обязан это ловить.
+    ['массив', ['5'], 0],
+    ['пустой массив', [], 0],
+    ['объект', {}, 0],
+    ['boolean', true, 0],
+    ['бесконечность', Number.POSITIVE_INFINITY, 0]
   ])('%s → %s', (_name, input, expected) => {
     expect(toNumber(input)).toBe(expected)
   })
@@ -53,9 +63,23 @@ describe('currencyRates', () => {
     expect(currencyRates(CURRENCIES).BYN).toBe(1)
   })
 
-  // Нулевой курс обнулил бы всю выручку в этой валюте молча.
-  it('нулевой или битый курс не обнуляет суммы', () => {
-    expect(currencyRates([{ CURRENCY: 'XXX', AMOUNT: '0', AMOUNT_CNT: '1' }]).XXX).toBe(1)
+  /**
+   * ⚠ Самый дорогой дефект адаптера, найденный на ревью. Битая строка курса подменялась
+   * единицей: сделка на 456 000 RUB превращалась в 456 000 BYN — завышение в 28 раз, и при этом
+   * `unconvertedDeals` оставался нулём, то есть отчёт МОЛЧАЛ. Теперь такая строка просто не
+   * попадает в курсы, и сделка уходит в ветку «неизвестная валюта» со счётчиком оговорок.
+   */
+  it.each([
+    ['пустой AMOUNT', { CURRENCY: 'XXX', AMOUNT: '', AMOUNT_CNT: '100' }],
+    ['нулевой AMOUNT', { CURRENCY: 'XXX', AMOUNT: '0', AMOUNT_CNT: '1' }],
+    ['мусор в AMOUNT', { CURRENCY: 'XXX', AMOUNT: 'абв', AMOUNT_CNT: '1' }],
+    ['нулевой AMOUNT_CNT', { CURRENCY: 'XXX', AMOUNT: '3.53', AMOUNT_CNT: '0' }],
+    // Отрицательный делитель дал бы отрицательный курс и отрицательную выручку, неотличимую
+    // в отчёте от честного возврата.
+    ['отрицательный AMOUNT_CNT', { CURRENCY: 'XXX', AMOUNT: '3.53', AMOUNT_CNT: '-100' }],
+    ['отрицательный AMOUNT', { CURRENCY: 'XXX', AMOUNT: '-3.53', AMOUNT_CNT: '1' }]
+  ])('%s — курса нет вовсе, а не курс 1', (_name, row) => {
+    expect(currencyRates([row]).XXX).toBeUndefined()
   })
 })
 
@@ -92,6 +116,11 @@ describe('toBaseAmount', () => {
   it('неизвестную валюту оставляет как есть и помечает', () => {
     expect(toBaseAmount(100, 'XYZ', rates)).toEqual({ value: 100, converted: false })
   })
+
+  // Портал без настроенных валют: `baseCurrency([])` даёт пустую строку.
+  it('пустой код валюты — тоже «курса нет»', () => {
+    expect(toBaseAmount(100, '', {})).toEqual({ value: 100, converted: false })
+  })
 })
 
 describe('leadOutcome', () => {
@@ -102,8 +131,11 @@ describe('leadOutcome', () => {
     expect(leadOutcome('F', true)).toBe('junk')
   })
 
-  it('есть сделка — квалифицирован', () => {
-    expect(leadOutcome('P', true)).toBe('converted')
+  it.each([
+    ['в работе', 'P' as const],
+    ['успех', 'S' as const]
+  ])('%s со сделкой — квалифицирован', (_name, semantic) => {
+    expect(leadOutcome(semantic, true)).toBe('converted')
   })
 
   it('в работе без сделки — в работе', () => {
@@ -195,8 +227,10 @@ describe('adaptPortalData', () => {
   it('считает оговорки к качеству данных', () => {
     expect(result.warnings).toEqual({
       unconvertedDeals: 0,
-      convertedWithoutDeal: 1,
-      dealsWithoutLead: 1
+      wonStageWithoutDeal: 1,
+      dealsWithoutLead: 1,
+      dealsWithMissingLead: 0,
+      firstResponseNotFetched: true
     })
   })
 
@@ -218,6 +252,127 @@ describe('adaptPortalData', () => {
   it('пустой портал не роняет адаптер', () => {
     const empty = adaptPortalData({ leads: [], deals: [], currencies: [], sources: [], leadStatuses: [], dealStages: [] })
     expect(empty.leads).toEqual([])
-    expect(empty.warnings).toEqual({ unconvertedDeals: 0, convertedWithoutDeal: 0, dealsWithoutLead: 0 })
+    expect(empty.warnings).toMatchObject({ unconvertedDeals: 0, wonStageWithoutDeal: 0, dealsWithoutLead: 0 })
+  })
+
+  /**
+   * ⚠ Сделка ссылается на лид, которого в выборке нет: он создан до начала периода либо удалён.
+   * Раньше такая сделка не считалась нигде — `LEAD_ID` непустой, значит «с лидом», — и отчёт
+   * уверял, что осиротевших сделок ноль, пока выручка молча выпадала из разреза источников.
+   */
+  it('сделка с LEAD_ID на лид вне выборки считается отдельно', () => {
+    const result = adaptPortalData({
+      ...input,
+      deals: [{ ID: '20', LEAD_ID: '9999', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '1000', CURRENCY_ID: 'BYN' }]
+    })
+    expect(result.warnings.dealsWithMissingLead).toBe(1)
+    expect(result.warnings.dealsWithoutLead).toBe(0)
+    expect(result.leads.every(l => l.dealIds.length === 0)).toBe(true)
+  })
+
+  it('несколько сделок у одного лида попадают все', () => {
+    const result = adaptPortalData({
+      ...input,
+      deals: [
+        { ID: '21', LEAD_ID: '1', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '100', CURRENCY_ID: 'BYN' },
+        { ID: '22', LEAD_ID: '1', STAGE_ID: 'LOSE', STAGE_SEMANTIC_ID: 'F', OPPORTUNITY: '200', CURRENCY_ID: 'BYN' }
+      ]
+    })
+    expect(result.leads.find(l => l.id === 1)?.dealIds).toEqual([21, 22])
+  })
+
+  /**
+   * ⚠ Незаполненная семантика — живой случай: стадию сняли с воронки и забыли привязать семантику.
+   * Единственная защита от неё — приведение к `P` по умолчанию; без теста «упрощение» до
+   * `text as B24Semantic` прошло бы незамеченным.
+   */
+  it('лид и сделка без семантики считаются «в работе», а не браком', () => {
+    const result = adaptPortalData({
+      ...input,
+      leads: [{ ID: '50', STATUS_ID: 'UC_CUSTOM', STATUS_SEMANTIC_ID: null, SOURCE_ID: 'CALL', DATE_CREATE: '2026-08-01T10:00:00+03:00' }],
+      deals: [{ ID: '51', LEAD_ID: '50', STAGE_ID: 'UC_STAGE', OPPORTUNITY: '10', CURRENCY_ID: 'BYN' }]
+    })
+    expect(result.leads[0]!.outcome).toBe('converted')
+    expect(result.leads[0]!.junkReasonId).toBeUndefined()
+    expect(result.deals[0]!.outcome).toBe('in-work')
+    expect(result.deals[0]!.lossReasonId).toBeUndefined()
+  })
+
+  // Незаполненные поля — норма живого портала: снятый сотрудник, не выбранный источник.
+  it('пустые источник и ответственный не роняют адаптер', () => {
+    const result = adaptPortalData({
+      ...input,
+      leads: [{ ID: '60', STATUS_ID: 'NEW', STATUS_SEMANTIC_ID: 'P', SOURCE_ID: null, ASSIGNED_BY_ID: null, DATE_CREATE: '2026-08-01T10:00:00+03:00' }],
+      deals: []
+    })
+    expect(result.leads[0]).toMatchObject({ sourceId: '', assignedById: 0 })
+  })
+
+  /**
+   * ⚠ Блок «Обработка лидов» без этих данных показал бы «обработано 0 %, просрочено 100 %» — как
+   * факт о работе отдела, хотя это факт о том, что данных не запрашивали. Признак обязателен.
+   */
+  describe('первое действие по лиду', () => {
+    it('без входных данных помечает, что их не выбирали', () => {
+      expect(result.warnings.firstResponseNotFetched).toBe(true)
+      expect(result.leads.every(l => l.firstResponseAt === undefined)).toBe(true)
+    })
+
+    it('с входными данными проставляет дату и снимает пометку', () => {
+      const withActivity = adaptPortalData({ ...input, firstResponse: { 1: '2026-08-01T10:30:00+03:00' } })
+      expect(withActivity.warnings.firstResponseNotFetched).toBe(false)
+      expect(withActivity.leads.find(l => l.id === 1)?.firstResponseAt).toBe('2026-08-01T10:30:00+03:00')
+      expect(withActivity.leads.find(l => l.id === 2)?.firstResponseAt).toBeUndefined()
+    })
+  })
+})
+
+/**
+ * Стык двух слоёв: выход адаптера обязан считаться ядром без сюрпризов. Юнит-тесты проверяют
+ * каждый слой отдельно, и ровно между ними уже пряталась дыра — адаптер не заполнял
+ * `firstResponseAt`, а поймать это можно было только прогнав одно через другое.
+ */
+describe('адаптер + ядро отчёта', () => {
+  const adapted = adaptPortalData({
+    currencies: CURRENCIES,
+    sources: [{ STATUS_ID: 'CALL', NAME: 'Звонок' }],
+    leadStatuses: [{ STATUS_ID: 'JUNK', NAME: 'Некачественный лид' }],
+    dealStages: [{ STATUS_ID: 'LOSE', NAME: 'Сделка провалена' }],
+    leads: [
+      { ID: '1', STATUS_ID: 'NEW', STATUS_SEMANTIC_ID: 'P', SOURCE_ID: 'CALL', DATE_CREATE: '2026-08-01T10:00:00+03:00' },
+      { ID: '2', STATUS_ID: 'JUNK', STATUS_SEMANTIC_ID: 'F', SOURCE_ID: 'CALL', DATE_CREATE: '2026-08-02T10:00:00+03:00' },
+      { ID: '3', STATUS_ID: 'NEW', STATUS_SEMANTIC_ID: 'P', SOURCE_ID: 'CALL', DATE_CREATE: '2026-08-03T10:00:00+03:00' }
+    ],
+    deals: [
+      { ID: '10', LEAD_ID: '3', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '456000', CURRENCY_ID: 'RUB' },
+      { ID: '11', LEAD_ID: null, STAGE_ID: 'LOSE', STAGE_SEMANTIC_ID: 'F', OPPORTUNITY: '10300', CURRENCY_ID: 'BYN' }
+    ],
+    firstResponse: { 1: '2026-08-01T10:20:00+03:00' }
+  })
+
+  const report = buildReport(adapted.leads, adapted.deals, {
+    conversionBase: 'quality-leads',
+    firstResponseSlaMinutes: 60,
+    now: '2026-08-31T23:59:59Z'
+  })
+
+  it('ни одно число отчёта не превращается в NaN', () => {
+    const numbers = [
+      report.summary.junkShare, report.summary.qualifiedShare, report.summary.wonShare,
+      report.summary.revenue, report.lostDeals.lostRevenue, report.lostDeals.shareOfQualified,
+      report.preDealLoss.share, report.processing.processedShare
+    ]
+    expect(numbers.every(Number.isFinite)).toBe(true)
+  })
+
+  it('считает по нормализованным данным то же, что мы ожидаем от портала', () => {
+    expect(report.summary).toMatchObject({ totalLeads: 3, junk: 1, qualified: 1, wonDeals: 1 })
+    // 456 000 RUB × 3,53 / 100 — конвертация доехала через оба слоя.
+    expect(report.summary.revenue).toBeCloseTo(16_096.8, 6)
+  })
+
+  it('переданное первое действие доезжает до блока обработки', () => {
+    expect(report.processing.processed).toBe(1)
+    expect(report.processing.avgFirstResponseMinutes).toBe(20)
   })
 })

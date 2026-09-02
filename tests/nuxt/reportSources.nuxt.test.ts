@@ -53,7 +53,7 @@ describe('ReportSources', () => {
     ]
     const report = buildReport(leads, deals, { conversionBase: 'all-leads' })
     const wrapper = await render({ report })
-    expect(wrapper.text()).toContain('сделки без лида-родителя')
+    expect(wrapper.text()).toContain('без лида-родителя')
     expect(nbsp(wrapper.text())).toContain('7 000 BYN')
   })
 
@@ -68,6 +68,19 @@ describe('ReportSources', () => {
     // 620 / 1250 = 49,6 % — ровно то, что стоит на плитке «Успешные сделки» в сводке.
     expect(cells).toContain('49,6 %')
     expect(cells).not.toContain('50 %')
+  })
+
+  /**
+   * Вторая половина того же контраста. Комментарий в компоненте объявляет разную точность
+   * осознанным решением; закрепить надо ОБА конца, иначе следующий рефакторинг «выровняет»
+   * точность в любую сторону и ни один тест этого не заметит.
+   */
+  it('строки источников печатают целые проценты, без десятых', async () => {
+    const wrapper = await render()
+    const rows = wrapper.findAll('tbody td').map(td => nbsp(td.text()))
+    const withPercent = rows.filter(t => t.includes('%'))
+    expect(withPercent.length).toBeGreaterThan(0)
+    expect(withPercent.filter(t => /\d,\d\s*%/.test(t))).toEqual([])
   })
 
   it('пустой период показывает объяснение вместо пустой таблицы', async () => {
