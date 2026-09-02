@@ -1,0 +1,52 @@
+{
+  "name": "some-report",
+  "type": "module",
+  "private": true,
+  "description": "Аналитика по лидам — отчёт для Битрикс24 (Nuxt SSG, встройка в CRM-аналитику)",
+  "license": "MIT",
+  "author": "ИП Шевчик И. С.",
+  "homepage": "https://github.com/bx-shef/some-report#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bx-shef/some-report.git"
+  },
+  "bugs": {
+    "url": "https://github.com/bx-shef/some-report/issues"
+  },
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "typecheck": "vue-tsc --noEmit && vue-tsc -p tsconfig.node.json --noEmit",
+    "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "postinstall": "nuxt prepare"
+  },
+  "dependencies": {
+    "@bitrix24/b24icons-vue": "^2.0.7",
+    "@bitrix24/b24jssdk": "^2.0.0",
+    "@bitrix24/b24jssdk-nuxt": "^2.0.0",
+    "@bitrix24/b24ui-nuxt": "^2.10.0",
+    "@fontsource/roboto-mono": "^5.3.0",
+    "@fontsource/rubik": "^5.3.0",
+    "tailwindcss": "^4.3.3"
+  },
+  "devDependencies": {
+    "@nuxt/eslint": "^1.17.0",
+    "@nuxt/test-utils": "^4.1.0",
+    "@types/node": "^26.2.0",
+    "@vue/test-utils": "^2.4.11",
+    "eslint": "^10.8.1",
+    "happy-dom": "^20.11.2",
+    "nuxt": "^4.5.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10",
+    "vue-tsc": "^3.3.9"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22"
+  }
+}

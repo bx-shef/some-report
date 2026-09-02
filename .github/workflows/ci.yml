@@ -1,0 +1,60 @@
+name: CI
+
+# Проверки на каждый PR и на main. Имя джобы `ci` — то, что включается в required status checks
+# правила защиты ветки: переименование молча снимет требование, поэтому имя менять нельзя.
+#
+# Сторонние actions запинены на полный commit SHA: изменяемый тег может быть перезаписан
+# владельцем action и выполнить чужой код на раннере с GITHUB_TOKEN. Комментарий `# vX.Y.Z`
+# читает Dependabot, чтобы держать SHA свежими.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Отменяем только устаревшие прогоны PR; прогон на main не прерываем.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-24.04
+    # Проект `nuxt` в Vitest поднимает рантайм Nuxt поверх lint/typecheck/generate.
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        # Версия читается из поля "packageManager" в package.json.
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare Nuxt
+        run: pnpm exec nuxi prepare
+        # Генерирует .nuxt/eslint.config.mjs и tsconfig'и, от которых зависят lint и typecheck.
+        # Без этого шага оба прохода молча сужаются.
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Type check
+        run: pnpm typecheck
+
+      - name: Build (nuxt generate)
+        run: pnpm generate
