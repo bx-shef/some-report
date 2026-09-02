@@ -1,0 +1,15 @@
+# Всё, что не нужно в контексте сборки: ускоряет её и не даёт секретам уехать в образ.
+node_modules
+.nuxt
+.nitro
+.output
+.git
+.github
+.claude
+tests
+docs
+*.md
+.env
+.env.*
+coverage
+.DS_Store

@@ -67,6 +67,12 @@ pnpm generate     # сборка статики → .output/public
 
 Перед пушем прогоняйте `pnpm check`.
 
+## Деплой
+
+Статика собирается в Docker-образ (`nginxinc/nginx-unprivileged`) и публикуется в GHCR; на сервере
+её подхватывает Watchtower за общим nginx-proxy (TLS — Let's Encrypt). Шаги и проверки —
+[`docs/DEPLOY.md`](docs/DEPLOY.md).
+
 ## Разработка
 
 - **В `main` не пушим — только через Pull Request с зелёным CI.**
@@ -79,6 +85,7 @@ pnpm generate     # сборка статики → .output/public
 | [`docs/METRICS.md`](docs/METRICS.md) | формулы, расхождения макета с ТЗ, нерешённые вопросы |
 | [`docs/PORTAL.md`](docs/PORTAL.md) | **что реально есть в портале** — замер по живому REST |
 | [`docs/EMBEDDING.md`](docs/EMBEDDING.md) | встройка в CRM-аналитику, установка, типовые ошибки |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | сборка образа, выкат, CSP и `frame-ancestors` |
 | [`CLAUDE.md`](./CLAUDE.md) | стек, архитектура, конвенции |
 | [`docs/README.md`](docs/README.md) | индекс документов |
 

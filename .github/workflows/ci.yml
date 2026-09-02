@@ -1,6 +1,6 @@
-name: CI
+name: CI/CD
 
-# Проверки на каждый PR и на main. Имя джобы `ci` — то, что включается в required status checks
+# Проверки на каждый PR и на main, плюс публикация образа с main. Имя джобы `ci` — то, что включается в required status checks
 # правила защиты ветки: переименование молча снимет требование, поэтому имя менять нельзя.
 #
 # Сторонние actions запинены на полный commit SHA: изменяемый тег может быть перезаписан
@@ -58,3 +58,92 @@ jobs:
 
       - name: Build (nuxt generate)
         run: pnpm generate
+
+  docker-build:
+    name: docker-build
+    # Собираем боевой образ на каждом PR — БЕЗ публикации. Ловит поломку Dockerfile, базового
+    # образа и гардов на артефакте до того, как они доедут до main и до выката.
+    # Гоняется и на PR от Dependabot: обновление node — ровно тот случай, где это и всплывёт.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          target: runner
+          push: false
+          build-args: |
+            NUXT_PUBLIC_SITE_URL=${{ vars.NUXT_PUBLIC_SITE_URL }}
+            NUXT_PUBLIC_COMMIT_SHA=${{ github.sha }}
+          # Кэш ТОЛЬКО на чтение. Кэш, записанный из refs/pull/N/merge, доступен лишь этому же PR,
+          # но место в общем бюджете репозитория занимает — и вытеснил бы кэш main, из которого
+          # эта джоба и читает. Пишет кэш только выкат с main.
+          cache-from: type=gha,scope=runner
+          tags: some-report:ci
+
+  deploy:
+    name: Build & Push to GHCR
+    needs: ci
+    # Выкат заперт за зелёным CI: красный CI не пускает образ в GHCR, а значит и на сервер.
+    # Только main — пушем или ручным workflow_dispatch (передеплой после смены переменной).
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+      packages: write  # нужен для публикации в ghcr.io
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}  # встроенный, отдельный секрет не нужен
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-
+
+      # ⚠ NUXT_PUBLIC_SITE_URL — переменная репозитория (Settings → Variables), а не секрет: это
+      # публичный адрес. Но она ОБЯЗАТЕЛЬНА: без неё страница установки не сможет построить
+      # абсолютный адрес обработчика и откажется регистрировать точки встройки.
+      - name: Проверить, что публичный адрес задан
+        run: |
+          if [ -z "${{ vars.NUXT_PUBLIC_SITE_URL }}" ]; then
+            echo "Не задана переменная репозитория NUXT_PUBLIC_SITE_URL — приложение нельзя будет установить в портал"
+            exit 1
+          fi
+
+      - name: Build and push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          target: runner
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            NUXT_PUBLIC_SITE_URL=${{ vars.NUXT_PUBLIC_SITE_URL }}
+            NUXT_PUBLIC_COMMIT_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=runner
+          cache-to: type=gha,mode=max,scope=runner

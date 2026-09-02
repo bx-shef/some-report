@@ -10,7 +10,7 @@
   // совершенно рабочем коде. Что каждый файл покрыт ровно одним проходом, сторожит
   // `tests/typecheckCoverage.test.ts`.
   "extends": "./.nuxt/tsconfig.json",
-  "include": ["tests/**/*.ts", "vitest.config.ts"],
+  "include": ["tests/**/*.ts", "scripts/**/*.ts", "vitest.config.ts"],
   "exclude": ["node_modules", "tests/nuxt"],
   "compilerOptions": {
     "types": ["node"]

@@ -33,9 +33,12 @@ describe('охват typecheck', () => {
     expect(typecheckScript).toContain('tsconfig.node.json')
   })
 
-  it('проход для тестов берёт корневые тесты и конфиг Vitest', () => {
+  it('проход для тестов берёт тесты, сборочные скрипты и конфиг Vitest', () => {
     const include = readJsonc('tsconfig.node.json').include as string[]
     expect(include).toContain('tests/**/*.ts')
+    // `scripts/**` — сборочные скрипты вроде cspHashes.ts. Они не в приложении, значит основной
+    // проход их не видит; без этой строки они не проверялись бы типами вовсе, а ломают они выкат.
+    expect(include).toContain('scripts/**/*.ts')
     expect(include).toContain('vitest.config.ts')
   })
 
@@ -72,5 +75,21 @@ describe('охват typecheck', () => {
   // не должен ронять сборку. Этот разговор и есть цель гарда.
   it('ни один шаг CI не помечен continue-on-error', () => {
     expect(read('.github/workflows/ci.yml')).not.toContain('continue-on-error')
+  })
+
+  // Боевой образ обязан собираться на КАЖДОМ PR. Иначе поломка Dockerfile или базового образа
+  // всплывает только на выкате с main — то есть тогда, когда чинить её уже некогда.
+  it('CI собирает боевой образ на PR', () => {
+    const ci = read('.github/workflows/ci.yml')
+    expect(ci).toContain('docker-build')
+    expect(ci).toContain('target: runner')
+  })
+
+  // Выкат заперт за зелёным CI (`needs: ci`) и только с main. Снятие любого из двух условий
+  // означает, что в GHCR может уехать непроверенный образ.
+  it('выкат зависит от CI и ограничен веткой main', () => {
+    const deploy = read('.github/workflows/ci.yml').split('  deploy:')[1] ?? ''
+    expect(deploy).toContain('needs: ci')
+    expect(deploy).toContain('github.ref == \'refs/heads/main\'')
   })
 })
