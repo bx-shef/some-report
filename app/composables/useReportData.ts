@@ -22,12 +22,19 @@ export function useReportData() {
   /** Норматив первого ответа, минуты. Пусто — просроченные не считаем. */
   const firstResponseSlaMinutes = ref<number | undefined>(60)
 
+  /**
+   * Откуда взяты данные. Признак заведён СЕЙЧАС, хотя источник пока один: подключая живую
+   * выборку, про `computed(() => true)` легко забыть, и отчёт продолжил бы уверять, что данные
+   * демонстрационные (или наоборот). Здесь забыть нельзя — значение придётся выставить.
+   */
+  const source = ref<'mock' | 'portal'>('mock')
+
   const dataset = ref<ReportDataset>(buildMockDataset())
   const pending = ref(false)
   const error = ref<string | undefined>(undefined)
 
   /** Данные демонстрационные — интерфейс обязан сказать это вслух, а не подразумевать. */
-  const isDemo = computed(() => true)
+  const isDemo = computed(() => source.value === 'mock')
 
   const report = computed<ReportMetrics>(() =>
     buildReport(dataset.value.leads, dataset.value.deals, {
@@ -37,5 +44,5 @@ export function useReportData() {
     })
   )
 
-  return { dataset, report, conversionBase, firstResponseSlaMinutes, pending, error, isDemo }
+  return { dataset, report, conversionBase, firstResponseSlaMinutes, pending, error, source, isDemo }
 }

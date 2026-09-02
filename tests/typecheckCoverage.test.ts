@@ -35,7 +35,7 @@ describe('охват typecheck', () => {
 
   it('проход для тестов берёт корневые тесты и конфиг Vitest', () => {
     const include = readJsonc('tsconfig.node.json').include as string[]
-    expect(include).toContain('tests/*.ts')
+    expect(include).toContain('tests/**/*.ts')
     expect(include).toContain('vitest.config.ts')
   })
 
@@ -46,15 +46,18 @@ describe('охват typecheck', () => {
     expect(include.some(p => p.includes('tests/nuxt'))).toBe(true)
   })
 
+  it('nuxt-тесты исключены из node-прохода — иначе они краснеют на авто-импортах', () => {
+    expect(readJsonc('tsconfig.node.json').exclude as string[]).toContain('tests/nuxt')
+  })
+
   it('каждый файл тестов покрыт ровно одним проходом', () => {
     const files = execSync('git ls-files "tests/**/*.ts"', { cwd: repoRoot })
       .toString().trim().split('\n').filter(Boolean)
     expect(files.length).toBeGreaterThan(0)
-    for (const file of files) {
-      const isNuxt = file.startsWith('tests/nuxt/')
-      // Корневые — в node-проходе, вложенные nuxt — в основном. Третьего места нет.
-      expect(isNuxt || /^tests\/[^/]+\.ts$/.test(file), `нераспознанный путь: ${file}`).toBe(true)
-    }
+    // `tests/nuxt/**` — основной проход (там авто-импорты), всё остальное под `tests/` — node-проход.
+    // Третьего места нет: файл, не попавший ни туда ни туда, типами не проверяется вовсе.
+    const orphans = files.filter(f => !f.startsWith('tests/nuxt/') && !f.startsWith('tests/'))
+    expect(orphans, `вне обоих проходов:\n${orphans.join('\n')}`).toEqual([])
   })
 
   it('CI гоняет lint, test, typecheck и сборку', () => {

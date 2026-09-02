@@ -14,10 +14,13 @@ const props = withDefaults(defineProps<{
   centerValue?: string
   centerLabel?: string
   size?: number
+  /** Что именно разбито на секторы — читает скринридер. У компонента нет своего контекста. */
+  ariaLabel?: string
 }>(), {
   centerValue: undefined,
   centerLabel: undefined,
-  size: 160
+  size: 160,
+  ariaLabel: 'Кольцевая диаграмма'
 })
 
 const segments = computed(() =>

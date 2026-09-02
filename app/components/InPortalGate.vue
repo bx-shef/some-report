@@ -7,6 +7,18 @@ import { isPreviewQuery, portalGateState } from '~/utils/inPortalGate'
  * Снаружи портала у отчёта нет фрейм-токена, а значит нет и данных. Показать пустой отчёт нельзя:
  * пустая таблица читается как «продаж не было», а это неправда.
  */
+const emit = defineEmits<{
+  /**
+   * Гейт впустил и содержимое отрисовано.
+   *
+   * ⚠ Нужен потому, что страница НЕ МОЖЕТ узнать этот момент сама: отчёт живёт в слоте гейта и
+   * появляется в DOM только после того, как гейт закончит свою проверку. Страница, зовущая
+   * `fitWindow()` в своём `onMounted`, замеряет высоту заглушки «Проверяем подключение…» — и
+   * портал оставляет фрейм высотой в одну строку.
+   */
+  ready: []
+}>()
+
 const b24 = useB24()
 const route = useRoute()
 
@@ -22,6 +34,13 @@ onMounted(async () => {
   await b24.init()
   resolved.value = true
 })
+
+// `nextTick` обязателен: на момент смены состояния слот ещё не в DOM, и замерять нечего.
+watch(state, async (value) => {
+  if (value !== 'ok') return
+  await nextTick()
+  emit('ready')
+}, { immediate: true })
 </script>
 
 <template>

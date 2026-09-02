@@ -13,8 +13,9 @@ const items = computed(() =>
     key: row.reasonId,
     label: junkReasonLabel(props.dictionaries, row.reasonId),
     value: row.count,
-    // Девятая и далее причина осталась бы без своего цвета — на живом портале справочник причин
-    // отказа расширяют. Лишние сваливаем в последний слот, чтобы цвет не «переизобретался».
+    // Слотов пять, а причин в портале бывает больше: справочник расширяют. Шестая и далее
+    // забирают последний слот — цвет повторяется, но не «изобретается» на ходу. Различить их
+    // помогает легенда и таблица, где причина названа словами.
     color: SLOT_COLORS[Math.min(index, SLOT_COLORS.length - 1)]!,
     share: row.shareOfJunk
   }))
@@ -44,6 +45,7 @@ const items = computed(() =>
 
       <DonutChart
         :items="items"
+        aria-label="Разбивка брака лидов по причинам"
         :center-value="formatCount(report.summary.junk)"
         center-label="лидов"
       />

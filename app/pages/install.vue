@@ -56,8 +56,12 @@ async function install() {
           en: { TITLE: 'Lead analytics' }
         }
       })
-      const data = response.getData() as { result?: unknown, error?: string } | undefined
-      steps.value.push({ code: placement.code, ok: Boolean(data?.result) })
+      // ⚠ Форму ответа проверяем в рантайме, а не приводим через `as`: слепое приведение
+      // ничем не лучше `any` — при смене формата ответа SDK TypeScript промолчит, а мы
+      // запишем «установлено» там, где портал ничего не привязал.
+      const data: unknown = response.getData()
+      const ok = typeof data === 'object' && data !== null && Boolean((data as { result?: unknown }).result)
+      steps.value.push({ code: placement.code, ok })
     } catch (e) {
       steps.value.push({ code: placement.code, ok: false, error: e instanceof Error ? e.message : String(e) })
     }

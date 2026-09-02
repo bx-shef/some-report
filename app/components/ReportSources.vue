@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { ReportDictionaries, ReportMetrics } from '~/types/report'
+import type { ReportDictionaries, ReportMetrics, SourceRow } from '~/types/report'
+import { conversionBaseValue, share } from '~/utils/metrics'
 import { formatCount, formatMoney, formatPercent } from '~/utils/format'
 import { sourceLabel } from '~/utils/labels'
 
@@ -17,6 +18,37 @@ const baseLabel = computed(() =>
  * схлопнулись бы в неразличимые огрызки.
  */
 const maxRevenue = computed(() => Math.max(0, ...props.report.bySource.map(r => r.revenue)))
+
+/**
+ * «Итого» считается по САМИМ СТРОКАМ таблицы, а не берётся из сводки.
+ *
+ * ⚠ Раньше строки шли из `sourceRows()`, а итог — из `summary`, и это разные множества:
+ * `sourceRows()` сознательно не берёт сделки без лида-родителя (их источник неизвестен), а
+ * `summary` считает все. На живом портале, где сделки заводят руками, итог не сходился со своей
+ * же колонкой — и это читалось как ошибка отчёта, хотя оба числа верны.
+ */
+const totals = computed(() => {
+  const rows = props.report.bySource
+  const sum = (pick: (row: SourceRow) => number) => rows.reduce((acc, row) => acc + pick(row), 0)
+  const leads = sum(row => row.leads)
+  const junk = sum(row => row.junk)
+  const base = conversionBaseValue(leads, junk, props.report.summary.conversionBase)
+  const qualified = sum(row => row.qualified)
+  const won = sum(row => row.won)
+  return {
+    leads,
+    junk,
+    junkShare: share(junk, leads),
+    qualified,
+    crToDeal: share(qualified, base),
+    won,
+    crToSale: share(won, base),
+    revenue: sum(row => row.revenue)
+  }
+})
+
+/** Сколько выручки принесли сделки без лида-родителя — то есть чего в таблице нет и почему. */
+const revenueOutsideSources = computed(() => props.report.summary.revenue - totals.value.revenue)
 </script>
 
 <template>
@@ -129,30 +161,39 @@ const maxRevenue = computed(() => Math.max(0, ...props.report.bySource.map(r => 
               Итого
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatCount(report.summary.totalLeads) }}
+              {{ formatCount(totals.leads) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums text-red-600 dark:text-red-400">
-              {{ formatCount(report.summary.junk) }} <span class="opacity-70">({{ formatPercent(report.summary.junkShare, 0) }})</span>
+              {{ formatCount(totals.junk) }} <span class="opacity-70">({{ formatPercent(totals.junkShare, 0) }})</span>
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatCount(report.summary.qualified) }}
+              {{ formatCount(totals.qualified) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatPercent(report.summary.qualifiedShare, 0) }}
+              {{ formatPercent(totals.crToDeal, 0) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatCount(report.summary.wonDeals) }}
+              {{ formatCount(totals.won) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatPercent(report.summary.wonShare) }}
+              {{ formatPercent(totals.crToSale, 0) }}
             </td>
             <td class="py-2 text-right tabular-nums">
-              {{ formatMoney(report.summary.revenue, currencyId) }}
+              {{ formatMoney(totals.revenue, currencyId) }}
             </td>
           </tr>
         </tfoot>
       </table>
     </div>
+
+    <!-- Расхождение со сводкой объясняем прямо в отчёте, а не оставляем читателю гадать. -->
+    <p
+      v-if="revenueOutsideSources > 0"
+      class="mt-4 text-xs opacity-60"
+    >
+      Ещё {{ formatMoney(revenueOutsideSources, currencyId) }} принесли сделки без лида-родителя —
+      их источник неизвестен, поэтому в таблицу они не попадают. В сводке эта сумма учтена.
+    </p>
 
     <div
       v-if="report.topSources.length"

@@ -36,6 +36,31 @@ function pointAt(cx: number, cy: number, r: number, degrees: number): [number, n
   return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)]
 }
 
+const xy = (p: [number, number]) => `${p[0].toFixed(3)} ${p[1].toFixed(3)}`
+
+/**
+ * Кольцо целиком — отдельный случай, и это не микрооптимизация.
+ *
+ * ⚠ У дуги на 360° начальная и конечная точки СОВПАДАЮТ, а спецификация SVG предписывает такую
+ * дугу выбрасывать целиком («equivalent to omitting the elliptical arc segment entirely»).
+ * То есть наивный «сегмент от 0° до 360°» рисует ПУСТОТУ. Случай живой: весь брак за период
+ * пришёлся на одну причину — и блок показывал легенду «100 %» рядом с ничем.
+ *
+ * Лечится разбиением на две дуги по 180°. Внешняя идёт по часовой (флаг развёртки 1), внутренняя
+ * против (0) — противоположная намотка и оставляет дырку при заливке nonzero.
+ */
+function fullRing(cx: number, cy: number, outer: number, inner: number): string {
+  return [
+    `M ${xy(pointAt(cx, cy, outer, 0))}`,
+    `A ${outer} ${outer} 0 0 1 ${xy(pointAt(cx, cy, outer, 180))}`,
+    `A ${outer} ${outer} 0 0 1 ${xy(pointAt(cx, cy, outer, 359.999))}`,
+    `L ${xy(pointAt(cx, cy, inner, 359.999))}`,
+    `A ${inner} ${inner} 0 0 0 ${xy(pointAt(cx, cy, inner, 180))}`,
+    `A ${inner} ${inner} 0 0 0 ${xy(pointAt(cx, cy, inner, 0))}`,
+    'Z'
+  ].join(' ')
+}
+
 /** Дуга кольца (внешняя дуга вперёд, внутренняя назад) как замкнутый контур. */
 function ringSlice(
   cx: number,
@@ -46,16 +71,13 @@ function ringSlice(
   endDeg: number
 ): string {
   const sweep = endDeg - startDeg
+  if (sweep >= 360) return fullRing(cx, cy, outer, inner)
   const largeArc = sweep > 180 ? 1 : 0
-  const [ox1, oy1] = pointAt(cx, cy, outer, startDeg)
-  const [ox2, oy2] = pointAt(cx, cy, outer, endDeg)
-  const [ix2, iy2] = pointAt(cx, cy, inner, endDeg)
-  const [ix1, iy1] = pointAt(cx, cy, inner, startDeg)
   return [
-    `M ${ox1.toFixed(3)} ${oy1.toFixed(3)}`,
-    `A ${outer} ${outer} 0 ${largeArc} 1 ${ox2.toFixed(3)} ${oy2.toFixed(3)}`,
-    `L ${ix2.toFixed(3)} ${iy2.toFixed(3)}`,
-    `A ${inner} ${inner} 0 ${largeArc} 0 ${ix1.toFixed(3)} ${iy1.toFixed(3)}`,
+    `M ${xy(pointAt(cx, cy, outer, startDeg))}`,
+    `A ${outer} ${outer} 0 ${largeArc} 1 ${xy(pointAt(cx, cy, outer, endDeg))}`,
+    `L ${xy(pointAt(cx, cy, inner, endDeg))}`,
+    `A ${inner} ${inner} 0 ${largeArc} 0 ${xy(pointAt(cx, cy, inner, startDeg))}`,
     'Z'
   ].join(' ')
 }

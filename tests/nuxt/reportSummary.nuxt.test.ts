@@ -4,6 +4,7 @@ import { mountSuspended } from '@nuxt/test-utils/runtime'
 import ReportSummary from '~/components/ReportSummary.vue'
 import { buildReport } from '~/utils/metrics'
 import { buildMockDataset } from '~/utils/mockReport'
+import { nbsp } from '../helpers/text'
 
 /**
  * Проверяем не вёрстку, а СВЯЗЬ ядра с экраном: что на плитках оказываются посчитанные числа и
@@ -20,7 +21,7 @@ async function render(conversionBase: 'quality-leads' | 'all-leads') {
   // `ru-RU` разделяет разряды неразрывным пробелом (U+00A0), иногда узким (U+202F).
   // Escape-последовательностями намеренно: набранные буквально, они неотличимы от обычного
   // пробела при чтении диффа.
-  return wrapper.text().replace(/[\u00A0\u202F]/g, ' ')
+  return nbsp(wrapper.text())
 }
 
 describe('ReportSummary', () => {

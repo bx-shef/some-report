@@ -6,6 +6,7 @@ import {
   buildReport,
   conversionBaseValue,
   funnelStages,
+  isQualified,
   junkByReason,
   lostDeals,
   preDealLoss,
@@ -112,6 +113,39 @@ describe('summaryMetrics', () => {
     const s = summaryMetrics([], [], QUALITY)
     expect(s).toMatchObject({ totalLeads: 0, junk: 0, qualified: 0, revenue: 0 })
     expect(s.qualifiedShare).toBe(0)
+  })
+})
+
+describe('лид, помеченный браком после создания сделки', () => {
+  // ⚠ Регрессия с ревью: признаки были независимыми, и такой лид попадал сразу в оба множества —
+  // из знаменателя его вычитали как брак, а в числителе оставляли как квалифицированного.
+  const leads = [
+    lead({ id: 1, outcome: 'junk', junkReasonId: 'SPAM', dealIds: [10] }),
+    lead({ id: 2, outcome: 'converted', dealIds: [11] })
+  ]
+  const deals = [
+    deal({ id: 10, leadId: 1, outcome: 'won', amount: 700 }),
+    deal({ id: 11, leadId: 2, outcome: 'won', amount: 300 })
+  ]
+
+  it('квалифицированным не считается — приоритет у брака', () => {
+    expect(isQualified(leads[0]!)).toBe(false)
+    expect(summaryMetrics(leads, deals, QUALITY).qualified).toBe(1)
+  })
+
+  it('конверсия не уезжает выше 100 %', () => {
+    const summary = summaryMetrics(leads, deals, QUALITY)
+    expect(summary.conversionBaseValue).toBe(1)
+    expect(summary.qualifiedShare).toBeLessThanOrEqual(1)
+  })
+
+  it('потери до сделки не вычитают его дважды', () => {
+    expect(preDealLoss(leads, summaryMetrics(leads, deals, QUALITY)).count).toBe(0)
+  })
+
+  // Деньги реальны: сделка остаётся в выручке, даже если лид задним числом признали браком.
+  it('его сделка остаётся в выручке', () => {
+    expect(summaryMetrics(leads, deals, QUALITY).revenue).toBe(1000)
   })
 })
 
@@ -290,15 +324,110 @@ describe('processingMetrics', () => {
 })
 
 describe('topSources', () => {
+  const rows = sourceRows(
+    Array.from({ length: 7 }, (_, i) => lead({ id: i + 1, sourceId: `S${i}` })),
+    [],
+    QUALITY
+  )
+
   it('берёт первые пять уже отсортированного списка', () => {
+    expect(topSources(rows)).toHaveLength(5)
+  })
+
+  it.each([[0, 0], [1, 1], [3, 3], [10, 7]])('limit %s → %s строк', (limit, expected) => {
+    expect(topSources(rows, limit)).toHaveLength(expected)
+  })
+
+  it('не пересчитывает, а отрезает — строки те же самые', () => {
+    expect(topSources(rows, 2)).toEqual(rows.slice(0, 2))
+  })
+})
+
+describe('sourceRows: расхождение со сводкой', () => {
+  /**
+   * ⚠ Сделки без лида-родителя в разрез источников не входят (их источник неизвестен), но в
+   * сводку входят. Значит итог таблицы источников МЕНЬШЕ сводки — и это правильно, а не ошибка.
+   * Отчёт объясняет расхождение отдельной строкой; тест фиксирует, что оно вообще возникает.
+   */
+  const leads = [lead({ id: 1, sourceId: 'CALL', outcome: 'converted', dealIds: [1] })]
+  const deals = [
+    deal({ id: 1, leadId: 1, sourceId: 'CALL', outcome: 'won', amount: 900 }),
+    deal({ id: 2, outcome: 'won', amount: 10_000 })
+  ]
+
+  it('сводка считает сделку без лида, таблица источников — нет', () => {
+    const summary = summaryMetrics(leads, deals, QUALITY)
+    const bySourceRevenue = sourceRows(leads, deals, QUALITY).reduce((sum, r) => sum + r.revenue, 0)
+    expect(summary.revenue).toBe(10_900)
+    expect(bySourceRevenue).toBe(900)
+    expect(summary.revenue).toBeGreaterThan(bySourceRevenue)
+  })
+
+  it('лид с двумя сделками складывает обе', () => {
     const rows = sourceRows(
-      Array.from({ length: 7 }, (_, i) =>
-        lead({ id: i + 1, sourceId: `S${i}` })
-      ),
-      [],
+      [lead({ id: 1, sourceId: 'CALL', outcome: 'converted', dealIds: [1, 2] })],
+      [
+        deal({ id: 1, leadId: 1, outcome: 'won', amount: 100 }),
+        deal({ id: 2, leadId: 1, outcome: 'won', amount: 250 })
+      ],
       QUALITY
     )
-    expect(topSources(rows)).toHaveLength(5)
+    expect(rows[0]).toMatchObject({ qualified: 1, won: 2, revenue: 350 })
+  })
+})
+
+describe('processingMetrics: битые и обратные даты', () => {
+  // Даты приходят из портала. Отчёт обязан пережить любую строку, а не считать её нулём молча.
+  it('ответ раньше создания даёт нулевую длительность, а не отрицательную', () => {
+    const p = processingMetrics([
+      lead({ id: 1, createdAt: '2026-08-01T10:00:00Z', firstResponseAt: '2026-08-01T09:00:00Z' })
+    ], QUALITY)
+    expect(p.avgFirstResponseMinutes).toBe(0)
+  })
+
+  it('битая дата не попадает в среднее и не роняет расчёт', () => {
+    const p = processingMetrics([
+      lead({ id: 1, createdAt: 'не-дата', firstResponseAt: '2026-08-01T10:30:00Z' }),
+      lead({ id: 2, createdAt: '2026-08-01T10:00:00Z', firstResponseAt: '2026-08-01T11:00:00Z' })
+    ], QUALITY)
+    // Обработанными считаются оба — действие по лиду было. В среднее идёт только измеримый.
+    expect(p.processed).toBe(2)
+    expect(p.avgFirstResponseMinutes).toBe(60)
+  })
+
+  it('лид с битой датой не объявляется просроченным наугад', () => {
+    const p = processingMetrics([lead({ id: 1, createdAt: 'мусор', firstResponseAt: 'тоже мусор' })], {
+      conversionBase: 'quality-leads',
+      firstResponseSlaMinutes: 30,
+      now: '2026-08-02T10:00:00Z'
+    })
+    expect(p.overdue).toBe(0)
+  })
+})
+
+describe('processingMetrics: разрез по источникам', () => {
+  const leads = [
+    lead({ id: 1, sourceId: 'CALL', createdAt: '2026-08-01T10:00:00Z', firstResponseAt: '2026-08-01T10:20:00Z' }),
+    lead({ id: 2, sourceId: 'CALL', createdAt: '2026-08-01T10:00:00Z', firstResponseAt: '2026-08-01T10:40:00Z' }),
+    lead({ id: 3, sourceId: 'EMAIL', createdAt: 'мусор', firstResponseAt: 'мусор' }),
+    lead({ id: 4, sourceId: 'WEB' })
+  ]
+
+  it('группирует обработанные и сортирует по их количеству', () => {
+    const rows = processingMetrics(leads, QUALITY).bySource
+    expect(rows.map(r => r.sourceId)).toEqual(['CALL', 'EMAIL'])
+    expect(rows[0]).toMatchObject({ processed: 2, avgFirstResponseMinutes: 30 })
+  })
+
+  // Источник, где длительность измерить не удалось, остаётся в списке — но без среднего.
+  it('источник без измеримых длительностей даёт undefined, а не ноль', () => {
+    const rows = processingMetrics(leads, QUALITY).bySource
+    expect(rows[1]).toMatchObject({ sourceId: 'EMAIL', processed: 1 })
+    expect(rows[1]!.avgFirstResponseMinutes).toBeUndefined()
+  })
+
+  it('необработанные лиды в разрез не попадают', () => {
+    expect(processingMetrics(leads, QUALITY).bySource.map(r => r.sourceId)).not.toContain('WEB')
   })
 })
 
