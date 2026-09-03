@@ -19,12 +19,33 @@ import { join } from 'node:path'
 export const HASH_PLACEHOLDER = '__CSP_SCRIPT_HASHES__'
 
 /**
- * Тела встроенных скриптов из HTML.
+ * Типы `<script>`, которые браузер НЕ исполняет: блоки данных. Только их и пропускаем.
  *
- * Берём только исполняемые: `<script>` без `type` либо с JS-типом. Блоки данных
- * (`application/ld+json` и прочие) браузер не исполняет, CSP их не проверяет — а посчитанный
- * для них хеш просто раздувал бы заголовок и создавал ложное впечатление, что он что-то
- * разрешает.
+ * ⚠ Список именно ЗАПРЕЩЁННЫХ, а не разрешённых, и это главное решение в этом файле.
+ * Раньше здесь стоял список исполняемых типов (`module`, `text/javascript`, …), и всё
+ * незнакомое молча выпадало из хешей. Так и случилось: Nuxt печатает
+ * `<script type="importmap">`, CSP его ПРОВЕРЯЕТ, хеша для него не считалось — браузер
+ * блокировал импорт-карту, специфик `#entry` переставал разрешаться, и приложение не
+ * стартовало вообще. При этом сервер отдавал 200, в его логах не было ни строки, а страница
+ * показывала пред-отрендеренный HTML: заголовок есть, кнопки нет, ничего не происходит.
+ * Диагностировалось это часами.
+ *
+ * Со списком запрещённых незнакомый тип попадает в хеши — то есть лишний хеш в заголовке
+ * (безвредно), а не мёртвое приложение в проде.
+ */
+const DATA_BLOCK_TYPES = new Set([
+  'application/json',
+  'application/ld+json',
+  'text/template',
+  'text/x-template'
+])
+
+/**
+ * Тела встроенных скриптов из HTML — те, к которым браузер применяет `script-src`.
+ *
+ * Пропускаем внешние (`src` разрешает `'self'`) и блоки данных: их браузер не исполняет и CSP
+ * для них не проверяет, а хеш `__NUXT_DATA__` вдобавок свой на каждой странице и раздувал бы
+ * заголовок на каждой новой странице приложения.
  */
 export function extractInlineScripts(html: string): string[] {
   const found: string[] = []
@@ -36,11 +57,7 @@ export function extractInlineScripts(html: string): string[] {
     // Внешний скрипт: у него нет тела, разрешает его `script-src 'self'`.
     if (/\ssrc\s*=/i.test(attrs)) continue
     const type = /\stype\s*=\s*["']?([^"'\s>]+)/i.exec(attrs)?.[1]?.toLowerCase()
-    const executable = !type
-      || type === 'module'
-      || type === 'text/javascript'
-      || type === 'application/javascript'
-    if (!executable) continue
+    if (type && DATA_BLOCK_TYPES.has(type)) continue
     if (!body.trim()) continue
     found.push(body)
   }
@@ -81,7 +98,7 @@ export function applyHashes(config: string, directive: string): string {
 }
 
 /** Рекурсивно собрать пути всех `.html` в каталоге. */
-async function htmlFiles(dir: string): Promise<string[]> {
+export async function htmlFiles(dir: string): Promise<string[]> {
   const entries = await readdir(dir, { withFileTypes: true })
   const files: string[] = []
   for (const entry of entries) {

@@ -61,6 +61,13 @@ RUN ! grep -q '__CSP_SCRIPT_HASHES__' nginx.conf \
 RUN grep -q "sha256-" nginx.conf \
       || { echo 'CSP: в конфиг не попало ни одного хеша'; exit 1; }
 
+# ⚠ И самое главное: КАЖДЫЙ инлайновый скрипт каждой собранной страницы обязан иметь хеш в
+# итоговом конфиге. «Хотя бы один хеш есть» — проверка, которая однажды уже пропустила в прод
+# заблокированную импорт-карту: хеш конфига Nuxt был на месте, а `<script type="importmap">`
+# выпал из разбора. Приложение не стартовало вообще, сервер отдавал 200, в логах было пусто.
+RUN node --experimental-strip-types --disable-warning=ExperimentalWarning \
+      scripts/cspVerify.ts .output/public nginx.conf
+
 # nginx-unprivileged работает не от root и слушает 8080.
 FROM nginxinc/nginx-unprivileged:1.31-alpine AS runner
 COPY --from=builder /app/.output/public /usr/share/nginx/html
