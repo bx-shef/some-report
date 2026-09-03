@@ -106,6 +106,7 @@ describe('installVerdict', () => {
   it('сначала жалуется на права, даже если и точки не привязаны', () => {
     const verdict = installVerdict({
       missing: ['crm'],
+      placementsChecked: true,
       placements: [{ code: 'CRM_ANALYTICS_MENU', status: 'missing', foreignHandlers: [] }],
       appInstalled: false
     })
@@ -114,14 +115,14 @@ describe('installVerdict', () => {
   })
 
   it('не-администратору объясняет, что права выдаёт администратор', () => {
-    expect(installVerdict({ missing: ['placement'], placements: [], isAdmin: false }).hint)
+    expect(installVerdict({ missing: ['placement'], placementsChecked: true, placements: [], isAdmin: false }).hint)
       .toContain('администратор')
   })
 
   // Ровно тот случай, который и привёл к этой странице: точки привязаны, «Готово» показано,
   // а портал считает приложение неустановленным — и не показывает пункт.
   it('ловит незавершённую установку при привязанных точках', () => {
-    const verdict = installVerdict({ missing: [], placements: okPlacements, appInstalled: false })
+    const verdict = installVerdict({ missing: [], placementsChecked: true, placements: okPlacements, appInstalled: false })
     expect(verdict.level).toBe('error')
     expect(verdict.title).toContain('неустановленным')
   })
@@ -130,6 +131,7 @@ describe('installVerdict', () => {
     const verdict = installVerdict({
       missing: [],
       appInstalled: true,
+      placementsChecked: true,
       placements: [
         { code: 'CRM_ANALYTICS_MENU', status: 'ok', foreignHandlers: [] },
         { code: 'CRM_ANALYTICS_TOOLBAR', status: 'missing', foreignHandlers: [] }
@@ -144,6 +146,7 @@ describe('installVerdict', () => {
     const verdict = installVerdict({
       missing: [],
       appInstalled: true,
+      placementsChecked: true,
       placements: [{ code: 'CRM_ANALYTICS_MENU', status: 'other-handler', foreignHandlers: ['https://old/app'] }]
     })
     expect(verdict.level).toBe('warning')
@@ -152,13 +155,38 @@ describe('installVerdict', () => {
 
   // `app.info` мог не ответить — это не повод объявлять установку сломанной.
   it('при неизвестном статусе установки и исправных точках даёт «всё хорошо»', () => {
-    const verdict = installVerdict({ missing: [], placements: okPlacements })
+    const verdict = installVerdict({ missing: [], placementsChecked: true, placements: okPlacements })
     expect(verdict.level).toBe('ok')
     expect(verdict.hint).toContain('CRM-аналитика')
   })
 
   it('в успешном случае подсказывает перезагрузить портал — пункт кэшируется', () => {
-    expect(installVerdict({ missing: [], appInstalled: true, placements: okPlacements }).hint)
+    expect(installVerdict({ missing: [], appInstalled: true, placementsChecked: true, placements: okPlacements }).hint)
       .toContain('перезагрузите')
+  })
+  // ⚠ Тест оплачен тем же дефектом, который лечит вся страница. Сбой `placement.get` приносил
+  // сюда пустой список, неотличимый от «точек не ожидалось», и вердикт падал в зелёное
+  // «всё зарегистрировано» — не проверив НИЧЕГО.
+  it('не проверенные точки — не «всё хорошо»', () => {
+    const verdict = installVerdict({ missing: [], appInstalled: true, placementsChecked: false, placements: [] })
+    expect(verdict.level).not.toBe('ok')
+    expect(verdict.title).toContain('Не удалось проверить')
+  })
+
+  // Права и незавершённая установка объясняют картину лучше, чем «не смогли спросить».
+  it('о правах говорит раньше, чем о непроверенных точках', () => {
+    expect(installVerdict({ missing: ['crm'], placementsChecked: false, placements: [] }).title).toContain('crm')
+  })
+
+  // Портал может вернуть запись без адреса — подсказка «открывает .» бесполезна.
+  it('пустой чужой адрес не печатает', () => {
+    const verdict = installVerdict({
+      missing: [],
+      appInstalled: true,
+      placementsChecked: true,
+      placements: [{ code: 'CRM_ANALYTICS_MENU', status: 'other-handler', foreignHandlers: [''] }]
+    })
+    expect(verdict.hint).toContain('другой адрес')
+    expect(verdict.hint).not.toContain('открывает .')
   })
 })

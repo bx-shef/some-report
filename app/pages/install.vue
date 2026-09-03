@@ -32,14 +32,38 @@ type Step = { code: string, ok: boolean, error?: string }
 const steps = ref<Step[]>([])
 const state = ref<'idle' | 'running' | 'checking' | 'done' | 'failed'>('idle')
 const fatal = ref<string | undefined>(undefined)
+const installFinishError = ref<string | undefined>(undefined)
+const unbindErrors = ref<string[]>([])
 const verdict = ref<InstallVerdict | undefined>(undefined)
 const placementChecks = ref<PlacementCheck[]>([])
-const grantedScopes = ref<string[]>([])
+const placementsChecked = ref(false)
+/** `undefined` — спросить не удалось; `[]` — спросили, и прав нет. Это разные факты. */
+const grantedScopes = ref<string[] | undefined>(undefined)
 const appInstalled = ref<boolean | undefined>(undefined)
 const isAdmin = ref<boolean | undefined>(undefined)
+/** Перепривязка снимает живые привязки, поэтому спрашиваем подтверждение вторым нажатием. */
+const rebindArmed = ref(false)
 
 const handler = computed(() => placementHandlerUrl(config.public.siteUrl))
-const analyticsUrl = computed(() => portalAnalyticsUrl(b24.targetOrigin()))
+
+/**
+ * Адрес раздела CRM-аналитики портала.
+ *
+ * ⚠ `b24.isInit()` здесь обязателен, и не для красоты. `targetOrigin()` читает модульный
+ * синглтон напрямую, мимо реактивности; `computed` только над ним не имел бы ни одной
+ * зависимости, вычислился бы один раз на первом рендере — ДО того как `onMounted` запустит
+ * `init()` — и навсегда застрял бы на `null`. Ссылка «Где открыть отчёт» не показалась бы
+ * никогда. `isInit()` читает настоящий `ref`, и пересчёт происходит.
+ */
+const analyticsUrl = computed(() => (b24.isInit() ? portalAnalyticsUrl(b24.targetOrigin()) : null))
+
+const busy = computed(() => state.value === 'running' || state.value === 'checking')
+
+const verdictColor = computed(() => {
+  if (verdict.value?.level === 'ok') return 'air-primary-success'
+  if (verdict.value?.level === 'warning') return 'air-primary-warning'
+  return 'air-primary-alert'
+})
 
 useHead({ title: 'Установка' })
 
@@ -54,6 +78,10 @@ async function callResult(method: string, params: Record<string, unknown> = {}):
   const data: unknown = response.getData()
   if (typeof data !== 'object' || data === null) return undefined
   return (data as { result?: unknown }).result
+}
+
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /** Регистрация точек встраивания. Ошибку каждой показываем отдельно: лечатся они по-разному. */
@@ -72,7 +100,7 @@ async function bindPlacements(): Promise<void> {
       })
       steps.value.push({ code: placement.code, ok: Boolean(result) })
     } catch (e) {
-      steps.value.push({ code: placement.code, ok: false, error: e instanceof Error ? e.message : String(e) })
+      steps.value.push({ code: placement.code, ok: false, error: describe(e) })
     }
   }
 }
@@ -100,8 +128,8 @@ async function verify(): Promise<void> {
 
   try {
     const scopes = await callResult('scope')
-    grantedScopes.value = Array.isArray(scopes) ? scopes.filter(s => typeof s === 'string') : []
-  } catch { grantedScopes.value = [] }
+    grantedScopes.value = Array.isArray(scopes) ? scopes.filter(s => typeof s === 'string') : undefined
+  } catch { grantedScopes.value = undefined }
 
   try {
     placementChecks.value = checkPlacements(
@@ -109,14 +137,18 @@ async function verify(): Promise<void> {
       parseRegisteredPlacements(await callResult('placement.get')),
       handler.value ?? ''
     )
+    placementsChecked.value = true
   } catch {
+    // ⚠ Именно ФЛАГ, а не пустой список: пустой список означал бы «точек нет» и увёл бы вердикт
+    // в зелёное «всё зарегистрировано» ровно тогда, когда мы не проверили ничего.
     placementChecks.value = []
+    placementsChecked.value = false
   }
 
   verdict.value = installVerdict({
     appInstalled: appInstalled.value,
-    // Пустой ответ `scope` означает «спросить не удалось», а не «прав нет»: не пугаем зря.
-    missing: grantedScopes.value.length > 0 ? missingScopes(grantedScopes.value, B24_REQUIRED_SCOPES) : [],
+    missing: grantedScopes.value ? missingScopes(grantedScopes.value, B24_REQUIRED_SCOPES) : [],
+    placementsChecked: placementsChecked.value,
     placements: placementChecks.value,
     isAdmin: isAdmin.value
   })
@@ -145,8 +177,19 @@ async function ready(): Promise<boolean> {
   return true
 }
 
+/** Сброс перед новым прогоном: старый вердикт не должен висеть поверх нового хода работ. */
+function resetDiagnosis(): void {
+  verdict.value = undefined
+  placementChecks.value = []
+  placementsChecked.value = false
+  unbindErrors.value = []
+  installFinishError.value = undefined
+}
+
 async function install() {
+  if (busy.value) return
   state.value = 'running'
+  resetDiagnosis()
   if (!await ready()) return
 
   await bindPlacements()
@@ -154,9 +197,10 @@ async function install() {
   try {
     await b24.getOrThrow().installFinish()
   } catch (e) {
-    // Не обрываемся: если установка уже была завершена раньше, повторный вызов ругается, а точки
-    // при этом привязаны. Что на самом деле вышло — покажет проверка.
-    fatal.value = `installFinish: ${e instanceof Error ? e.message : String(e)}`
+    // Не обрываемся: если установка уже была завершена раньше (обычное дело при повторном
+    // открытии страницы), портал ругается, а точки при этом привязаны. Что вышло на самом деле,
+    // покажет проверка — поэтому и показываем эту строку только когда вердикт НЕ зелёный.
+    installFinishError.value = describe(e)
   }
 
   await verify()
@@ -164,7 +208,9 @@ async function install() {
 
 /** Только проверка, без установки — кнопка «Проверить снова» после перезагрузки портала. */
 async function recheck() {
+  if (busy.value) return
   state.value = 'checking'
+  resetDiagnosis()
   if (!await ready()) return
   await verify()
 }
@@ -175,14 +221,30 @@ async function recheck() {
  * ⚠ Именно со снятием. Точка, привязанная на прошлый адрес приложения (переезд домена), даёт
  * пункт в меню, который открывает пустоту, — и повторный `bind` рядом с ней оставил бы в меню
  * два одинаковых пункта, один из которых сломан.
+ *
+ * ⚠ И именно поэтому кнопка двухшаговая: операция трогает регистрацию, видную ВСЕМУ порталу, а
+ * лежит она рядом с безобидной «Проверить снова», в том числе когда всё уже исправно.
  */
 async function rebind() {
+  if (busy.value) return
+  if (!rebindArmed.value) {
+    rebindArmed.value = true
+    return
+  }
+  rebindArmed.value = false
   state.value = 'running'
+  resetDiagnosis()
   if (!await ready()) return
+
   for (const placement of PLACEMENTS) {
     try {
       await callResult('placement.unbind', { PLACEMENT: placement.code })
-    } catch { /* нечего снимать — тем лучше */ }
+    } catch (e) {
+      // ⚠ Не «нечего снимать — тем лучше»: сюда же приходят лимит запросов и сетевой сбой. При
+      // них старая привязка ОСТАЛАСЬ, а следом мы поставим новую — и получим в меню два пункта,
+      // один из которых открывает пустоту. Молчать об этом нельзя.
+      unbindErrors.value.push(`${placement.code}: ${describe(e)}`)
+    }
   }
   await bindPlacements()
   await verify()
@@ -212,7 +274,7 @@ onMounted(install)
 
     <B24Alert
       v-if="verdict"
-      :color="verdict.level === 'ok' ? 'air-primary-success' : verdict.level === 'warning' ? 'air-primary-warning' : 'air-primary-alert'"
+      :color="verdictColor"
       :title="verdict.title"
       :description="verdict.hint"
     />
@@ -222,6 +284,23 @@ onMounted(install)
       color="air-primary-alert"
       title="Установка не завершена"
       :description="fatal"
+    />
+
+    <!-- Снять старую привязку не удалось: в меню портала могли остаться два пункта. -->
+    <B24Alert
+      v-if="unbindErrors.length"
+      color="air-primary-warning"
+      title="Старые привязки сняты не полностью"
+      :description="`В меню портала могли остаться лишние пункты. ${unbindErrors.join('; ')}`"
+    />
+
+    <!-- Показываем только когда вердикт не зелёный: при исправной установке повторный
+         installFinish ругается всегда, и красная плашка под зелёной сбивала бы с толку. -->
+    <B24Alert
+      v-if="installFinishError && verdict && verdict.level !== 'ok'"
+      color="air-primary-warning"
+      title="Портал не принял завершение установки"
+      :description="installFinishError"
     />
 
     <!-- То, за чем сюда и приходят: где именно открыть отчёт. Путей ДВА — раздел аналитики
@@ -270,21 +349,29 @@ onMounted(install)
       </li>
     </ul>
 
-    <div class="flex flex-wrap gap-2">
+    <div class="flex flex-wrap items-center gap-2">
       <B24Button
         color="air-primary"
-        :disabled="state === 'running' || state === 'checking'"
+        :disabled="busy"
         @click="recheck"
       >
         Проверить снова
       </B24Button>
       <B24Button
-        color="air-secondary"
-        :disabled="state === 'running' || state === 'checking'"
+        :color="rebindArmed ? 'air-primary-alert' : 'air-secondary'"
+        :disabled="busy || isAdmin === false"
         @click="rebind"
       >
-        Перепривязать точки
+        {{ rebindArmed ? 'Точно перепривязать?' : 'Перепривязать точки' }}
       </B24Button>
+      <span
+        v-if="rebindArmed"
+        class="text-sm opacity-70"
+      >Снимет текущие привязки во всём портале и поставит заново.</span>
+      <span
+        v-else-if="isAdmin === false"
+        class="text-sm opacity-70"
+      >Перепривязка доступна только администратору портала.</span>
     </div>
 
     <details class="text-sm opacity-70">
@@ -324,7 +411,7 @@ onMounted(install)
           <dt class="inline font-semibold">
             Права выданы:
           </dt> <dd class="inline">
-            {{ grantedScopes.length ? grantedScopes.join(', ') : 'не удалось узнать' }}
+            {{ grantedScopes === undefined ? 'не удалось узнать' : grantedScopes.join(', ') || 'ни одного' }}
           </dd>
         </div>
         <div>
@@ -336,8 +423,14 @@ onMounted(install)
         </div>
       </dl>
 
+      <p
+        v-if="!placementsChecked && state !== 'idle'"
+        class="mt-2"
+      >
+        Точки встройки: спросить портал не удалось.
+      </p>
       <ul
-        v-if="placementChecks.length"
+        v-else-if="placementChecks.length"
         class="mt-2 space-y-1"
       >
         <li
