@@ -4,7 +4,8 @@ import {
   PLACEMENTS,
   PLACEMENT_ANALYTICS_MENU,
   PLACEMENT_ANALYTICS_TOOLBAR,
-  placementHandlerUrl
+  placementHandlerUrl,
+  portalAnalyticsUrl
 } from '~/config/b24'
 
 describe('права приложения', () => {
@@ -50,5 +51,21 @@ describe('placementHandlerUrl', () => {
     ['без TLS', 'http://report.example.com']
   ])('%s → null, а не битый плейсмент', (_name, value) => {
     expect(placementHandlerUrl(value)).toBeNull()
+  })
+})
+
+describe('portalAnalyticsUrl', () => {
+  it('строит адрес раздела CRM-аналитики портала', () => {
+    expect(portalAnalyticsUrl('https://example.bitrix24.by')).toBe('https://example.bitrix24.by/report/analytics/')
+  })
+
+  it('срезает хвостовой слеш, чтобы не получить двойной', () => {
+    expect(portalAnalyticsUrl('https://example.bitrix24.by/')).toBe('https://example.bitrix24.by/report/analytics/')
+  })
+
+  // `targetOrigin()` вне фрейма отдаёт `?` — ссылку на такое строить нельзя.
+  it('без адреса портала ссылки нет', () => {
+    expect(portalAnalyticsUrl('?')).toBeNull()
+    expect(portalAnalyticsUrl('')).toBeNull()
   })
 })

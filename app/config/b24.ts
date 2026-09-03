@@ -56,3 +56,29 @@ export function placementHandlerUrl(siteUrl: string): string | null {
   if (!base || !/^https:\/\//i.test(base)) return null
   return `${base}${PLACEMENT_HANDLER_PATH}`
 }
+
+/**
+ * Путь раздела CRM-аналитики внутри портала — там появляется наш пункт.
+ *
+ * ⚠ Ссылку на раздел даём обычным `<a>`, а не через `slider.openPath`: тот открывает только
+ * ограниченный список путей (карточки CRM, маркетплейс, профили) и на `/report/analytics/`
+ * молча ничего не сделает. Значение подтверждено самим порталом: он присылает этот путь в
+ * `PLACEMENT_OPTIONS.URI` при открытии обеих наших точек.
+ */
+export const PORTAL_ANALYTICS_PATH = '/report/analytics/'
+
+/**
+ * Абсолютный адрес раздела CRM-аналитики портала — чтобы страница установки могла дать ссылку
+ * «где искать отчёт», а не только описание словами.
+ *
+ * ⚠ В отличие от `placementHandlerUrl`, здесь допустим и `http://`, и это не недосмотр.
+ * Тот адрес — контракт с REST: `placement.bind` не примет незащищённый, и подсунуть его значило
+ * бы зарегистрировать заведомо нерабочую точку. А этот — ссылка на САМ ПОРТАЛ, взятая из его же
+ * origin: коробочная установка может стоять на `http`, и запрет отнял бы у такого клиента
+ * подсказку «где искать отчёт», ничего не защитив — он и так уже в этом портале.
+ */
+export function portalAnalyticsUrl(portalOrigin: string): string | null {
+  const base = portalOrigin.trim().replace(/\/+$/, '')
+  if (!base || !/^https?:\/\//i.test(base)) return null
+  return `${base}${PORTAL_ANALYTICS_PATH}`
+}
