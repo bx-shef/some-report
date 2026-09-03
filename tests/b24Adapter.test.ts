@@ -230,6 +230,7 @@ describe('adaptPortalData', () => {
       wonStageWithoutDeal: 1,
       dealsWithoutLead: 1,
       dealsWithMissingLead: 0,
+      duplicateIds: 0,
       firstResponseNotFetched: true
     })
   })
@@ -252,7 +253,7 @@ describe('adaptPortalData', () => {
   it('пустой портал не роняет адаптер', () => {
     const empty = adaptPortalData({ leads: [], deals: [], currencies: [], sources: [], leadStatuses: [], dealStages: [] })
     expect(empty.leads).toEqual([])
-    expect(empty.warnings).toMatchObject({ unconvertedDeals: 0, wonStageWithoutDeal: 0, dealsWithoutLead: 0 })
+    expect(empty.warnings).toMatchObject({ unconvertedDeals: 0, wonStageWithoutDeal: 0, dealsWithoutLead: 0, duplicateIds: 0 })
   })
 
   /**
@@ -268,6 +269,36 @@ describe('adaptPortalData', () => {
     expect(result.warnings.dealsWithMissingLead).toBe(1)
     expect(result.warnings.dealsWithoutLead).toBe(0)
     expect(result.leads.every(l => l.dealIds.length === 0)).toBe(true)
+  })
+
+  /**
+   * ⚠ Повтор по `ID` — признак сбоя пагинации: постраничный опрос вернул страницу дважды. Без
+   * дедупликации лид считался бы дважды, а из двух сделок с одним `ID` ядро оставляло бы в своей
+   * карте только последнюю — и «успешные сделки» в сводке разошлись бы с выручкой по источникам
+   * без единой подсказки, почему.
+   */
+  it('повтор по ID выбрасывается и попадает в счётчик', () => {
+    const result = adaptPortalData({
+      ...input,
+      leads: [...input.leads, { ID: '1', STATUS_ID: 'NEW', STATUS_SEMANTIC_ID: 'P', SOURCE_ID: 'CALL', DATE_CREATE: '2026-08-09T10:00:00+03:00' }],
+      deals: [...input.deals, { ID: '10', LEAD_ID: '2', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '99999', CURRENCY_ID: 'BYN' }]
+    })
+    expect(result.leads).toHaveLength(4)
+    expect(result.deals).toHaveLength(2)
+    expect(result.warnings.duplicateIds).toBe(2)
+  })
+
+  // Оставляем ПЕРВОЕ вхождение: при сбое пагинации повтор приходит позже оригинала.
+  it('из повторов остаётся первое вхождение', () => {
+    const result = adaptPortalData({
+      ...input,
+      deals: [
+        { ID: '30', LEAD_ID: '2', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '100', CURRENCY_ID: 'BYN' },
+        { ID: '30', LEAD_ID: '2', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '777', CURRENCY_ID: 'BYN' }
+      ]
+    })
+    expect(result.deals).toHaveLength(1)
+    expect(result.deals[0]!.amount).toBe(100)
   })
 
   it('несколько сделок у одного лида попадают все', () => {

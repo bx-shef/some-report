@@ -183,6 +183,15 @@ export interface AdapterWarnings {
    */
   dealsWithMissingLead: number
   /**
+   * Записи с уже встречавшимся `ID`, выброшенные как повтор.
+   *
+   * ⚠ Признак сбоя ПАГИНАЦИИ: постраничный опрос вернул одну и ту же страницу дважды. Без
+   * дедупликации лид считался бы дважды, а из двух сделок с одним `ID` ядро оставляло бы в своей
+   * карте только последнюю — и «успешные сделки» в сводке разошлись бы с выручкой по источникам
+   * без единой подсказки, почему.
+   */
+  duplicateIds: number
+  /**
    * Первое действие по лидам не выбиралось вовсе (`input.firstResponse` не передан).
    *
    * ⚠ Без этого признака блок «Обработка лидов» показал бы «обработано 0 %, просрочено 100 %» —
@@ -231,13 +240,38 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
   const rates = currencyRates(input.currencies)
   const currencyId = baseCurrency(input.currencies)
 
+  /**
+   * Повторы по `ID` выбрасываем, оставляя ПЕРВОЕ вхождение.
+   *
+   * Первое, а не последнее, — потому что при сбое пагинации повтор приходит позже оригинала, и
+   * «первое» означает «то, что портал отдал раньше». Выбор всё равно произвольный: одинаковые
+   * `ID` — это сбой выборки, а не данные, и правильного ответа тут нет. Важно, что повтор не
+   * проходит дальше молча, а попадает в счётчик оговорок.
+   */
+  let duplicateIds = 0
+  const dedupe = <T>(rows: T[], id: (row: T) => number): T[] => {
+    const seen = new Set<number>()
+    return rows.filter((row) => {
+      const key = id(row)
+      if (seen.has(key)) {
+        duplicateIds++
+        return false
+      }
+      seen.add(key)
+      return true
+    })
+  }
+
+  const leadRows = dedupe(input.leads, row => toNumber(row.ID))
+  const dealRows = dedupe(input.deals, row => toNumber(row.ID))
+
   const dealsByLead = new Map<number, number[]>()
-  const knownLeadIds = new Set(input.leads.map(row => toNumber(row.ID)))
+  const knownLeadIds = new Set(leadRows.map(row => toNumber(row.ID)))
   let dealsWithoutLead = 0
   let dealsWithMissingLead = 0
   let unconvertedDeals = 0
 
-  const deals: ReportDeal[] = input.deals.map((row) => {
+  const deals: ReportDeal[] = dealRows.map((row) => {
     const id = toNumber(row.ID)
     const leadId = toNumber(row.LEAD_ID)
     const dealCurrency = toText(row.CURRENCY_ID) || currencyId
@@ -276,7 +310,7 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
 
   let wonStageWithoutDeal = 0
 
-  const leads: ReportLead[] = input.leads.map((row) => {
+  const leads: ReportLead[] = leadRows.map((row) => {
     const id = toNumber(row.ID)
     const semantic = toSemantic(row.STATUS_SEMANTIC_ID)
     const dealIds = dealsByLead.get(id) ?? []
@@ -311,6 +345,7 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
       wonStageWithoutDeal,
       dealsWithoutLead,
       dealsWithMissingLead,
+      duplicateIds,
       firstResponseNotFetched: input.firstResponse === undefined
     }
   }
