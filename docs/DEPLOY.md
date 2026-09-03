@@ -53,13 +53,24 @@ git push в main ──▶ CI (lint, типы, тесты, сборка)
 # на сервере
 mkdir -p /home/bitrix/some-report && cd /home/bitrix/some-report
 
-# положить рядом deploy/docker-compose.prod.yml и deploy/.env.example из репозитория
+# Забрать файлы из репозитория. Он публичный, поэтому без авторизации.
+BASE=https://raw.githubusercontent.com/bx-shef/some-report/main/deploy
+curl -fsSLO "$BASE/docker-compose.prod.yml"
+curl -fsSL  "$BASE/.env.example" -o .env.example
+
 cp .env.example .env && nano .env      # DOMAIN, LETSENCRYPT_EMAIL
 
 docker compose -f docker-compose.prod.yml pull
 docker compose -f docker-compose.prod.yml up -d
 docker compose -f docker-compose.prod.yml ps   # ждём healthy
 ```
+
+⚠ `curl -f` здесь не для красоты: без него сервер молча запишет в файл HTML-страницу ошибки
+GitHub, а `docker compose` потом отругается на невалидный YAML — и искать будут поломку compose,
+а не то, что файл не скачался.
+
+⚠ `.env.example` качается с явным `-o`: у `curl -O` имя берётся из URL, а файл начинается с точки —
+в каталоге он окажется скрытым, и `ls` покажет пустоту там, где всё на месте.
 
 ⚠ `DOMAIN` в `.env` обязан совпадать с `NUXT_PUBLIC_SITE_URL`, с которым собран образ. Разойдутся —
 страница установки построит адрес обработчика плейсмента на ЧУЖОЙ домен, и портал откроет пустоту.
