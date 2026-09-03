@@ -47,8 +47,26 @@ const totals = computed(() => {
   }
 })
 
-/** Сколько выручки принесли сделки без лида-родителя — то есть чего в таблице нет и почему. */
-const revenueOutsideSources = computed(() => props.report.summary.revenue - totals.value.revenue)
+/**
+ * ⚠ Точность процентов в строке «Итого» и в строках выше РАЗНАЯ, и это не забытая унификация.
+ *
+ * Строки источников читают, чтобы сравнить источники между собой: там целых процентов достаточно,
+ * а дробные превращают колонку в шум. Итог — то число, которое цитируют, поэтому он печатается с
+ * той же точностью, что и сводка. Округлённый до целого итог печатал «50 %» там, где сводка
+ * показывала «49,6 %», — одно и то же число двумя способами на одном экране.
+ *
+ * ⚠ Но «та же точность» НЕ значит «всегда те же цифры», и путать это нельзя. Лиды, брак и
+ * квалифицированные в итоге всегда сходятся со сводкой: у каждого лида есть строка источника.
+ * А успешные сделки и выручка сойтись НЕ обязаны — разрез источников не берёт сделки без
+ * лида-родителя, а сводка берёт все. Именно поэтому под таблицей стоит строка-объяснение: без
+ * неё расхождение читалось бы как ошибка отчёта.
+ */
+
+/** Сделки, которых нет в разрезе источников: у них неизвестен источник (нет лида-родителя). */
+const outsideSources = computed(() => ({
+  revenue: props.report.summary.revenue - totals.value.revenue,
+  deals: props.report.summary.wonDeals - totals.value.won
+}))
 </script>
 
 <template>
@@ -170,13 +188,13 @@ const revenueOutsideSources = computed(() => props.report.summary.revenue - tota
               {{ formatCount(totals.qualified) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatPercent(totals.crToDeal, 0) }}
+              {{ formatPercent(totals.crToDeal) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatCount(totals.won) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatPercent(totals.crToSale, 0) }}
+              {{ formatPercent(totals.crToSale) }}
             </td>
             <td class="py-2 text-right tabular-nums">
               {{ formatMoney(totals.revenue, currencyId) }}
@@ -188,11 +206,14 @@ const revenueOutsideSources = computed(() => props.report.summary.revenue - tota
 
     <!-- Расхождение со сводкой объясняем прямо в отчёте, а не оставляем читателю гадать. -->
     <p
-      v-if="revenueOutsideSources > 0"
+      v-if="outsideSources.revenue > 0 || outsideSources.deals > 0"
       class="mt-4 text-xs opacity-60"
     >
-      Ещё {{ formatMoney(revenueOutsideSources, currencyId) }} принесли сделки без лида-родителя —
-      их источник неизвестен, поэтому в таблицу они не попадают. В сводке эта сумма учтена.
+      <!-- Формулировка обходит согласование с числом: «1 успешных сделок» читается как опечатка,
+           а правило множественного числа ради одной строки заводить незачем. -->
+      Успешных сделок без лида-родителя: {{ formatCount(outsideSources.deals) }} на
+      {{ formatMoney(outsideSources.revenue, currencyId) }}. Их источник неизвестен, поэтому в эту
+      таблицу они не попадают — в сводке выше они учтены.
     </p>
 
     <div

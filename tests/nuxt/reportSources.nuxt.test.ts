@@ -53,8 +53,34 @@ describe('ReportSources', () => {
     ]
     const report = buildReport(leads, deals, { conversionBase: 'all-leads' })
     const wrapper = await render({ report })
-    expect(wrapper.text()).toContain('сделки без лида-родителя')
+    expect(wrapper.text()).toContain('без лида-родителя')
     expect(nbsp(wrapper.text())).toContain('7 000 BYN')
+  })
+
+  /**
+   * ⚠ Регрессия, замеченная на скриншоте. Итог печатался с округлением до целого и показывал
+   * «50 %» там, где сводка на том же экране показывала «49,6 %». Одно и то же число двумя
+   * способами рядом читается как ошибка отчёта, а не как разная точность.
+   */
+  it('итог по конверсии совпадает со сводкой знак в знак', async () => {
+    const report = buildReport(dataset.leads, dataset.deals, { conversionBase: 'all-leads' })
+    const cells = (await render({ report })).findAll('tfoot td').map(td => nbsp(td.text()))
+    // 620 / 1250 = 49,6 % — ровно то, что стоит на плитке «Успешные сделки» в сводке.
+    expect(cells).toContain('49,6 %')
+    expect(cells).not.toContain('50 %')
+  })
+
+  /**
+   * Вторая половина того же контраста. Комментарий в компоненте объявляет разную точность
+   * осознанным решением; закрепить надо ОБА конца, иначе следующий рефакторинг «выровняет»
+   * точность в любую сторону и ни один тест этого не заметит.
+   */
+  it('строки источников печатают целые проценты, без десятых', async () => {
+    const wrapper = await render()
+    const rows = wrapper.findAll('tbody td').map(td => nbsp(td.text()))
+    const withPercent = rows.filter(t => t.includes('%'))
+    expect(withPercent.length).toBeGreaterThan(0)
+    expect(withPercent.filter(t => /\d,\d\s*%/.test(t))).toEqual([])
   })
 
   it('пустой период показывает объяснение вместо пустой таблицы', async () => {
