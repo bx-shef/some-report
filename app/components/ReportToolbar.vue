@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { ConversionBase } from '~/types/report'
+import { formatDate } from '~/utils/format'
 
 /**
  * Панель отчёта. Главный её элемент — переключатель ЗНАМЕНАТЕЛЯ конверсий.
@@ -22,13 +23,7 @@ const BASES: Array<{ value: ConversionBase, label: string, hint: string }> = [
   { value: 'all-leads', label: 'Все лиды', hint: 'Весь поток. Так посчитаны цифры на макете' }
 ]
 
-const periodText = computed(() => {
-  const format = (iso: string) => {
-    const [y, m, d] = iso.split('-')
-    return `${d}.${m}.${y}`
-  }
-  return `${format(props.period.from)} — ${format(props.period.to)}`
-})
+const periodText = computed(() => `${formatDate(props.period.from)} — ${formatDate(props.period.to)}`)
 </script>
 
 <template>

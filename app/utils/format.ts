@@ -57,3 +57,16 @@ export function formatDuration(minutes: number | undefined): string {
   if (hours < 24) return `${hours} ч ${total % 60} мин`
   return `${Math.floor(hours / 24)} дн ${hours % 24} ч`
 }
+
+/**
+ * ISO-дата `YYYY-MM-DD` → `ДД.ММ.ГГГГ`.
+ *
+ * ⚠ Форматируем строкой, а не через `Date`: `new Date('2026-09-01')` разбирается как полночь UTC,
+ * и в часовом поясе западнее Гринвича печаталось бы 31 августа. Для границ периода отчёта это
+ * молчаливая ошибка на сутки в каждой подписи.
+ */
+export function formatDate(iso: string): string {
+  const [year, month, day] = iso.split('-')
+  if (!year || !month || !day) return iso
+  return `${day}.${month}.${year}`
+}

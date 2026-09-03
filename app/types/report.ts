@@ -222,6 +222,12 @@ export interface ReportDictionaries {
   lossReasons: Record<string, string>
 }
 
+/** Границы периода отчёта: ISO-даты `YYYY-MM-DD`, обе включительно. */
+export interface ReportPeriod {
+  from: string
+  to: string
+}
+
 /** Всё, что нужно отчёту для расчёта: данные + справочники + валюта + период. */
 export interface ReportDataset {
   leads: ReportLead[]
@@ -229,6 +235,6 @@ export interface ReportDataset {
   dictionaries: ReportDictionaries
   /** Код валюты, к которой приведены все суммы. */
   currencyId: string
-  /** Границы периода (ISO-даты, включительно) — печатаются в шапке отчёта. */
-  period: { from: string, to: string }
+  /** Границы периода — печатаются в шапке отчёта. */
+  period: ReportPeriod
 }
