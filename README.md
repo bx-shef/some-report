@@ -1,6 +1,6 @@
 # some-report — Аналитика по лидам
 
-> Last reviewed: 2026-09-02
+> Last reviewed: 2026-09-03
 
 Приложение Битрикс24: отчёт о пути лида от поступления до закрытия сделки. Встраивается в раздел
 **CRM-аналитика** портала и открывается там же, где штатные отчёты. Nuxt 4 (SSG), данные только
@@ -70,8 +70,12 @@ pnpm generate     # сборка статики → .output/public
 ## Деплой
 
 Статика собирается в Docker-образ (`nginxinc/nginx-unprivileged`) и публикуется в GHCR; на сервере
-её подхватывает Watchtower за общим nginx-proxy (TLS — Let's Encrypt). Шаги и проверки —
-[`docs/DEPLOY.md`](docs/DEPLOY.md).
+контейнер поднимается из [`deploy/docker-compose.prod.yml`](deploy/docker-compose.prod.yml) за общим
+nginx-proxy (TLS — Let's Encrypt), дальше обновления подхватывает Watchtower. Шаги, диагностика и
+проверки — [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
+⚠ Первый запуск контейнера — **ручной шаг**: Watchtower только обновляет существующие контейнеры.
+Пока его не сделали, домен отдаёт 503.
 
 ## Разработка
 

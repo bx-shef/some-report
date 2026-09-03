@@ -1,0 +1,53 @@
+# Продакшн: один статический сервис за общим nginx-proxy.
+#
+# Требует на сервере:
+#   - сеть `proxy-net` и запущенные nginx-proxy + acme-companion (один комплект на весь сервер);
+#   - Watchtower с `--label-enable` (тоже один на сервер);
+#   - файл `.env` рядом с этим compose — см. deploy/.env.example.
+#
+# ⚠ Своего Watchtower здесь НЕТ намеренно: второй экземпляр конфликтует по `container_name`
+# и плодит двойные перезапуски.
+
+services:
+  app:
+    image: ghcr.io/bx-shef/some-report:latest
+    container_name: some-report
+    # 8080, а не 80: образ поднимает nginx-unprivileged, то есть не от root.
+    expose:
+      - "8080"
+    environment:
+      # По этим переменным nginx-proxy строит vhost, а acme-companion выписывает сертификат.
+      # ⚠ Пока контейнер не поднят, nginx-proxy отдаёт на домен 503: маршрута к upstream у него
+      # просто нет. Это и есть состояние «образ опубликован, но не запущен».
+      VIRTUAL_HOST: ${DOMAIN}
+      VIRTUAL_PORT: 8080
+      LETSENCRYPT_HOST: ${DOMAIN}
+      # Контактный адрес для ACME по этому vhost; переопределяет глобальный DEFAULT_EMAIL.
+      # Пустой допустим — сертификат выпишется без почты в аккаунте.
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-}
+    restart: unless-stopped
+    healthcheck:
+      # ⚠ Именно 127.0.0.1, а не localhost. nginx слушает `listen 8080;` — это ТОЛЬКО IPv4, а
+      # `localhost` в контейнере резолвится и в `::1`. Если busybox-wget сходит по IPv6 первым,
+      # проверка получит «Connection refused» при полностью живом сервере, и контейнер будет
+      # висеть unhealthy сутками — искать будут поломку, которой нет.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - proxy-net
+    labels:
+      # Метку читает единственный на сервере Watchtower, запущенный с `--label-enable`.
+      # Без неё контейнер не будет обновляться при выходе нового образа.
+      - "com.centurylinklabs.watchtower.enable=true"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  proxy-net:
+    external: true
