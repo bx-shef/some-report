@@ -6,7 +6,7 @@ import { resolvePreset } from '~/utils/period'
 /**
  * Главный экран — сам отчёт. Открывается порталом из пункта CRM-аналитики (`CRM_ANALYTICS_MENU`).
  */
-const { dataset, report, isDemo, pending, error, warnings, latestLeadDate, load } = useReportData()
+const { dataset, report, isDemo, pending, error, unlinkedPending, unlinkedError, warnings, latestLeadDate, load } = useReportData()
 
 /**
  * «Сегодня» фиксируется ОДИН раз на открытие отчёта.
@@ -239,10 +239,15 @@ async function fit() {
           :dictionaries="dataset.dictionaries"
         />
 
+        <!-- Блок-справка есть только у портала: на демо такого множества нет. Пока фоновая
+             выборка идёт, блок сам говорит, что считает. -->
         <ReportUnlinkedDeals
-          v-if="dataset.unlinkedDeals"
+          v-if="!isDemo"
           :unlinked="dataset.unlinkedDeals"
+          :pending="unlinkedPending"
+          :error="unlinkedError"
           :dictionaries="dataset.dictionaries"
+          :currency-id="dataset.currencyId"
         />
       </template>
     </main>

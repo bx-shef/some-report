@@ -47,7 +47,9 @@ mockNuxtImport('useB24', () => () => ({
         call: { make: async () => ({ isSuccess: true, getData: () => ({ result: { categories: [] } }) }) },
         callList: {
           make: ({ params }: { params: { filter: Record<string, string> } }) => new Promise((resolve) => {
-            portal.pending[params.filter['>=DATE_CREATE'] ?? '?'] = rows => resolve({ isSuccess: true, getData: () => rows, getErrorMessages: () => [] })
+            // Сделки из лидов — по дате создания; справка без лида (фоном) — по дате закрытия.
+            const key = params.filter['>=DATE_CREATE'] ?? `closed:${params.filter['>=CLOSEDATE'] ?? '?'}`
+            portal.pending[key] = rows => resolve({ isSuccess: true, getData: () => rows, getErrorMessages: () => [] })
           })
         }
       }
@@ -63,9 +65,12 @@ beforeEach(() => {
 })
 
 describe('страница отчёта в портале', () => {
+  /** Ключи ОСНОВНЫХ выборок (сделки из лидов), без фоновой справки блока 7. */
+  const mainKeys = () => Object.keys(portal.pending).filter(key => !key.startsWith('closed:'))
+
   it('до ответа портала — только «Загрузка», после — отчёт', async () => {
     const wrapper = await mountSuspended(AppPage)
-    await vi.waitFor(() => expect(Object.keys(portal.pending)).toHaveLength(1))
+    await vi.waitFor(() => expect(mainKeys()).toHaveLength(1))
 
     const before = wrapper.text()
     expect(before).toContain('Загрузка')
@@ -75,11 +80,13 @@ describe('страница отчёта в портале', () => {
     // Период демо-набора (август) на панели не показывается — только выбранный.
     expect(before).not.toContain('01.08.2026')
 
-    Object.values(portal.pending)[0]!([])
+    portal.pending[mainKeys()[0]!]!([])
     await vi.waitFor(() => expect(wrapper.text()).not.toContain('Загрузка…'))
     const after = wrapper.text()
     expect(after).toContain('1. Сводка')
     expect(after).not.toContain('Демо-данные')
+    // Справка блока 7 ещё считается — и говорит об этом сама, не задерживая отчёт.
+    expect(after).toContain('Считаем успешные сделки без лида')
   })
 
   // ⚠ Кнопки периода живые и во время первой выборки, а наблюдатель периода в это время молчит.
@@ -87,17 +94,17 @@ describe('страница отчёта в портале', () => {
   // текущего, и второй клик по той же кнопке ничего не менял бы.
   it('период, выбранный во время первой выборки, дозапрашивается после неё', async () => {
     const wrapper = await mountSuspended(AppPage)
-    await vi.waitFor(() => expect(Object.keys(portal.pending)).toHaveLength(1))
-    const firstFrom = Object.keys(portal.pending)[0]!
+    await vi.waitFor(() => expect(mainKeys()).toHaveLength(1))
+    const firstFrom = mainKeys()[0]!
 
     const prevMonth = wrapper.findAll('button').find((b: { text: () => string }) => b.text() === 'Прошлый месяц')!
     await prevMonth.trigger('click')
     // Пока первая выборка идёт, второй запрос не уходит.
-    expect(Object.keys(portal.pending)).toHaveLength(1)
+    expect(mainKeys()).toHaveLength(1)
 
     portal.pending[firstFrom]!([])
-    await vi.waitFor(() => expect(Object.keys(portal.pending)).toHaveLength(2))
-    const secondFrom = Object.keys(portal.pending).find(key => key !== firstFrom)!
+    await vi.waitFor(() => expect(mainKeys()).toHaveLength(2))
+    const secondFrom = mainKeys().find(key => key !== firstFrom)!
     expect(secondFrom < firstFrom).toBe(true)
 
     portal.pending[secondFrom]!([])

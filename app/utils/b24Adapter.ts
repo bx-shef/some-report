@@ -563,56 +563,48 @@ export function adaptLeadCounts(input: LeadCountsInput): LeadAggregate {
 export const dealCountKey = { won: 'dealsWon', lost: 'dealsLost', inWork: 'dealsInWork' } as const
 
 /**
- * Ключи счётчиков сделок без связи с лидом — один словарь для запроса и для разбора.
+ * Успешные сделки без лида (строки `crm.deal.list` по `unlinkedWonDealsParams`) → блок 7.
  *
- * Строки «источник не указан или удалён» здесь НЕТ: она вычисляется остатком, как у лидов.
- * Долю от всех сделок периода даёт контекст `dealContextBatch` — второй раз всё не спрашиваем.
+ * Суммы приводятся к базовой валюте тем же `toBaseAmount`, что и сделки из лидов: неизвестная
+ * валюта остаётся как есть и считается в `unconverted`, а не обнуляется и не выдумывается.
+ * Пустой источник — своя строка `UNSPECIFIED_SOURCE`: на боевом портале это главная строка
+ * блока (95 % таких сделок без источника), и прятать её в «прочее» значило бы спрятать сам факт.
+ *
+ * Сортировка по сумме, затем по количеству: блок про деньги, которые прошли мимо лидов.
  */
-export const unlinkedDealKey = {
-  total: 'unlinked',
-  won: 'unlinkedWon',
-  source: (sourceId: string) => `unlinkedSrc:${sourceId}`,
-  sourceWon: (sourceId: string) => `unlinkedSrcWon:${sourceId}`
-} as const
-
-/**
- * Счётчики сделок без лида → блок «Сделки без связи с лидом».
- *
- * ⚠ «Источник не указан» НЕ спрашивается у портала фильтром `SOURCE_ID: ''` — он вычисляется
- * остатком: всего минус сумма по известным источникам. Так же устроен `adaptLeadCounts`, и по
- * той же причине: фильтр по пустому полю в REST ведёт себя по-разному от версии к версии, а
- * остаток — арифметика. В остаток попадают и сделки с источником, удалённым из справочника, —
- * отсюда подпись «не указан или удалён».
- *
- * ⚠ Сумма строк РАВНА итогу — всегда, а не «обычно». Счётчики пакета независимы, и между ними
- * портал живёт: сделка, созданная в эти секунды, может попасть в строку источника и не попасть
- * в итог. Тогда итог поднимается до суммы строк, а не строки режутся под итог: руководитель
- * складывает таблицу и обязан получить число из заголовка, а расхождение в одну сделку между
- * двумя открытиями отчёта — это правда о живом портале.
- */
-export function adaptUnlinkedDeals(
-  totals: Record<string, number>,
-  sourceIds: readonly string[],
-  /** Все сделки периода — из `adaptDealsContext`, чтобы показать долю. */
-  allDealsTotal: number
-): UnlinkedDeals {
-  const get = (key: string): number => Math.max(0, toNumber(totals[key]))
-  const rows: UnlinkedDealsRow[] = []
-  let accounted = { count: 0, won: 0 }
-  for (const sourceId of sourceIds) {
-    const count = get(unlinkedDealKey.source(sourceId))
-    // Успешных не больше, чем всего: два независимых счётчика под гонкой могут разойтись.
-    const won = Math.min(count, get(unlinkedDealKey.sourceWon(sourceId)))
-    accounted = { count: accounted.count + count, won: accounted.won + won }
-    if (count > 0) rows.push({ sourceId, count, share: 0, won })
+export function adaptUnlinkedWonDeals(rows: B24DealRow[], currencies: B24CurrencyRow[]): UnlinkedDeals {
+  const rates = currencyRates(currencies)
+  const currencyId = baseCurrency(currencies)
+  const seen = new Set<number>()
+  const bySource = new Map<string, { count: number, revenue: number }>()
+  let total = 0
+  let revenue = 0
+  let unconverted = 0
+  for (const row of rows) {
+    const id = toNumber(row.ID)
+    if (seen.has(id)) continue
+    seen.add(id)
+    const dealCurrency = toText(row.CURRENCY_ID) || currencyId
+    const { value, converted } = toBaseAmount(toNumber(row.OPPORTUNITY), dealCurrency, rates)
+    if (!converted && dealCurrency !== currencyId) unconverted++
+    const sourceId = toText(row.SOURCE_ID) || UNSPECIFIED_SOURCE
+    const acc = bySource.get(sourceId) ?? { count: 0, revenue: 0 }
+    acc.count++
+    acc.revenue += value
+    bySource.set(sourceId, acc)
+    total++
+    revenue += value
   }
-  const total = Math.max(get(unlinkedDealKey.total), accounted.count)
-  const won = Math.max(Math.min(get(unlinkedDealKey.won), total), accounted.won)
-  const rest = { count: total - accounted.count, won: won - accounted.won }
-  if (rest.count > 0) rows.push({ sourceId: UNSPECIFIED_SOURCE, count: rest.count, share: 0, won: Math.min(rest.count, rest.won) })
-  for (const row of rows) row.share = share(row.count, total)
-  rows.sort((a, b) => b.count - a.count || a.sourceId.localeCompare(b.sourceId))
-  return { total, won, shareOfAllDeals: share(total, Math.max(allDealsTotal, total)), rows }
+  const result: UnlinkedDealsRow[] = [...bySource.entries()]
+    .map(([sourceId, acc]) => ({
+      sourceId,
+      count: acc.count,
+      share: share(acc.count, total),
+      revenue: acc.revenue,
+      shareOfRevenue: share(acc.revenue, revenue)
+    }))
+    .sort((a, b) => b.revenue - a.revenue || b.count - a.count || a.sourceId.localeCompare(b.sourceId))
+  return { total, revenue, unconverted, rows: result }
 }
 
 /** Счётчики сделок всего портала → контекст для сводки. */
