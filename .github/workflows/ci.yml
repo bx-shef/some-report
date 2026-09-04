@@ -56,13 +56,21 @@ jobs:
       - name: Type check
         run: pnpm typecheck
 
+      # Те же входы, что у образа в docker-build/deploy: смоук ниже должен смотреть на ту же
+      # сборку, что уезжает в GHCR, а не на билд с пустым siteUrl.
       - name: Build (nuxt generate)
         run: pnpm generate
+        env:
+          NUXT_PUBLIC_SITE_URL: ${{ vars.NUXT_PUBLIC_SITE_URL }}
+          NUXT_PUBLIC_COMMIT_SHA: ${{ github.sha }}
 
       # ⚠ Единственная проверка, которая не может соврать про CSP: открыть собранную страницу
       # настоящим браузером под боевым заголовком. `cspHashes` и `cspVerify` зовут один разбор
       # HTML, и ошибка в нём проходит через оба зелёной — так в прод уехала заблокированная
       # импорт-карта при исправных хешах. Браузер — системный Chrome раннера, без скачивания.
+      # ⚠ Осознанная связка: Chrome образа раннера не запинен, playwright-core в lock-файле — да.
+      # Если шаг покраснел на всех ветках без изменений кода — это обновился Chrome раннера;
+      # лечится бампом playwright-core, а не правкой смоука.
       - name: CSP smoke (browser)
         run: pnpm smoke
 

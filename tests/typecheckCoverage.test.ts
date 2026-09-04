@@ -63,9 +63,11 @@ describe('охват typecheck', () => {
     expect(orphans, `вне обоих проходов:\n${orphans.join('\n')}`).toEqual([])
   })
 
-  it('CI гоняет lint, test, typecheck и сборку', () => {
+  // `pnpm smoke` здесь по той же причине: убрать шаг из workflow — самый тихий способ вернуть
+  // дыру с импорт-картой, и без сторожа этого не заметит никто.
+  it('CI гоняет lint, test, typecheck, сборку и браузерный смоук CSP', () => {
     const ci = read('.github/workflows/ci.yml')
-    for (const step of ['pnpm lint', 'pnpm test', 'pnpm typecheck', 'pnpm generate']) {
+    for (const step of ['pnpm lint', 'pnpm test', 'pnpm typecheck', 'pnpm generate', 'pnpm smoke']) {
       expect(ci).toContain(step)
     }
   })

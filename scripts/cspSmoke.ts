@@ -1,7 +1,8 @@
 import { createServer } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
-import { extname, join, normalize } from 'node:path'
-import { chromium } from 'playwright-core'
+import { extname, isAbsolute, join, relative, resolve } from 'node:path'
+import type { Browser } from 'playwright-core'
+import { PRERENDER_ROUTES } from '../app/config/routes.ts'
 import { applyHashes, buildHashDirective, htmlFiles } from './cspHashes.ts'
 
 /**
@@ -15,8 +16,12 @@ import { applyHashes, buildHashDirective, htmlFiles } from './cspHashes.ts'
  * открыв страницу браузером с боевым заголовком. Этот скрипт делает то же самое в CI.
  *
  * Что считается провалом: любое сообщение консоли о нарушении CSP, любая ошибка страницы,
- * отсутствие гидрации Vue, отсутствие текста, который рисует ТОЛЬКО JavaScript. Последнее
+ * не стартовавший Nuxt, отсутствие текста, который рисует ТОЛЬКО JavaScript. Последнее
  * важно: тексты из SSR-разметки есть и у мёртвой страницы — по ним поломку не отличить.
+ *
+ * Что смоук НЕ проверяет: `frame-ancestors` и `connect-src` к REST портала. Страница открывается
+ * вне фрейма, SDK не инициализируется — эти директивы срабатывают только внутри портала, и там
+ * их по-прежнему проверяют руками после выката (см. `docs/DEPLOY.md`).
  *
  * Запуск: `pnpm smoke` после `pnpm generate`. Браузер — системный Chrome раннера
  * (`channel: 'chrome'`, без скачивания) либо путь из `CSP_SMOKE_BROWSER`.
@@ -25,13 +30,20 @@ import { applyHashes, buildHashDirective, htmlFiles } from './cspHashes.ts'
 /** Плейсхолдер доменов порталов в `nginx.conf`; подставляется при старте контейнера. */
 export const ORIGINS_PLACEHOLDER = '${B24_PORTAL_ORIGINS}'
 
-/** Что открыть и какой текст обязан появиться. Пустой список — только «без нарушений и с гидрацией». */
+/** Что открыть и какой текст обязан появиться. Пустой список — только «без нарушений и со стартом Nuxt». */
 export interface PageCheck {
   path: string
-  /** Тексты, которые рисует ТОЛЬКО JavaScript, — их нет в SSR-разметке. */
+  /** Тексты, которые рисует ТОЛЬКО JavaScript, — их нет в SSR-разметке. Это проверяется перед прогоном. */
   mustContain: readonly string[]
 }
 
+/**
+ * Страницы смоука. Список обязан покрывать `PRERENDER_ROUTES` — это проверяется и тестом, и самим
+ * прогоном: новая страница, забытая здесь, уедет в статику непроверенной.
+ *
+ * Маркеры — литералы из `app/pages/app.vue`, `app/utils/period.ts`, `app/pages/install.vue`.
+ * Сменили там текст — обновите здесь: смоук упадёт с «нет текста «…»», и это не поломка CSP.
+ */
 export const PAGES: readonly PageCheck[] = [
   { path: '/', mustContain: [] },
   // Вне портала `?preview=1` открывает заглушку на клиенте: плашка и панель периодов — только JS.
@@ -40,16 +52,46 @@ export const PAGES: readonly PageCheck[] = [
   { path: '/install/', mustContain: ['вне портала Битрикс24'] }
 ]
 
+/** Маршрут пререндера для пути смоука: без query и завершающего слэша (`/app/?preview=1` → `/app`). */
+export function routeOf(path: string): string {
+  const pathname = path.split('?')[0] ?? path
+  return pathname.length > 1 ? pathname.replace(/\/$/, '') : pathname
+}
+
+/** Маршруты пререндера, для которых нет проверки. Пусто — смоук открывает всё, что уезжает в статику. */
+export function uncoveredRoutes(pages: readonly PageCheck[], routes: readonly string[]): string[] {
+  const covered = new Set(pages.map(page => routeOf(page.path)))
+  return routes.filter(route => !covered.has(routeOf(route)))
+}
+
+/**
+ * Маркеры страницы, которые ЕСТЬ в SSR-разметке.
+ *
+ * ⚠ Такой маркер не отличает живую страницу от мёртвой: заголовок «Установка приложения» был на
+ * экране и у заблокированной импорт-карты. Стоит кому-то перенести текст плашки в серверный
+ * рендер — и смоук по нему снова начнёт проходить на неработающей странице. Поэтому перед
+ * прогоном проверяем, что маркеров в собранном HTML нет.
+ */
+export function markersInMarkup(check: PageCheck, html: string): string[] {
+  return check.mustContain.filter(marker => html.includes(marker))
+}
+
 /**
  * Значение CSP из `add_header Content-Security-Policy "…"`.
  *
  * Отсутствие директивы — ошибка, а не «проверять нечего»: конфиг без CSP в проде означал бы,
  * что защиту сняли, и смоук, молча прошедший по пустому заголовку, ровно это и скрыл бы.
+ * Якорь `^\s*` — чтобы закомментированная строка (`# add_header …`) за директиву не сошла:
+ * иначе снятая на время отладки защита прошла бы смоук как живая.
  */
 export function extractCspHeader(conf: string): string {
-  const match = /add_header\s+Content-Security-Policy\s+"([^"]*)"/i.exec(conf)
-  if (!match?.[1]) throw new Error('В nginx.conf нет add_header Content-Security-Policy')
-  return match[1]
+  const matches = [...conf.matchAll(/^\s*add_header\s+Content-Security-Policy\s+"([^"]*)"/gim)]
+  if (!matches[0]?.[1]) throw new Error('В nginx.conf нет add_header Content-Security-Policy')
+  // ⚠ nginx не наследует add_header в location со своими заголовками — второй CSP в другом
+  // location был бы отдельной политикой, и смоук, взяв первую, проверил бы не ту. Пока
+  // директива одна; появится вторая — сюда придёт автор и решит, какую гонять.
+  if (matches.length > 1) throw new Error(`В nginx.conf ${matches.length} директивы Content-Security-Policy — смоук умеет проверять одну`)
+  return matches[0][1]
 }
 
 /** Домены порталов в заголовке. Для смоука значение не важно: страницу никто не встраивает. */
@@ -75,16 +117,18 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2'
 }
 
-/** Статика с боевым заголовком на свободном порту. */
+/** Статика с боевым заголовком на свободном порту. `root` — абсолютный путь. */
 async function serve(root: string, csp: string): Promise<{ origin: string, close: () => void }> {
   const server = createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', 'http://localhost')
-    let file = normalize(join(root, decodeURIComponent(url.pathname)))
-    if (!file.startsWith(root)) {
-      res.writeHead(403)
-      return res.end()
-    }
     try {
+      const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://localhost').pathname)
+      let file = join(root, pathname)
+      // Не выйти за корень: `..` в пути `join` схлопывает, и итог может оказаться выше `root`.
+      const inside = relative(root, file)
+      if (inside.startsWith('..') || isAbsolute(inside)) {
+        res.writeHead(403)
+        return res.end()
+      }
       if ((await stat(file)).isDirectory()) file = join(file, 'index.html')
       const body = await readFile(file)
       res.writeHead(200, { 'Content-Type': MIME[extname(file)] ?? 'application/octet-stream', 'Content-Security-Policy': csp })
@@ -105,7 +149,7 @@ interface PageResult {
   problems: string[]
 }
 
-async function checkPage(origin: string, check: PageCheck, browser: Awaited<ReturnType<typeof chromium.launch>>): Promise<PageResult> {
+async function checkPage(origin: string, check: PageCheck, browser: Browser): Promise<PageResult> {
   const problems: string[] = []
   const page = await browser.newPage()
   page.on('console', (message) => {
@@ -114,15 +158,18 @@ async function checkPage(origin: string, check: PageCheck, browser: Awaited<Retu
   page.on('pageerror', error => problems.push(`ошибка страницы: ${error.message.slice(0, 160)}`))
   try {
     await page.goto(origin + check.path, { waitUntil: 'networkidle', timeout: 45_000 })
-    await page.waitForTimeout(1_000)
-    // Гидрация. ⚠ Не по атрибуту `data-v-app`: его ставит только `createApp`, а Nuxt гидрирует через
-    // `createSSRApp`, который атрибут не ставит вовсе, — проверка по нему падала на живой странице.
-    // Надёжный признак — сам Nuxt: `useNuxtApp` в `window` появляется только после старта клиента,
-    // а `isHydrating` сбрасывается, когда Vue закончил сверять разметку.
-    const hydrated = await page.evaluate(() => {
-      const nuxt = (window as unknown as { useNuxtApp?: () => { isHydrating?: boolean } }).useNuxtApp?.()
-      return Boolean(nuxt) && nuxt?.isHydrating !== true
-    })
+    // Старт Nuxt. ⚠ Не по атрибуту `data-v-app`: его ставит только `createApp`, а Nuxt гидрирует
+    // через `createSSRApp`, который атрибут не ставит вовсе, — проверка по нему падала на живой
+    // странице. Надёжный признак — сам Nuxt: `useNuxtApp` в `window` появляется только после
+    // старта клиента, а `isHydrating` сбрасывается, когда Vue закончил сверять разметку.
+    // Ждём именно этого события, а не таймер: на загруженном раннере фиксированная пауза
+    // либо мала (ложный провал), либо велика (медленный шаг).
+    const hydrated = await page
+      .waitForFunction(() => {
+        const nuxt = (window as unknown as { useNuxtApp?: () => { isHydrating?: boolean } }).useNuxtApp?.()
+        return Boolean(nuxt) && nuxt?.isHydrating !== true
+      }, undefined, { timeout: 15_000 })
+      .then(() => true, () => false)
     if (!hydrated) problems.push('Nuxt не стартовал в браузере: JavaScript не выполнился')
     const text = await page.evaluate(() => document.body.innerText)
     for (const expected of check.mustContain) {
@@ -139,17 +186,33 @@ async function checkPage(origin: string, check: PageCheck, browser: Awaited<Retu
 async function main(): Promise<void> {
   const [dir, configPath] = process.argv.slice(2)
   if (!dir || !configPath) throw new Error('Использование: cspSmoke.ts <каталог статики> <nginx.conf>')
+  const root = resolve(dir)
+
+  const uncovered = uncoveredRoutes(PAGES, PRERENDER_ROUTES)
+  if (uncovered.length) throw new Error(`маршруты пререндера без проверки: ${uncovered.join(', ')} — добавьте их в PAGES`)
 
   // Хеши считаем в памяти по собранному HTML — конфиг на диске не трогаем.
-  const pages = await Promise.all((await htmlFiles(dir)).map(file => readFile(file, 'utf-8')))
+  const pages = await Promise.all((await htmlFiles(root)).map(file => readFile(file, 'utf-8')))
   if (!pages.length) throw new Error(`В ${dir} нет ни одного .html — сборка пуста?`)
   const conf = applyHashes(await readFile(configPath, 'utf-8'), buildHashDirective(pages))
   const csp = substituteOrigins(extractCspHeader(conf), process.env.B24_PORTAL_ORIGINS ?? 'https://*.bitrix24.by')
 
-  const server = await serve(normalize(dir), csp)
+  for (const check of PAGES) {
+    const html = await readFile(join(root, routeOf(check.path), 'index.html'), 'utf-8')
+    const leaked = markersInMarkup(check, html)
+    if (leaked.length) {
+      throw new Error(`маркеры «${leaked.join('», «')}» страницы ${check.path} есть в SSR-разметке — они не отличают живую страницу от мёртвой`)
+    }
+  }
+
+  // Браузер подключаем только здесь: тесты импортируют чистые функции выше и тянуть playwright не должны.
+  const { chromium } = await import('playwright-core')
+  const server = await serve(root, csp)
   const executablePath = process.env.CSP_SMOKE_BROWSER
-  const browser = await chromium.launch(executablePath ? { executablePath } : { channel: 'chrome' })
+  // Запуск браузера — внутри try: не нашёлся Chrome — сервер всё равно надо погасить.
+  let browser: Browser | undefined
   try {
+    browser = await chromium.launch(executablePath ? { executablePath } : { channel: 'chrome' })
     const results: PageResult[] = []
     for (const check of PAGES) results.push(await checkPage(server.origin, check, browser))
     let failed = 0
@@ -165,7 +228,7 @@ async function main(): Promise<void> {
     if (failed) throw new Error(`страниц с проблемами: ${failed} из ${results.length}`)
     console.log(`[smoke] все ${results.length} страницы открылись под боевым CSP без нарушений`)
   } finally {
-    await browser.close()
+    await browser?.close()
     server.close()
   }
 }

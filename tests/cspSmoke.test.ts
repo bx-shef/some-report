@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { ORIGINS_PLACEHOLDER, PAGES, extractCspHeader, isCspViolation, substituteOrigins } from '../scripts/cspSmoke'
+import { PRERENDER_ROUTES } from '../app/config/routes'
+import { ORIGINS_PLACEHOLDER, PAGES, extractCspHeader, isCspViolation, markersInMarkup, routeOf, substituteOrigins, uncoveredRoutes } from '../scripts/cspSmoke'
 
 /**
  * Чистые части смоука. Сам прогон браузером в юнит-тестах не гоняется — он в CI отдельным
@@ -18,6 +19,21 @@ describe('extractCspHeader', () => {
   // ⚠ Конфиг без CSP — снятая защита. Смоук, молча прошедший по пустому заголовку, скрыл бы это.
   it('без директивы — ошибка, а не пустая строка', () => {
     expect(() => extractCspHeader('server { listen 8080; }')).toThrow('Content-Security-Policy')
+  })
+
+  // ⚠ Снятая «на время отладки» защита: строка закомментирована, текст на месте. Разбор без якоря
+  // взял бы её как живую, и смоук прошёл бы под заголовком, которого прод не отдаёт.
+  it('закомментированную директиву не считает', () => {
+    expect(() => extractCspHeader('  # add_header Content-Security-Policy "default-src \'self\'" always;')).toThrow()
+  })
+
+  // Вторая директива в другом location — отдельная политика; молча взять первую — проверить не ту.
+  it('две директивы — ошибка: смоук умеет проверять одну', () => {
+    expect(() => extractCspHeader('add_header Content-Security-Policy "a";\n  add_header Content-Security-Policy "b";')).toThrow('2 директивы')
+  })
+
+  it('берёт значение с учётом отступа и флага always', () => {
+    expect(extractCspHeader('server {\n    add_header Content-Security-Policy "a; b" always;\n}')).toBe('a; b')
   })
 })
 
@@ -43,8 +59,25 @@ describe('isCspViolation', () => {
 })
 
 describe('страницы смоука', () => {
-  it('проверяет все три страницы приложения', () => {
-    expect(PAGES.map(p => p.path)).toEqual(['/', '/app/?preview=1', '/install/'])
+  it('routeOf: путь смоука сводится к маршруту пререндера', () => {
+    expect(routeOf('/')).toBe('/')
+    expect(routeOf('/app/?preview=1')).toBe('/app')
+    expect(routeOf('/install/')).toBe('/install')
+    expect(routeOf('/install')).toBe('/install')
+  })
+
+  // ⚠ Копия списка маршрутов — то, что `app/config/routes.ts` прямо запрещает. Здесь список свой
+  // (у каждой страницы свои маркеры), поэтому сторожим покрытие: новая страница без проверки в
+  // смоуке уехала бы в статику непроверенной.
+  it('покрывает все маршруты пререндера', () => {
+    expect(uncoveredRoutes(PAGES, PRERENDER_ROUTES)).toEqual([])
+    expect(uncoveredRoutes(PAGES, [...PRERENDER_ROUTES, '/settings'])).toEqual(['/settings'])
+  })
+
+  it('markersInMarkup: находит маркеры, которые есть в собранной странице', () => {
+    const html = readFileSync(join(import.meta.dirname, 'fixtures', 'nuxtPage.html'), 'utf-8')
+    const check = { path: '/install/', mustContain: ['Установка приложения', 'вне портала Битрикс24'] }
+    expect(markersInMarkup(check, html)).toEqual(['Установка приложения'])
   })
 
   // ⚠ Маркер, который есть в SSR-разметке, не отличает живую страницу от мёртвой: заголовок
