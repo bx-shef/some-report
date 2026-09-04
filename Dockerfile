@@ -77,11 +77,6 @@ COPY --from=builder /app/.output/public /usr/share/nginx/html
 # своим доменом, без пересборки.
 COPY --from=builder /app/nginx.conf /etc/nginx/templates/default.conf.template
 
-# Кто может встраивать отчёт и куда он имеет право ходить. По умолчанию — облачные зоны
-# Битрикс24; коробочный портал добавляет свой origin в `deploy/.env`.
-#
-# ⚠ Значение по умолчанию обязано быть непустым. Пустой список в `frame-ancestors` запрещает
-# встраивание ВСЕМ, и портал показал бы пустую область без единой ошибки в интерфейсе.
 # ⚠ Ограничиваем энтрипойнт ОДНОЙ переменной. По умолчанию он подставляет в шаблон ВСЕ
 # переменные окружения, а конфиг nginx полон собственных `$uri`, `$host`, `$request_uri`. Совпади
 # имя переменной окружения с именем директивы nginx — и конфиг молча поедет: `error_page 405 =200
@@ -89,7 +84,24 @@ COPY --from=builder /app/nginx.conf /etc/nginx/templates/default.conf.template
 # отчёта. Фильтр делает подстановку ровно той, что описана здесь.
 ENV NGINX_ENVSUBST_FILTER="B24_PORTAL_ORIGINS"
 
-ENV B24_PORTAL_ORIGINS="https://*.bitrix24.ru https://*.bitrix24.by https://*.bitrix24.com https://*.bitrix24.eu https://*.bitrix24.kz https://*.bitrix24.ua https://*.bitrix24.de https://*.bitrix24.fr https://*.bitrix24.it https://*.bitrix24.pl https://*.bitrix24.es https://*.bitrix24.uk https://*.bitrix24.com.br https://*.bitrix24.com.tr https://*.bitrix24.mx https://*.bitrix24.co https://*.bitrix24.cn https://*.bitrix24.in https://*.bitrix24.id https://*.bitrix24.jp https://*.bitrix24.vn https://*.bitrix24.tech"
+# Кто может встраивать отчёт (CSP `frame-ancestors`) и куда он ходит (`connect-src`).
+#
+# ⚠ ЭТО СПИСОК ПРОДУКТА, А НЕ НАСТРОЙКА СЕРВЕРА. Приложение хостится ОДНИМ экземпляром на всех
+# клиентов, поэтому список живёт здесь, в репозитории, и приезжает вместе с образом. Ничего
+# прописывать на сервере при подключении клиента НЕ НУЖНО.
+#
+# Облачные порталы Битрикс24 покрыты wildcard'ами по зонам — новый облачный клиент подключается
+# без единой правки. Отдельной строки требует только КОРОБОЧНЫЙ портал: он живёт на своём домене
+# и ни под один wildcard не подходит. Подключая такого клиента, добавьте его origin в этот список
+# и выкатите образ — это правка кода, как любая другая, а не ручная настройка на сервере.
+#
+# ⚠ Забыть про коробочный домен дорого: портал покажет на месте отчёта ПУСТУЮ ОБЛАСТЬ без единой
+# ошибки в интерфейсе и без строки в логах nginx. Заголовок присылает наш сервер, нарушение
+# фиксирует браузер.
+#
+# Переменную можно переопределить окружением — это запасной ход для клиента, который поднимает
+# свою копию приложения у себя. В нашем выкате она не задаётся.
+ENV B24_PORTAL_ORIGINS="https://*.bitrix24.ru https://*.bitrix24.by https://*.bitrix24.com https://*.bitrix24.eu https://*.bitrix24.kz https://*.bitrix24.ua https://*.bitrix24.de https://*.bitrix24.fr https://*.bitrix24.it https://*.bitrix24.pl https://*.bitrix24.es https://*.bitrix24.uk https://*.bitrix24.com.br https://*.bitrix24.com.tr https://*.bitrix24.mx https://*.bitrix24.co https://*.bitrix24.cn https://*.bitrix24.in https://*.bitrix24.id https://*.bitrix24.jp https://*.bitrix24.vn https://*.bitrix24.tech https://bitrix.ankron.by"
 
 # ⚠ Проверяем ИТОГОВЫЙ конфиг на этапе сборки — с подставленными хешами И подставленной
 # переменной. Синтаксическая ошибка должна ронять образ здесь, а не всплывать при выкате, когда

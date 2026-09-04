@@ -79,4 +79,22 @@ describe('Dockerfile', () => {
   it('кладёт конфиг шаблоном, чтобы подстановка случилась при старте', () => {
     expect(dockerfile).toContain('/etc/nginx/templates/default.conf.template')
   })
+
+  // ⚠ Список порталов — часть ПРОДУКТА: приложение хостится одним экземпляром на всех клиентов,
+  // и коробочный портал заказчика обязан быть в образе. Пропади он отсюда — клиент увидит пустую
+  // область вместо отчёта, без единой ошибки в интерфейсе.
+  it('коробочный портал заказчика есть в списке образа', () => {
+    const value = /ENV B24_PORTAL_ORIGINS="([^"]+)"/.exec(dockerfile)?.[1] ?? ''
+    expect(value.split(/\s+/)).toContain('https://bitrix.ankron.by')
+  })
+})
+
+describe('docker-compose', () => {
+  const compose = readFileSync(join(import.meta.dirname, '..', 'deploy', 'docker-compose.prod.yml'), 'utf-8')
+
+  // ⚠ Строка вида `B24_PORTAL_ORIGINS: ${B24_PORTAL_ORIGINS:-…}` перебила бы список образа ПУСТЫМ
+  // значением при пустой переменной в `.env` — и запретила бы встраивание всем.
+  it('не задаёт список порталов сам — он приезжает с образом', () => {
+    expect(compose).not.toMatch(/^\s*B24_PORTAL_ORIGINS\s*:/m)
+  })
 })

@@ -25,11 +25,10 @@ services:
       # Контактный адрес для ACME по этому vhost; переопределяет глобальный DEFAULT_EMAIL.
       # Пустой допустим — сертификат выпишется без почты в аккаунте.
       LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:-}
-      # Кто может встраивать отчёт (CSP `frame-ancestors`) и куда он ходит (`connect-src`).
-      # ⚠ Не задана — берётся значение из образа: облачные зоны Битрикс24. Коробочному порталу
-      # свой домен нужно перечислить явно, иначе он получит пустую область вместо отчёта, и
-      # никакой ошибки при этом видно не будет. См. deploy/.env.example.
-      B24_PORTAL_ORIGINS: ${B24_PORTAL_ORIGINS:-https://*.bitrix24.ru https://*.bitrix24.by https://*.bitrix24.com https://*.bitrix24.eu https://*.bitrix24.kz https://*.bitrix24.ua https://*.bitrix24.de https://*.bitrix24.fr https://*.bitrix24.it https://*.bitrix24.pl https://*.bitrix24.es https://*.bitrix24.uk https://*.bitrix24.com.br https://*.bitrix24.com.tr https://*.bitrix24.mx https://*.bitrix24.co https://*.bitrix24.cn https://*.bitrix24.in https://*.bitrix24.id https://*.bitrix24.jp https://*.bitrix24.vn https://*.bitrix24.tech}
+      # ⚠ `B24_PORTAL_ORIGINS` здесь НЕ задаётся намеренно. Список доменов порталов — часть продукта
+      # и приезжает вместе с образом (см. Dockerfile); на сервере при подключении клиента ничего
+      # прописывать не нужно. Строка `${B24_PORTAL_ORIGINS:-…}` перебила бы список образа ПУСТЫМ
+      # значением при пустой переменной в `.env` — и запретила бы встраивание всем.
     restart: unless-stopped
     healthcheck:
       # ⚠ Именно 127.0.0.1, а не localhost. nginx слушает `listen 8080;` — это ТОЛЬКО IPv4, а
