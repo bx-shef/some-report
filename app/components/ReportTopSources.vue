@@ -2,6 +2,7 @@
 import type { ReportDictionaries, ReportMetrics } from '~/types/report'
 import { formatCount, formatMoney, formatPercent } from '~/utils/format'
 import { sourceLabel } from '~/utils/labels'
+import { type DrillRequest, drill } from '~/utils/drilldown'
 
 /**
  * Топ-5 источников по количеству лидов — отдельный блок из ТЗ от 2026-09-04.
@@ -12,6 +13,7 @@ import { sourceLabel } from '~/utils/labels'
  * заводить второе место, где та же цифра может разойтись.
  */
 defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries, currencyId: string }>()
+const emit = defineEmits<{ drill: [DrillRequest] }>()
 </script>
 
 <template>
@@ -62,19 +64,37 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries, currencyI
               <span class="mr-2 tabular-nums opacity-50">{{ index + 1 }}.</span>{{ sourceLabel(dictionaries, row.sourceId) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatCount(row.leads) }}
+              <DrillNumber
+                :request="drill.bySource(row.sourceId, 'leads', sourceLabel(dictionaries, row.sourceId))"
+                :total="row.leads"
+                @drill="emit('drill', $event)"
+              >
+                {{ formatCount(row.leads) }}
+              </DrillNumber>
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatPercent(row.junkShare, 0) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatCount(row.qualified) }}
+              <DrillNumber
+                :request="drill.bySource(row.sourceId, 'qualified', sourceLabel(dictionaries, row.sourceId))"
+                :total="row.qualified"
+                @drill="emit('drill', $event)"
+              >
+                {{ formatCount(row.qualified) }}
+              </DrillNumber>
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatPercent(row.crToDeal, 0) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatCount(row.won) }}
+              <DrillNumber
+                :request="drill.bySource(row.sourceId, 'won', sourceLabel(dictionaries, row.sourceId))"
+                :total="row.won"
+                @drill="emit('drill', $event)"
+              >
+                {{ formatCount(row.won) }}
+              </DrillNumber>
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatMoney(row.revenue, currencyId) }}

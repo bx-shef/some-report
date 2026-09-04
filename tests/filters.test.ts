@@ -11,7 +11,8 @@ import {
   leadRestFilter,
   leadStatusFilter,
   lockedFilterValue,
-  needsLeadIds
+  needsLeadIds,
+  stageCodesFor
 } from '~/utils/filters'
 import { buildMockDataset } from '~/utils/mockReport'
 import { buildReport } from '~/utils/metrics'
@@ -52,7 +53,10 @@ describe('фрагменты REST-фильтра', () => {
     const codes = codesByReason({ 'LOSE': 'дорого', 'C2:LOSE': 'дорого', 'C2:APOLOGY': 'не отвечает' })
     expect(codes).toEqual({ 'дорого': ['LOSE', 'C2:LOSE'], 'не отвечает': ['C2:APOLOGY'] })
     expect(dealRestFilter({ sourceId: 'CALL', lossReasonKey: 'дорого' }, codes)).toEqual({ SOURCE_ID: 'CALL', STAGE_ID: ['LOSE', 'C2:LOSE'] })
-    expect(dealRestFilter({ lossReasonKey: 'нет такой' }, codes)).toEqual({ STAGE_ID: ['__no_such_stage__'] })
+    // Ключ без кодов — сам код: стадия вне справочников помечена сырым кодом; название удалённой
+    // причины стадией не является, и портал ответит пусто, а не «все сделки».
+    expect(dealRestFilter({ lossReasonKey: 'нет такой' }, codes)).toEqual({ STAGE_ID: ['нет такой'] })
+    expect(stageCodesFor('C3:LOSE', codes)).toEqual(['C3:LOSE'])
   })
 
   it('список ID режется кусками по 500', () => {
@@ -181,12 +185,15 @@ describe('applyFilters (демо-набор)', () => {
 
   it('стадия лида выводится из исхода: CONVERTED — со сделкой; открытых в демо-наборе нет вовсе', () => {
     const converted = applyFilters(dataset.leads, dataset.deals, { leadStatusId: 'CONVERTED' })
-    expect(converted.leads.length).toBeGreaterThan(0)
+    expect(converted.leads.length).toBe(dataset.leads.filter(l => l.outcome === 'converted').length)
     expect(converted.leads.every(l => l.outcome === 'converted')).toBe(true)
     expect(converted.deals.length).toBe(dataset.deals.length)
-    // Макет: 1 250 лидов = 250 брака + 1 000 сконвертированных, «в работе» никого. Значит, стадии
-    // NEW и «В работе» в предпросмотре честно пусты, а не подменены чем-то похожим.
-    expect(applyFilters(dataset.leads, dataset.deals, { leadStatusId: 'NEW' }).leads).toEqual([])
+    // «Не обработан» — лид без первого ответа, как считает ядро: фильтр обязан сходиться с
+    // числом «не обработано» блока 6 на одном экране. Макет: 1 250 лидов = 250 брака + 1 000
+    // сконвертированных, «в работе» никого — стадия «В работе» в предпросмотре честно пуста.
+    const fresh = applyFilters(dataset.leads, dataset.deals, { leadStatusId: 'NEW' }).leads
+    expect(fresh.length).toBe(dataset.leads.filter(l => !l.firstResponseAt).length)
+    expect(fresh.length).toBeGreaterThan(0)
     expect(applyFilters(dataset.leads, dataset.deals, { leadStatusId: '1' }).leads).toEqual([])
   })
 
@@ -196,6 +203,12 @@ describe('applyFilters (демо-набор)', () => {
     const rows = applyFilters([lead], [], { leadStatusId: 'CONVERTED' })
     expect(rows.leads.map(l => l.id)).toEqual([999_999])
     expect(applyFilters([lead], [], { leadStatusId: 'NEW' }).leads).toEqual([])
+  })
+
+  // Фильтр «Не обработан» и число «не обработано» блока 6 считают одно и то же множество.
+  it('фильтр «стадия = Не обработан» сходится с числом «не обработано» блока 6', () => {
+    const report = buildReport(dataset.leads, dataset.deals, { conversionBase: 'quality-leads', firstResponseSlaMinutes: 120 })
+    expect(applyFilters(dataset.leads, dataset.deals, { leadStatusId: 'NEW' }).leads).toHaveLength(report.processing!.unprocessed)
   })
 
   it('стадия лида и причина брака вместе — побеждает причина', () => {

@@ -2,8 +2,13 @@
 import type { ReportDictionaries, ReportMetrics } from '~/types/report'
 import { formatCount, formatPercent } from '~/utils/format'
 import { junkReasonLabel } from '~/utils/labels'
+import { type DrillRequest, drill } from '~/utils/drilldown'
 
 const props = defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries }>()
+const emit = defineEmits<{ drill: [DrillRequest] }>()
+
+/** Известные стадии брака — «причина не указана» в списке значит «провал НЕ на этих стадиях». */
+const knownJunkIds = computed(() => Object.keys(props.dictionaries.junkReasons))
 
 /** Порядок слотов палитры фиксирован и НЕ перебирается по кругу: цвет закреплён за позицией. */
 const SLOT_COLORS = ['var(--chart-1)', 'var(--chart-3)', 'var(--chart-2)', 'var(--chart-5)', 'var(--chart-4)']
@@ -36,7 +41,13 @@ const items = computed(() =>
           Брак лидов
         </div>
         <div class="mt-1 text-2xl font-semibold leading-none">
-          {{ formatCount(report.summary.junk) }}
+          <DrillNumber
+            :request="drill.junk()"
+            :total="report.summary.junk"
+            @drill="emit('drill', $event)"
+          >
+            {{ formatCount(report.summary.junk) }}
+          </DrillNumber>
         </div>
         <div class="mt-1 text-xs text-red-600 dark:text-red-400">
           {{ formatPercent(report.summary.junkShare) }} от лидов
@@ -98,7 +109,13 @@ const items = computed(() =>
               {{ junkReasonLabel(dictionaries, row.reasonId) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatCount(row.count) }}
+              <DrillNumber
+                :request="drill.junkReason(row.reasonId, junkReasonLabel(dictionaries, row.reasonId), knownJunkIds)"
+                :total="row.count"
+                @drill="emit('drill', $event)"
+              >
+                {{ formatCount(row.count) }}
+              </DrillNumber>
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatPercent(row.shareOfLeads) }}

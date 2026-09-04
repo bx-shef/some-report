@@ -117,4 +117,17 @@ describe('ReportUnlinkedDeals', () => {
     expect(wrapper.text()).toContain('успешных сделок без лида нет')
     expect(wrapper.find('table').exists()).toBe(false)
   })
+
+  // «Источник не указан» — остаток арифметики, списка «тем же условием» за ним нет: не кнопка.
+  it('число источника — кнопка списка без лида по источнику; «не указан» — просто число', async () => {
+    const wrapper = await render()
+    const titles = wrapper.findAll('button').map((b: { attributes: (name: string) => string | undefined }) => b.attributes('title') ?? '')
+    expect(titles.filter(t => t.startsWith('Открыть список: Успешные сделки без лида:'))).toEqual(['Открыть список: Успешные сделки без лида: Звонок'])
+    const button = wrapper.findAll('button').find((b: { attributes: (name: string) => string | undefined }) => b.attributes('title') === 'Открыть список: Успешные сделки без лида: Звонок')!
+    await button.trigger('click')
+    expect(wrapper.emitted('drill')?.[0]?.[0]).toMatchObject({ entity: 'deal', dealScope: 'unlinked', extra: { SOURCE_ID: 'CALL' } })
+    const total = wrapper.findAll('button').find((b: { attributes: (name: string) => string | undefined }) => b.attributes('title') === 'Открыть список: Успешные сделки без связи с лидом')!
+    await total.trigger('click')
+    expect(wrapper.emitted('drill')?.[1]?.[0]).toMatchObject({ dealScope: 'unlinked', extra: {} })
+  })
 })

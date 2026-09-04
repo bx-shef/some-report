@@ -2,6 +2,7 @@
 import type { ReportDictionaries, ReportMetrics } from '~/types/report'
 import { formatCount, formatDuration, formatPercent } from '~/utils/format'
 import { leadStageLabel, sourceLabel } from '~/utils/labels'
+import { type DrillRequest, drill } from '~/utils/drilldown'
 
 /**
  * Обработка лидов и потери до сделки — блоки из ТЗ, которых нет на макете. Стоят рядом намеренно:
@@ -30,7 +31,7 @@ const props = withDefaults(defineProps<{
   error?: string
 }>(), { pending: false, deferred: false, timed: undefined, estimateMinutes: 2, error: undefined })
 
-const emit = defineEmits<{ start: [] }>()
+const emit = defineEmits<{ start: [], drill: [DrillRequest] }>()
 
 /**
  * Обработка лидов может отсутствовать целиком — когда нет ни счётчиков, ни строк.
@@ -68,7 +69,13 @@ const timingMissing = computed(() => processing.value !== undefined && props.tim
           Обработано
         </div>
         <div class="mt-1 text-xl font-semibold leading-none">
-          {{ formatCount(processing.processed) }}
+          <DrillNumber
+            :request="drill.processed()"
+            :total="processing.processed"
+            @drill="emit('drill', $event)"
+          >
+            {{ formatCount(processing.processed) }}
+          </DrillNumber>
         </div>
         <div class="mt-1 text-xs text-[color:var(--chart-1)]">
           {{ formatPercent(processing.processedShare) }}
@@ -79,7 +86,13 @@ const timingMissing = computed(() => processing.value !== undefined && props.tim
           Не обработано
         </div>
         <div class="mt-1 text-xl font-semibold leading-none">
-          {{ formatCount(processing.unprocessed) }}
+          <DrillNumber
+            :request="drill.unprocessed()"
+            :total="processing.unprocessed"
+            @drill="emit('drill', $event)"
+          >
+            {{ formatCount(processing.unprocessed) }}
+          </DrillNumber>
         </div>
         <div class="mt-1 text-xs text-red-600 dark:text-red-400">
           {{ formatPercent(processing.unprocessedShare) }}
@@ -252,7 +265,13 @@ const timingMissing = computed(() => processing.value !== undefined && props.tim
                 {{ leadStageLabel(dictionaries, row.stageId) }}
               </td>
               <td class="py-2 text-right tabular-nums">
-                {{ formatCount(row.count) }}
+                <DrillNumber
+                  :request="drill.openStage(row.stageId, leadStageLabel(dictionaries, row.stageId))"
+                  :total="row.count"
+                  @drill="emit('drill', $event)"
+                >
+                  {{ formatCount(row.count) }}
+                </DrillNumber>
               </td>
             </tr>
           </tbody>

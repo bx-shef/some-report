@@ -2,8 +2,10 @@
 import type { ReportDictionaries, ReportMetrics } from '~/types/report'
 import { formatCount, formatMoney, formatPercent } from '~/utils/format'
 import { lossReasonLabel } from '~/utils/labels'
+import { type DrillRequest, drill } from '~/utils/drilldown'
 
 defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries, currencyId: string }>()
+const emit = defineEmits<{ drill: [DrillRequest] }>()
 </script>
 
 <template>
@@ -20,7 +22,13 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries, currencyI
           Проигранные сделки
         </div>
         <div class="mt-1 text-2xl font-semibold leading-none">
-          {{ formatCount(report.lostDeals.count) }}
+          <DrillNumber
+            :request="drill.lostDeals()"
+            :total="report.lostDeals.count"
+            @drill="emit('drill', $event)"
+          >
+            {{ formatCount(report.lostDeals.count) }}
+          </DrillNumber>
         </div>
         <div class="mt-1 text-xs text-red-600 dark:text-red-400">
           {{ formatPercent(report.lostDeals.shareOfQualified) }} от квалифицированных
@@ -70,7 +78,13 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries, currencyI
               {{ lossReasonLabel(dictionaries, row.reasonId) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatCount(row.count) }}
+              <DrillNumber
+                :request="drill.lossReason(row.reasonId, lossReasonLabel(dictionaries, row.reasonId), dictionaries.lossReasonCodes ?? {})"
+                :total="row.count"
+                @drill="emit('drill', $event)"
+              >
+                {{ formatCount(row.count) }}
+              </DrillNumber>
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatPercent(row.shareOfLost, 0) }}

@@ -375,9 +375,9 @@ export function useReportData() {
    * сотни страниц, и смена фильтра посреди них не должна оставлять их дожёвывать лимит портала.
    * Лидов под фильтром нет — сделок нет, и портал об этом не спрашивают (см. `dealsFromLeadsParams`).
    */
-  async function fetchDealsFromLeads(period: ReportPeriod, current: ReportFilters, keyByCode: Record<string, string>, stale: () => boolean): Promise<B24DealRow[]> {
+  async function fetchDealsFromLeads(period: ReportPeriod, current: ReportFilters, keyByCode: Record<string, string>, stale: () => boolean): Promise<{ rows: B24DealRow[], leadIds?: number[] }> {
     const dealFilter = dealRestFilter(current, codesByReason(keyByCode))
-    if (!needsLeadIds(current)) return fetchAll<B24DealRow>('crm.deal.list', dealsFromLeadsParams(period, dealFilter))
+    if (!needsLeadIds(current)) return { rows: await fetchAll<B24DealRow>('crm.deal.list', dealsFromLeadsParams(period, dealFilter)) }
     const idRows = await fetchAllUntil<{ ID?: string | number }>('crm.lead.list', leadIdsParams(period, leadRestFilter(current)), stale)
     const leadIds = idRows.map(row => Number(row.ID)).filter(id => Number.isFinite(id) && id > 0)
     const rows: B24DealRow[] = []
@@ -385,7 +385,8 @@ export function useReportData() {
       if (stale()) break
       rows.push(...await fetchAllUntil<B24DealRow>('crm.deal.list', dealsFromLeadsParams(period, dealFilter, chunk), stale))
     }
-    return rows
+    // Список ID остаётся в наборе: детализация по клику строит сделки «тем же фильтром» по нему.
+    return { rows, leadIds }
   }
 
   /**
@@ -451,7 +452,7 @@ export function useReportData() {
         .then(ids => batchRows<B24StatusRow>(dealStageBatch(ids)))
         .then(books => mergeReasons(lossStages(Object.values(books).flat())))
 
-      const [reasons, leadTotals, dealRows, dealTotals] = await Promise.all([
+      const [reasons, leadTotals, dealsFetched, dealTotals] = await Promise.all([
         reasonsPromise,
         // 3. Лиды — счётчиками, под фильтром. Что спросить, знает `leadCountBatch`; что с этим
         //    делать — `adaptLeadCounts`.
@@ -470,7 +471,7 @@ export function useReportData() {
       if (mine !== seq) return
 
       const leadAggregate = adaptLeadCounts({ totals: leadTotals, sourceIds, junkStatusIds, openStatusIds, leadFilter })
-      const adaptedDeals = adaptDeals(dealRows, currencies, reasons.keyByCode)
+      const adaptedDeals = adaptDeals(dealsFetched.rows, currencies, reasons.keyByCode)
       const currencyId = baseCurrency(currencies)
       const dealsContext = dealTotals ? adaptDealsContext(dealTotals) : undefined
 
@@ -492,7 +493,8 @@ export function useReportData() {
         },
         currencyId,
         period,
-        ...(keepUnlinked && dataset.value.unlinkedDeals ? { unlinkedDeals: dataset.value.unlinkedDeals } : {})
+        ...(keepUnlinked && dataset.value.unlinkedDeals ? { unlinkedDeals: dataset.value.unlinkedDeals } : {}),
+        ...(dealsFetched.leadIds ? { filteredLeadIds: dealsFetched.leadIds } : {})
       }
       // Фильтры считаются применёнными только вместе с данными под ними: при ошибке экран
       // остаётся с прошлой выборкой — и с её фильтрами, а не с теми, что не удалось применить.

@@ -28,6 +28,12 @@ const period = ref<ReportPeriod>(dataset.value.period)
 const filters = ref<ReportFilters>({})
 const b24 = useB24()
 
+/** Детализация по клику: список записей за числом — под ПРИМЕНЁННЫМИ фильтрами, а не выбранными. */
+const {
+  open: drillOpen, request: drillRequest, rows: drillRows, pending: drillPending, error: drillError, done: drillDone,
+  show: showDrill, loadMore: drillMore, openRow: openDrillRow
+} = useDrilldown({ dataset, filters: appliedFilters, isDemo })
+
 useHead({ title: 'Отчёт' })
 
 /**
@@ -254,21 +260,25 @@ async function fit() {
         <ReportSummary
           :report="report"
           :currency-id="dataset.currencyId"
+          @drill="showDrill"
         />
 
         <div class="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.3fr)_minmax(0,1.2fr)]">
           <ReportFunnel
             :report="report"
             :currency-id="dataset.currencyId"
+            @drill="showDrill"
           />
           <ReportJunk
             :report="report"
             :dictionaries="dataset.dictionaries"
+            @drill="showDrill"
           />
           <ReportLosses
             :report="report"
             :dictionaries="dataset.dictionaries"
             :currency-id="dataset.currencyId"
+            @drill="showDrill"
           />
         </div>
 
@@ -276,12 +286,14 @@ async function fit() {
           :report="report"
           :dictionaries="dataset.dictionaries"
           :currency-id="dataset.currencyId"
+          @drill="showDrill"
         />
 
         <ReportTopSources
           :report="report"
           :dictionaries="dataset.dictionaries"
           :currency-id="dataset.currencyId"
+          @drill="showDrill"
         />
 
         <ReportProcessing
@@ -293,6 +305,7 @@ async function fit() {
           :estimate-minutes="processingEstimateMinutes"
           :error="processingError"
           @start="startProcessing"
+          @drill="showDrill"
         />
 
         <!-- Блок-справка есть только у портала: на демо такого множества нет. Пока фоновая
@@ -308,6 +321,19 @@ async function fit() {
           :currency-id="dataset.currencyId"
           :filtered="hasFilters(appliedFilters)"
           @start="startUnlinked"
+          @drill="showDrill"
+        />
+
+        <ReportDrilldown
+          v-model:open="drillOpen"
+          :request="drillRequest"
+          :rows="drillRows"
+          :pending="drillPending"
+          :error="drillError"
+          :done="drillDone"
+          :is-demo="isDemo"
+          @more="drillMore"
+          @open-row="openDrillRow"
         />
       </template>
     </main>

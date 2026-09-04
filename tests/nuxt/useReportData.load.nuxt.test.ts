@@ -444,6 +444,8 @@ describe('load', () => {
       portal.pending['deals-by:1,2']!([{ ID: '10', LEAD_ID: '1', STAGE_ID: 'WON', OPPORTUNITY: '300', CURRENCY_ID: 'BYN', SOURCE_ID: 'CALL', DATE_CREATE: '2026-08-10T10:00:00+03:00', ASSIGNED_BY_ID: '562' }])
       await loading
       expect(data.dataset.value.deals).toHaveLength(1)
+      // Список ID остаётся в наборе — по нему детализация строит сделки «тем же фильтром».
+      expect(data.dataset.value.filteredLeadIds).toEqual([1, 2])
 
       // Строки лидов для истории стадий — под тем же фильтром.
       await vi.waitFor(() => expect(portal.pending[`leads:${AUGUST.from}`]).toBeDefined())
@@ -541,7 +543,8 @@ describe('load', () => {
       const data = useReportData()
       const loading = data.load(AUGUST, { lossReasonKey: 'дорого' })
       await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
-      expect(portal.filters[AUGUST.from]).toMatchObject({ STAGE_ID: ['__no_such_stage__'] })
+      // Название без кодов уходит как код стадии — такой стадии нет, выборка пуста.
+      expect(portal.filters[AUGUST.from]).toMatchObject({ STAGE_ID: ['дорого'] })
       portal.pending[AUGUST.from]!([])
       await loading
       expect(data.dataset.value.deals).toEqual([])

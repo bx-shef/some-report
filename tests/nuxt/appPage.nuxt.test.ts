@@ -165,6 +165,28 @@ describe('страница отчёта в портале', () => {
     expect(wrapper.text()).not.toContain('Под выбранными фильтрами')
   })
 
+  // Детализация по клику: слайдер с заголовком числа. В портале список читается страницами,
+  // в демо — из строк макета; карточек CRM у демо-строк нет, и слайдер об этом говорит.
+  it('клик по числу открывает слайдер: в портале — список по запросу, в демо — строки макета', async () => {
+    const wrapper = await mountSuspended(AppPage)
+    await vi.waitFor(() => expect(mainKeys()).toHaveLength(1))
+    portal.pending[mainKeys()[0]!]!([])
+    await vi.waitFor(() => expect(wrapper.text()).toContain('1. Сводка'))
+    const leads = wrapper.findAll('button').find((b: { attributes: (name: string) => string | undefined }) => b.attributes('title') === 'Открыть список: Лиды')!
+    await leads.trigger('click')
+    await vi.waitFor(() => expect(document.body.textContent).toContain('Записей нет'))
+    wrapper.unmount()
+
+    portal.initialized = false
+    const demo = await mountSuspended(AppPage, { route: '/app?preview=1' })
+    await vi.waitFor(() => expect(demo.text()).toContain('Это НЕ данные вашего портала'))
+    const junk = demo.findAll('button').find((b: { attributes: (name: string) => string | undefined }) => b.attributes('title') === 'Открыть список: Брак лидов')!
+    await junk.trigger('click')
+    await vi.waitFor(() => expect(document.body.textContent).toContain('карточек в CRM у них нет'))
+    expect(document.body.textContent).toContain('Лид #')
+    demo.unmount()
+  })
+
   it('вне портала «Загрузка» сменяется демо-набором с предупреждением', async () => {
     portal.initialized = false
     const wrapper = await mountSuspended(AppPage, { route: '/app?preview=1' })

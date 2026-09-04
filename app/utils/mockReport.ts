@@ -181,6 +181,8 @@ export function buildMockDataset(): ReportDataset {
       sources: Object.fromEntries(SOURCES.map(s => [s.id, s.name])),
       junkReasons: Object.fromEntries(JUNK_REASONS.map(r => [r.id, r.name])),
       lossReasons: Object.fromEntries(LOSS_REASONS.map(r => [r.id, r.name])),
+      // У демо-причины один код — она сама; детализация по клику строит список по кодам.
+      lossReasonCodes: Object.fromEntries(LOSS_REASONS.map(r => [r.id, [r.id]])),
       // Фильтры предпросмотра: четыре вымышленных менеджера (`assignedById` = 1…4) и стадии,
       // которые `applyFilters` выводит из исхода лида — тем же кодам портал даёт свои имена.
       users: { 1: 'Иванова Анна', 2: 'Петров Сергей', 3: 'Сидорова Мария', 4: 'Козлов Дмитрий' },
