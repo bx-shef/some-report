@@ -35,6 +35,19 @@ describe('normalizeReasonName', () => {
     expect(normalizeReasonName('Ещё думает')).toBe(normalizeReasonName('Еще думает'))
   })
 
+  /**
+   * ⚠ ПРИНЯТЫЙ РИСК, зафиксированный тестом. Правила «регистр не важен», «ё = е» и «пробелы у
+   * дефиса не важны» способны склеить и РАЗНЫЕ по смыслу названия — три пары ниже склеиваются.
+   * На живых данных заказчика таких пар нет (все расхождения — форматирование одной причины), и
+   * цена ошибки тут — одна лишняя строка в таблице против ложного объединения. Если такая пара
+   * появится, менять надо правило, а не тест: он здесь, чтобы смена правила была осознанной.
+   */
+  it('склеивает пары, которые формально совпадают, — это известная кромка', () => {
+    expect(normalizeReasonName('Отказ - Всё бракованное')).toBe(normalizeReasonName('Отказ - Все бракованное'))
+    expect(normalizeReasonName('СВ - брак')).toBe(normalizeReasonName('св - брак'))
+    expect(normalizeReasonName('Скидка -10%')).toBe(normalizeReasonName('Скидка - 10%'))
+  })
+
   // ⚠ Главная проверка на ложное срабатывание: разные причины НЕ должны склеиваться.
   it('разные причины остаются разными', () => {
     expect(normalizeReasonName('Отказ - дорого')).not.toBe(normalizeReasonName('Отказ - дорого (удалить)'))
@@ -102,6 +115,23 @@ describe('mergeReasons', () => {
     expect(merged.names[merged.keyByCode['2']!]).toBe('Отказ – Нет нужного количества на складе')
   })
 
+  /**
+   * ⚠ При НЕСКОЛЬКИХ одинаково аккуратных написаниях печатается первое встреченное — то есть
+   * из направления по умолчанию, которое `dealStageBatch` ставит первым. Это осознанный
+   * тай-брейк, а не случайность: направление по умолчанию — каноничное. Тест фиксирует его,
+   * чтобы смена порядка выборки стадий не поменяла подпись строки незаметно. Ключ при этом от
+   * порядка не зависит вовсе.
+   */
+  it('при равной аккуратности печатается написание направления по умолчанию', () => {
+    const rotated = [...live.slice(2), ...live.slice(0, 2)]
+    const direct = mergeReasons(live)
+    const shifted = mergeReasons(rotated)
+    expect(shifted.keyByCode.LOSE).toBe(direct.keyByCode.LOSE)
+    expect(direct.names[direct.keyByCode.LOSE!]).toBe('Отказ - Дорого')
+    // Первым в перестановке идёт C1:LOSE со строчной буквой — его написание и побеждает.
+    expect(shifted.names[shifted.keyByCode.LOSE!]).toBe('Отказ - дорого')
+  })
+
   // Порядок строк не должен менять ни ключ, ни выбранное написание.
   it('результат не зависит от порядка строк', () => {
     const a = { STATUS_ID: '4', NAME: 'Отказ -Не складской ассортимент' }
@@ -137,6 +167,17 @@ describe('mergeReasons', () => {
     expect(merged.keyByCode.B).toBe('B')
     expect(merged.reasons).toHaveLength(2)
     expect(merged.foldedCodes).toBe(0)
+  })
+
+  it('стадию без кода пропускает, имя из пробелов считает пустым', () => {
+    const merged = mergeReasons([
+      { STATUS_ID: '', NAME: 'Что-то', SEMANTICS: 'F' },
+      { STATUS_ID: '   ', NAME: 'Ещё что-то', SEMANTICS: 'F' },
+      { STATUS_ID: 'A', NAME: '   ' }
+    ])
+    expect(merged.reasons.map(r => r.key)).toEqual(['A'])
+    expect(merged.keyByCode.A).toBe('A')
+    expect(merged.names.A).toBe('A')
   })
 
   it('повтор кода не считается дважды', () => {

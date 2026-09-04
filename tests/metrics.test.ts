@@ -244,6 +244,22 @@ describe('lostDeals', () => {
     expect(result.byReason[0]).toMatchObject({ reasonId: 'PRICE', lostRevenue: 300, shareOfLostRevenue: 0.75 })
   })
 
+  /**
+   * ⚠ После сведения причин по названию (#10) у сделок из разных направлений ключ регулярно
+   * ОДИН. Раньше почти каждый код стадии был уникален, и механизм «одинаковые ключи — одна
+   * строка с суммой» ничего не нёс; теперь на нём держится вся таблица причин.
+   */
+  it('сделки с одним ключом причины складываются в одну строку', () => {
+    const leads = [lead({ id: 1, outcome: 'converted', dealIds: [1, 2] })]
+    const deals = [
+      deal({ id: 1, leadId: 1, outcome: 'lost', amount: 100, lossReasonId: 'reason:отказ-дорого' }),
+      deal({ id: 2, leadId: 1, outcome: 'lost', amount: 50, lossReasonId: 'reason:отказ-дорого' })
+    ]
+    const result = lostDeals(deals, summaryMetrics(agg(leads, QUALITY), deals, QUALITY))
+    expect(result.byReason).toHaveLength(1)
+    expect(result.byReason[0]).toMatchObject({ reasonId: 'reason:отказ-дорого', count: 2, lostRevenue: 150, shareOfLost: 1 })
+  })
+
   it('портал без проигранных сделок не даёт NaN', () => {
     const result = lostDeals([], summaryMetrics(agg([], QUALITY), [], QUALITY))
     expect(result).toMatchObject({ count: 0, lostRevenue: 0, shareOfQualified: 0, byReason: [] })
