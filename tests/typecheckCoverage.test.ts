@@ -67,7 +67,7 @@ describe('охват typecheck', () => {
   // дыру с импорт-картой, и без сторожа этого не заметит никто.
   it('CI гоняет lint, test, typecheck, сборку и браузерный смоук CSP', () => {
     const ci = read('.github/workflows/ci.yml')
-    for (const step of ['pnpm lint', 'pnpm test', 'pnpm typecheck', 'pnpm generate', 'pnpm smoke']) {
+    for (const step of ['pnpm lint', 'pnpm test', 'pnpm typecheck', 'pnpm generate', 'pnpm smoke', 'pnpm smoke:image']) {
       expect(ci).toContain(step)
     }
   })

@@ -95,6 +95,8 @@ jobs:
           context: .
           target: runner
           push: false
+          # Образ нужен демону раннера: ниже его поднимаем и открываем браузером.
+          load: true
           build-args: |
             NUXT_PUBLIC_SITE_URL=${{ vars.NUXT_PUBLIC_SITE_URL }}
             NUXT_PUBLIC_COMMIT_SHA=${{ github.sha }}
@@ -103,6 +105,43 @@ jobs:
           # эта джоба и читает. Пишет кэш только выкат с main.
           cache-from: type=gha,scope=runner
           tags: some-report:ci
+
+      # ⚠ Смоук на ОБРАЗЕ, а не на локальной сборке. Смоук в job `ci` ловит ошибку классификации
+      # скриптов за 7 с, но заголовок там собирается в памяти из nginx.conf. Только здесь виден
+      # весь путь Dockerfile → envsubst → nginx -t → реальные add_header по location и
+      # `error_page 405 =200` для POST от портала — то, что локальный сервер лишь имитирует.
+      # На main не повторяем: тот же код уже проверен на PR, а deploy заперт за зелёным ci.
+      - name: Run image
+        run: |
+          docker run -d --name some-report-ci -p 8080:8080 some-report:ci
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null http://127.0.0.1:8080/ && exit 0
+            sleep 1
+          done
+          echo 'контейнер не ответил за 30 с'
+          docker logs some-report-ci
+          exit 1
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      # --ignore-scripts: postinstall (`nuxt prepare`) смоуку не нужен, ему хватает playwright-core.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: CSP smoke on image (browser)
+        run: pnpm smoke:image http://127.0.0.1:8080
+
+      # Лог nginx нужен ровно тогда, когда смоук упал, — печатаем всегда, он короткий.
+      - name: Container logs and cleanup
+        if: always()
+        run: |
+          docker logs some-report-ci || true
+          docker rm -f some-report-ci || true
 
   deploy:
     name: Build & Push to GHCR

@@ -2,8 +2,8 @@ import { createServer } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
 import { extname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Browser } from 'playwright-core'
-import { PRERENDER_ROUTES } from '../app/config/routes.ts'
-import { applyHashes, buildHashDirective, htmlFiles } from './cspHashes.ts'
+import { PRERENDER_ROUTES, SERVICE_ROUTES } from '../app/config/routes.ts'
+import { HASH_PLACEHOLDER, applyHashes, buildHashDirective, extractInlineScripts, htmlFiles, scriptHash } from './cspHashes.ts'
 
 /**
  * Смоук: открыть собранную страницу НАСТОЯЩИМ браузером под боевым CSP и упасть на первом
@@ -19,12 +19,20 @@ import { applyHashes, buildHashDirective, htmlFiles } from './cspHashes.ts'
  * не стартовавший Nuxt, отсутствие текста, который рисует ТОЛЬКО JavaScript. Последнее
  * важно: тексты из SSR-разметки есть и у мёртвой страницы — по ним поломку не отличить.
  *
+ * Два режима:
+ * - `pnpm smoke` — статика из `.output/public` под заголовком, собранным из `nginx.conf` в памяти.
+ *   Быстро, без Docker; ловит ошибку классификации скриптов сразу после `pnpm generate`;
+ * - `pnpm smoke:image <origin>` — уже поднятый сервер, то есть КОНТЕЙНЕР ИЗ ОБРАЗА. Заголовок
+ *   берётся из живого ответа nginx, а не из конфига на диске. Это единственный вариант, который
+ *   видит весь путь `Dockerfile` → `envsubst` → `nginx -t` → реальные `add_header` по `location`
+ *   и `error_page 405 =200` — то, что локальный сервер лишь имитирует.
+ *
  * Что смоук НЕ проверяет: `frame-ancestors` и `connect-src` к REST портала. Страница открывается
  * вне фрейма, SDK не инициализируется — эти директивы срабатывают только внутри портала, и там
  * их по-прежнему проверяют руками после выката (см. `docs/DEPLOY.md`).
  *
- * Запуск: `pnpm smoke` после `pnpm generate`. Браузер — системный Chrome раннера
- * (`channel: 'chrome'`, без скачивания) либо путь из `CSP_SMOKE_BROWSER`.
+ * Браузер — системный Chrome раннера (`channel: 'chrome'`, без скачивания) либо путь из
+ * `CSP_SMOKE_BROWSER`.
  */
 
 /** Плейсхолдер доменов порталов в `nginx.conf`; подставляется при старте контейнера. */
@@ -74,6 +82,39 @@ export function uncoveredRoutes(pages: readonly PageCheck[], routes: readonly st
  */
 export function markersInMarkup(check: PageCheck, html: string): string[] {
   return check.mustContain.filter(marker => html.includes(marker))
+}
+
+/**
+ * Что в ответе сервера видно без браузера: заголовок есть, плейсхолдер хешей исчез, в `script-src`
+ * нет `'unsafe-inline'`, у каждого инлайнового скрипта страницы есть хеш.
+ *
+ * ⚠ Браузер всё это тоже поймает — но как «Refused to execute inline script» без указания, ЧТО
+ * именно не так. Отсутствие заголовка он не поймает вовсе: страница без CSP открывается лучше
+ * всех. Поэтому проверяем явно и называем причину.
+ */
+export function cspProblems(csp: string | undefined, html: string): string[] {
+  if (!csp) return ['нет заголовка Content-Security-Policy — защита снята целиком']
+  const problems: string[] = []
+  if (csp.includes(HASH_PLACEHOLDER)) problems.push(`в CSP остался плейсхолдер ${HASH_PLACEHOLDER} — браузер заблокирует собственный бандл`)
+  const scriptSrc = /script-src([^;]*)/.exec(csp)?.[1]
+  if (scriptSrc === undefined) return [...problems, 'в CSP нет script-src']
+  if (scriptSrc.includes('\'unsafe-inline\'')) problems.push('в script-src есть \'unsafe-inline\' — защита от XSS снята')
+  for (const script of extractInlineScripts(html)) {
+    const hash = scriptHash(script)
+    if (!scriptSrc.includes(hash)) problems.push(`инлайновый скрипт без хеша в script-src: ${hash}`)
+  }
+  return problems
+}
+
+/**
+ * Пути, которые портал открывает POST-запросом: обработчики плейсмента и установки.
+ *
+ * ⚠ Статике POST не положен, и nginx по умолчанию отвечает 405 — виджет показывал бы пустоту при
+ * исправной сборке. Это лечит `error_page 405 =200 $uri` в `nginx.conf`, и проверить его можно
+ * только на настоящем nginx: локальный сервер смоука на метод не смотрит.
+ */
+export function postPaths(routes: readonly string[]): string[] {
+  return routes.map(route => `${routeOf(route)}/`)
 }
 
 /**
@@ -162,7 +203,16 @@ async function checkPage(origin: string, check: PageCheck, browser: Browser): Pr
   })
   page.on('pageerror', error => problems.push(`ошибка страницы: ${error.message.slice(0, 160)}`))
   try {
-    await page.goto(origin + check.path, { waitUntil: 'networkidle', timeout: 45_000 })
+    const response = await page.goto(origin + check.path, { waitUntil: 'networkidle', timeout: 45_000 })
+    if (!response) throw new Error('сервер не ответил')
+    if (response.status() !== 200) problems.push(`HTTP ${response.status()}`)
+    // Заголовок и разметку берём из ответа, а не из конфига или файла: в режиме образа это
+    // единственный источник правды, а в локальном — та же проверка, что и в CI.
+    const html = await response.text()
+    problems.push(...cspProblems(response.headers()['content-security-policy'], html))
+    for (const marker of markersInMarkup(check, html)) {
+      problems.push(`маркер «${marker}» есть в SSR-разметке — он не отличает живую страницу от мёртвой`)
+    }
     // Старт Nuxt. ⚠ Не по атрибуту `data-v-app`: его ставит только `createApp`, а Nuxt гидрирует
     // через `createSSRApp`, который атрибут не ставит вовсе, — проверка по нему падала на живой
     // странице. Надёжный признак — сам Nuxt: `useNuxtApp` в `window` появляется только после
@@ -188,31 +238,53 @@ async function checkPage(origin: string, check: PageCheck, browser: Browser): Pr
   return { path: check.path, problems }
 }
 
-async function main(): Promise<void> {
-  const [dir, configPath] = process.argv.slice(2)
-  if (!dir || !configPath) throw new Error('Использование: cspSmoke.ts <каталог статики> <nginx.conf>')
+/** POST на обработчик — ответ 200 и та же страница, что по GET. */
+async function checkPost(origin: string, path: string, browser: Browser): Promise<PageResult> {
+  const problems: string[] = []
+  const context = await browser.newContext()
+  try {
+    const response = await context.request.post(origin + path, { timeout: 15_000 })
+    if (response.status() !== 200) problems.push(`HTTP ${response.status()} — портал открывает обработчик POST-запросом и увидит пустоту`)
+    else if (!(await response.text()).includes('id="__nuxt"')) problems.push('в ответе нет разметки приложения')
+  } catch (error) {
+    problems.push(`не открылась: ${error instanceof Error ? error.message.slice(0, 160) : String(error)}`)
+  } finally {
+    await context.close()
+  }
+  return { path: `POST ${path}`, problems }
+}
+
+const USAGE = `Использование:
+  cspSmoke.ts <каталог статики> <nginx.conf>   локальный сервер с заголовком из конфига
+  cspSmoke.ts --origin <URL>                   уже поднятый сервер (контейнер из образа)`
+
+/** Локальный сервер: заголовок собирается из `nginx.conf` в памяти, конфиг на диске не трогаем. */
+async function serveBuild(dir: string, configPath: string): Promise<{ origin: string, close: () => void }> {
   const root = resolve(dir)
-
-  const uncovered = uncoveredRoutes(PAGES, PRERENDER_ROUTES)
-  if (uncovered.length) throw new Error(`маршруты пререндера без проверки: ${uncovered.join(', ')} — добавьте их в PAGES`)
-
-  // Хеши считаем в памяти по собранному HTML — конфиг на диске не трогаем.
   const pages = await Promise.all((await htmlFiles(root)).map(file => readFile(file, 'utf-8')))
   if (!pages.length) throw new Error(`В ${dir} нет ни одного .html — сборка пуста?`)
   const conf = applyHashes(await readFile(configPath, 'utf-8'), buildHashDirective(pages))
   const csp = substituteOrigins(extractCspHeader(conf), process.env.B24_PORTAL_ORIGINS ?? 'https://*.bitrix24.by')
+  return serve(root, csp)
+}
 
-  for (const check of PAGES) {
-    const html = await readFile(join(root, routeOf(check.path), 'index.html'), 'utf-8')
-    const leaked = markersInMarkup(check, html)
-    if (leaked.length) {
-      throw new Error(`маркеры «${leaked.join('», «')}» страницы ${check.path} есть в SSR-разметке — они не отличают живую страницу от мёртвой`)
-    }
+async function main(): Promise<void> {
+  const args = process.argv.slice(2)
+  const uncovered = uncoveredRoutes(PAGES, PRERENDER_ROUTES)
+  if (uncovered.length) throw new Error(`маршруты пререндера без проверки: ${uncovered.join(', ')} — добавьте их в PAGES`)
+
+  let server: { origin: string, close: () => void }
+  if (args[0] === '--origin') {
+    if (!args[1]) throw new Error(USAGE)
+    server = { origin: new URL(args[1]).origin, close: () => {} }
+  } else {
+    const [dir, configPath] = args
+    if (!dir || !configPath) throw new Error(USAGE)
+    server = await serveBuild(dir, configPath)
   }
 
   // Браузер подключаем только здесь: тесты импортируют чистые функции выше и тянуть playwright не должны.
   const { chromium } = await import('playwright-core')
-  const server = await serve(root, csp)
   const executablePath = process.env.CSP_SMOKE_BROWSER
   // Запуск браузера — внутри try: не нашёлся Chrome — сервер всё равно надо погасить.
   let browser: Browser | undefined
@@ -220,6 +292,7 @@ async function main(): Promise<void> {
     browser = await chromium.launch(executablePath ? { executablePath } : { channel: 'chrome' })
     const results: PageResult[] = []
     for (const check of PAGES) results.push(await checkPage(server.origin, check, browser))
+    for (const path of postPaths(SERVICE_ROUTES)) results.push(await checkPost(server.origin, path, browser))
     let failed = 0
     for (const { path, problems } of results) {
       if (problems.length) {
@@ -230,8 +303,8 @@ async function main(): Promise<void> {
         console.log(`[smoke] ✓ ${path}`)
       }
     }
-    if (failed) throw new Error(`страниц с проблемами: ${failed} из ${results.length}`)
-    console.log(`[smoke] все ${results.length} страницы открылись под боевым CSP без нарушений`)
+    if (failed) throw new Error(`проверок с проблемами: ${failed} из ${results.length}`)
+    console.log(`[smoke] ${server.origin}: все ${results.length} проверки прошли под боевым CSP без нарушений`)
   } finally {
     await browser?.close()
     server.close()

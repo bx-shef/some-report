@@ -3,8 +3,9 @@ import { request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { PRERENDER_ROUTES } from '../app/config/routes'
-import { ORIGINS_PLACEHOLDER, PAGES, extractCspHeader, isCspViolation, markersInMarkup, routeOf, serve, substituteOrigins, uncoveredRoutes } from '../scripts/cspSmoke'
+import { PRERENDER_ROUTES, SERVICE_ROUTES } from '../app/config/routes'
+import { HASH_PLACEHOLDER, buildHashDirective, extractInlineScripts } from '../scripts/cspHashes'
+import { ORIGINS_PLACEHOLDER, PAGES, cspProblems, extractCspHeader, isCspViolation, markersInMarkup, postPaths, routeOf, serve, substituteOrigins, uncoveredRoutes } from '../scripts/cspSmoke'
 
 /**
  * Чистые части смоука. Сам прогон браузером в юнит-тестах не гоняется — он в CI отдельным
@@ -57,6 +58,43 @@ describe('isCspViolation', () => {
   it('обычные сообщения не считает нарушением', () => {
     expect(isCspViolation('[NUXT_E5002]')).toBe(false)
     expect(isCspViolation('Failed to load resource: 404')).toBe(false)
+  })
+})
+
+describe('cspProblems: что видно в ответе без браузера', () => {
+  const html = readFileSync(join(import.meta.dirname, 'fixtures', 'nuxtPage.html'), 'utf-8')
+  const good = `default-src 'self'; script-src 'self' ${buildHashDirective([html])}; style-src 'self' 'unsafe-inline'`
+
+  it('боевой заголовок с хешами всех скриптов страницы — без замечаний', () => {
+    expect(cspProblems(good, html)).toEqual([])
+  })
+
+  // ⚠ Страница без CSP открывается лучше всех — браузер о снятой защите не скажет ни слова.
+  it('нет заголовка — одна проблема, и она называет причину', () => {
+    expect(cspProblems(undefined, html)).toEqual(['нет заголовка Content-Security-Policy — защита снята целиком'])
+    expect(cspProblems('', html)).toHaveLength(1)
+  })
+
+  it('оставшийся плейсхолдер и unsafe-inline — по замечанию каждое', () => {
+    expect(cspProblems(good.replace(/'sha256[^;]*/, HASH_PLACEHOLDER), html).join('\n')).toContain(HASH_PLACEHOLDER)
+    expect(cspProblems(good.replace('script-src \'self\'', 'script-src \'self\' \'unsafe-inline\''), html).join('\n')).toContain('unsafe-inline')
+  })
+
+  it('скрипт без хеша — замечание на каждый, с самим хешем', () => {
+    const problems = cspProblems('default-src \'self\'; script-src \'self\'', html)
+    expect(problems).toHaveLength(extractInlineScripts(html).length)
+    for (const problem of problems) expect(problem).toMatch(/'sha256-[A-Za-z0-9+/=]+'/)
+  })
+
+  it('нет script-src вовсе — замечание', () => {
+    expect(cspProblems('default-src \'self\'', html).join('\n')).toContain('script-src')
+  })
+})
+
+describe('postPaths', () => {
+  // Портал открывает обработчики POST-запросом; без `error_page 405 =200` виджет пуст.
+  it('обработчики плейсмента и установки, каталогами', () => {
+    expect(postPaths(SERVICE_ROUTES)).toEqual(['/app/', '/install/'])
   })
 })
 
