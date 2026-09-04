@@ -284,7 +284,7 @@ async function checkPost(origin: string, path: string): Promise<PageResult> {
     else if (!body.includes('id="__nuxt"')) problems.push('в ответе нет разметки приложения')
     problems.push(...cspProblems(response.headers.get('content-security-policy') ?? undefined, body))
   } catch (error) {
-    problems.push(`не открылась: ${error instanceof Error ? error.message.slice(0, 160) : String(error)}`)
+    problems.push(`запрос не прошёл: ${error instanceof Error ? error.message.slice(0, 160) : String(error)}`)
   }
   return { path: `POST ${path}`, problems }
 }
