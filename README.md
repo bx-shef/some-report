@@ -88,6 +88,7 @@ nginx-proxy (TLS — Let's Encrypt), дальше обновления подх�
 
 | Документ | О чём |
 |---|---|
+| [`docs/TZ.md`](docs/TZ.md) | ТЗ заказчика от 2026-09-04 как есть |
 | [`docs/METRICS.md`](docs/METRICS.md) | формулы, расхождения макета с ТЗ, нерешённые вопросы |
 | [`docs/PORTAL.md`](docs/PORTAL.md) | **что реально есть в портале** — замер по живому REST |
 | [`docs/EMBEDDING.md`](docs/EMBEDDING.md) | встройка в CRM-аналитику, установка, типовые ошибки |
