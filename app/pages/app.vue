@@ -39,12 +39,16 @@ onMounted(async () => {
   // однажды принял чужие цифры за свои.
   if (b24.isInit()) period.value = resolvePreset('this-month', today)!
   // Внутри портала берём живые лиды и сделки. Снаружи `load()` тихо ничего не делает.
-  await load(period.value)
+  const requested = period.value
+  await load(requested)
   booting.value = false
   // ⚠ Пока шла первая выборка, кнопки периода были живые, а наблюдатель ниже молчал. Если
-  // человек успел нажать «Прошлый месяц», выбранный период уже не тот, что загружен, — иначе
+  // человек успел нажать «Прошлый месяц», выбранный период уже не тот, что запрошен, — иначе
   // подсветка показывала бы август над сентябрьскими числами, и второй клик ничего бы не менял.
-  if (b24.isInit() && !samePeriod(period.value, dataset.value.period)) await load(period.value)
+  // Сравниваем с ЗАПРОШЕННЫМ периодом, а не с `dataset.period`: при ошибке портала набор
+  // остаётся демонстрационным со своим периодом, и сравнение с ним слало бы второй запрос
+  // в упавший портал без участия человека.
+  if (b24.isInit() && !samePeriod(period.value, requested)) await load(period.value)
   await fit()
 })
 
