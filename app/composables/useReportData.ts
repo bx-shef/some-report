@@ -23,7 +23,7 @@ import {
   unlinkedWonDealsParams
 } from '~/utils/b24Query'
 import { buildReport, buildReportFromAggregate } from '~/utils/metrics'
-import { resolvePreset } from '~/utils/period'
+import { periodLengthDays, resolvePreset } from '~/utils/period'
 import { buildMockDataset } from '~/utils/mockReport'
 
 /**
@@ -37,6 +37,14 @@ import { buildMockDataset } from '~/utils/mockReport'
  * данные неоткуда. Признак `isDemo` обязан это показывать: отчёт, молча выдающий чужие числа за
  * данные клиента, хуже отсутствующего отчёта.
  */
+/**
+ * До скольких дней справка блока 7 стартует сама. 92 дня — квартал: ≈ 16 500 строк, минуты три.
+ * Дальше — только по кнопке: год стоил бы минут двенадцать, и запускать это от случайного клика
+ * по «Текущий год» нельзя. Порог — решение разработчика от 2026-09-04 (владельца не спрашивали),
+ * менять — одну константу.
+ */
+export const UNLINKED_AUTO_MAX_DAYS = 92
+
 export function useReportData() {
   /**
    * Знаменатель конверсий — `Лиды − Брак`, как в ТЗ от 2026-09-04.
@@ -78,6 +86,14 @@ export function useReportData() {
    */
   const unlinkedPending = ref(false)
   const unlinkedError = ref<string | undefined>(undefined)
+  /**
+   * Справка отложена: период длиннее `UNLINKED_AUTO_MAX_DAYS`, и выборка стартует только по
+   * кнопке. Год — это ≈ 1 300 страниц и минут двенадцать; запускать такое от случайного клика
+   * по «Текущий год» нельзя, а от осознанного — можно.
+   */
+  const unlinkedDeferred = ref(false)
+  /** Что нужно, чтобы запустить справку позже по кнопке: тот же период и справочники, что у отчёта. */
+  let unlinkedContext: { period: ReportPeriod, mine: number, currencies: B24CurrencyRow[], sourceIds: string[] } | undefined
   /** Оговорки адаптера к качеству данных портала. Пока источник демонстрационный — их нет. */
   const warnings = ref<AdapterWarnings | undefined>(undefined)
   /**
@@ -251,6 +267,8 @@ export function useReportData() {
     // выборка упадёт, «Считаем…» от осиротевшей висело бы бесконечно.
     unlinkedPending.value = false
     unlinkedError.value = undefined
+    unlinkedDeferred.value = false
+    unlinkedContext = undefined
     try {
       /**
        * Порядок шагов и почему именно так — см. `docs/PORTAL.md` § «Что делать с объёмами».
@@ -328,7 +346,10 @@ export function useReportData() {
       source.value = 'portal'
       // 6. Успешные сделки БЕЗ лида — строками, фоном: основной отчёт уже на экране. Факт о
       //    процессе, который отчёт обязан показать, а не спрятать: на боевом портале это 90 % сделок.
-      void loadUnlinked(period, mine, currencies, sourceIds)
+      //    На длинном периоде — только по кнопке (см. `unlinkedDeferred`).
+      unlinkedContext = { period, mine, currencies, sourceIds }
+      if (periodLengthDays(period) <= UNLINKED_AUTO_MAX_DAYS) void loadUnlinked(period, mine, currencies, sourceIds)
+      else unlinkedDeferred.value = true
     } catch (e) {
       if (mine === seq) error.value = e instanceof Error ? e.message : String(e)
     } finally {
@@ -358,5 +379,12 @@ export function useReportData() {
     }
   }
 
-  return { dataset, report, firstResponseSlaMinutes, pending, error, unlinkedPending, unlinkedError, source, isDemo, warnings, latestLeadDate, load }
+  /** Запустить отложенную справку блока 7 — по кнопке, для того же периода, что на экране. */
+  function startUnlinked(): void {
+    if (!unlinkedContext || unlinkedContext.mine !== seq) return
+    unlinkedDeferred.value = false
+    void loadUnlinked(unlinkedContext.period, unlinkedContext.mine, unlinkedContext.currencies, unlinkedContext.sourceIds)
+  }
+
+  return { dataset, report, firstResponseSlaMinutes, pending, error, unlinkedPending, unlinkedError, unlinkedDeferred, startUnlinked, source, isDemo, warnings, latestLeadDate, load }
 }

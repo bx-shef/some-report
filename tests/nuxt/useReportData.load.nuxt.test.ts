@@ -183,6 +183,27 @@ describe('load', () => {
     expect(portal.calls.filter(c => c === `closed:${AUGUST.from}`).length).toBe(calls)
   })
 
+  // ⚠ Год — ≈ 1 300 страниц. Сама справка на таком периоде не стартует; стартует по кнопке —
+  // и только для того периода, что на экране.
+  it('на периоде длиннее квартала справка ждёт кнопки, по кнопке — стартует', async () => {
+    const YEAR = { from: '2026-01-01', to: '2026-12-31' }
+    const data = useReportData()
+    const loading = data.load(YEAR)
+    await vi.waitFor(() => expect(portal.pending[YEAR.from]).toBeDefined())
+    portal.pending[YEAR.from]!([])
+    await loading
+    expect(data.unlinkedDeferred.value).toBe(true)
+    expect(data.unlinkedPending.value).toBe(false)
+    expect(portal.calls.some(c => c.startsWith('closed:'))).toBe(false)
+
+    data.startUnlinked()
+    expect(data.unlinkedDeferred.value).toBe(false)
+    await vi.waitFor(() => expect(portal.pending[`closed:${YEAR.from}`]).toBeDefined())
+    portal.pending[`closed:${YEAR.from}`]!([])
+    await vi.waitFor(() => expect(data.unlinkedPending.value).toBe(false))
+    expect(data.dataset.value.unlinkedDeals?.total).toBe(0)
+  })
+
   it('ошибка справки — своя ошибка, индикатор снят, основной отчёт цел', async () => {
     const data = useReportData()
     const loading = data.load(AUGUST)

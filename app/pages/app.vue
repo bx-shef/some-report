@@ -6,7 +6,7 @@ import { periodLengthDays, resolvePreset } from '~/utils/period'
 /**
  * Главный экран — сам отчёт. Открывается порталом из пункта CRM-аналитики (`CRM_ANALYTICS_MENU`).
  */
-const { dataset, report, isDemo, pending, error, unlinkedPending, unlinkedError, warnings, latestLeadDate, load } = useReportData()
+const { dataset, report, isDemo, pending, error, unlinkedPending, unlinkedError, unlinkedDeferred, startUnlinked, warnings, latestLeadDate, load } = useReportData()
 
 /**
  * «Сегодня» фиксируется ОДИН раз на открытие отчёта.
@@ -65,7 +65,7 @@ const unlinkedEstimateMinutes = computed(() => Math.max(1, Math.round(periodLeng
 
 // Справка блока 7 приходит на минуту позже отчёта и меняет высоту страницы — портал должен
 // узнать об этом, иначе таблица уедет под нижний край фрейма.
-watch(unlinkedPending, fit)
+watch([unlinkedPending, unlinkedDeferred], fit)
 
 /**
  * Первая загрузка идёт из `onMounted`, а НЕ из наблюдателя за периодом.
@@ -256,10 +256,12 @@ async function fit() {
           v-if="!isDemo"
           :unlinked="dataset.unlinkedDeals"
           :pending="unlinkedPending"
+          :deferred="unlinkedDeferred"
           :estimate-minutes="unlinkedEstimateMinutes"
           :error="unlinkedError"
           :dictionaries="dataset.dictionaries"
           :currency-id="dataset.currencyId"
+          @start="startUnlinked"
         />
       </template>
     </main>

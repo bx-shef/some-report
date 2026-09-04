@@ -21,12 +21,16 @@ defineProps<{
   /** Нет, пока фоновая выборка не закончилась или упала. */
   unlinked?: UnlinkedDeals
   pending: boolean
+  /** Период длинный — выборка ждёт кнопки, а не стартует сама. */
+  deferred: boolean
   /** Сколько минут ждать — считает страница по длине периода; здесь только печатаем. */
   estimateMinutes: number
   error?: string
   dictionaries: ReportDictionaries
   currencyId: string
 }>()
+
+const emit = defineEmits<{ start: [] }>()
 </script>
 
 <template>
@@ -49,8 +53,24 @@ defineProps<{
       class="mb-4"
     />
 
+    <div
+      v-if="deferred"
+      class="flex flex-wrap items-center gap-3 text-sm"
+    >
+      <span class="opacity-70">
+        Период длинный: успешных сделок без лида за него много, выборка займёт примерно
+        {{ estimateMinutes }} мин. Остальной отчёт уже готов.
+      </span>
+      <B24Button
+        size="sm"
+        color="air-primary"
+        label="Посчитать"
+        @click="emit('start')"
+      />
+    </div>
+
     <p
-      v-if="pending"
+      v-else-if="pending"
       class="text-sm opacity-70"
     >
       Считаем успешные сделки без лида… Их около 5 500 в месяц, за этот период — примерно

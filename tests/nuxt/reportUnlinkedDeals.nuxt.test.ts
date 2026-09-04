@@ -24,9 +24,9 @@ const august: UnlinkedDeals = {
   ]
 }
 
-function render(props: Partial<{ unlinked: UnlinkedDeals, pending: boolean, error: string, estimateMinutes: number }> = {}) {
+function render(props: Partial<{ unlinked: UnlinkedDeals, pending: boolean, deferred: boolean, error: string, estimateMinutes: number }> = {}) {
   return mountSuspended(ReportUnlinkedDeals, {
-    props: { unlinked: august, pending: false, estimateMinutes: 1, dictionaries, currencyId: 'BYN', ...props }
+    props: { unlinked: august, pending: false, deferred: false, estimateMinutes: 1, dictionaries, currencyId: 'BYN', ...props }
   })
 }
 
@@ -47,6 +47,17 @@ describe('ReportUnlinkedDeals', () => {
     expect(wrapper.text()).toContain('Считаем успешные сделки без лида')
     expect(wrapper.text()).toContain('примерно 12 мин')
     expect(wrapper.find('table').exists()).toBe(false)
+  })
+
+  // ⚠ Год — минут двенадцать выборки. От случайного клика такое не стартует: кнопка и оценка.
+  it('на длинном периоде — кнопка «Посчитать» с оценкой, таблицы и индикатора нет', async () => {
+    const wrapper = await render({ deferred: true, unlinked: undefined, estimateMinutes: 12 })
+    expect(wrapper.text()).toContain('примерно 12 мин')
+    expect(wrapper.text()).not.toContain('Считаем')
+    expect(wrapper.find('table').exists()).toBe(false)
+    const button = wrapper.findAll('button').find((b: { text: () => string }) => b.text().includes('Посчитать'))!
+    await button.trigger('click')
+    expect(wrapper.emitted('start')).toHaveLength(1)
   })
 
   it('ошибка выборки — своя плашка, остальной отчёт не при чём', async () => {
