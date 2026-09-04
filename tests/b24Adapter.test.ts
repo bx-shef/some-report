@@ -207,7 +207,8 @@ describe('adaptPortalData', () => {
   it('APOLOGY — тоже проигрыш, по семантике', () => {
     const lost = result.deals.find(d => d.id === 11)
     expect(lost?.outcome).toBe('lost')
-    expect(lost?.lossReasonId).toBe('APOLOGY')
+    // Причина — каноничный ключ, а не код стадии; проверяем, что он ведёт к имени стадии APOLOGY.
+    expect(result.dictionaries.lossReasons[lost!.lossReasonId!]).toBe('Анализ причины провала')
   })
 
   it('переводит сумму в базовую валюту портала', () => {
@@ -226,6 +227,7 @@ describe('adaptPortalData', () => {
    */
   it('считает оговорки к качеству данных', () => {
     expect(result.warnings).toEqual({
+      mergedLossReasons: 0,
       unconvertedDeals: 0,
       wonStageWithoutDeal: 1,
       dealsWithoutLead: 1,
@@ -248,7 +250,33 @@ describe('adaptPortalData', () => {
   it('строит справочники для печати имён', () => {
     expect(result.dictionaries.sources.CALL).toBe('Звонок')
     expect(result.dictionaries.junkReasons.JUNK).toBe('Некачественный лид')
-    expect(result.dictionaries.lossReasons.APOLOGY).toBe('Анализ причины провала')
+    // Причины проигрыша лежат под каноничным ключом, а не под кодом стадии: им помечена сделка,
+    // и по нему же печатается имя. Сверяем через саму сделку — так проверяется вся цепочка.
+    const lost = result.deals.find(d => d.outcome === 'lost')!
+    expect(lost.lossReasonId).toBeDefined()
+    expect(result.dictionaries.lossReasons[lost.lossReasonId!]).toBe('Анализ причины провала')
+  })
+
+  /**
+   * ⚠ Одна причина в двух направлениях — два кода стадии. Без сведения ядро печатало бы её двумя
+   * строками; с боевого портала таких «дорого» приезжает шесть.
+   */
+  it('одноимённые стадии провала из разных направлений дают один lossReasonId', () => {
+    const merged = adaptPortalData({
+      ...input,
+      dealStages: [
+        { STATUS_ID: 'LOSE', NAME: 'Отказ - Дорого', ENTITY_ID: 'DEAL_STAGE' },
+        { STATUS_ID: 'C1:LOSE', NAME: 'Отказ - дорого', ENTITY_ID: 'DEAL_STAGE_1' }
+      ],
+      deals: [
+        { ID: '21', LEAD_ID: '1', STAGE_ID: 'LOSE', STAGE_SEMANTIC_ID: 'F', OPPORTUNITY: '10', CURRENCY_ID: 'BYN' },
+        { ID: '22', LEAD_ID: '1', STAGE_ID: 'C1:LOSE', STAGE_SEMANTIC_ID: 'F', OPPORTUNITY: '20', CURRENCY_ID: 'BYN' }
+      ]
+    })
+    const [a, b] = merged.deals
+    expect(a!.lossReasonId).toBe(b!.lossReasonId)
+    expect(merged.dictionaries.lossReasons[a!.lossReasonId!]).toBe('Отказ - Дорого')
+    expect(merged.warnings.mergedLossReasons).toBe(1)
   })
 
   it('пустой портал не роняет адаптер', () => {
