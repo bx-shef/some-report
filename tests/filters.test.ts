@@ -181,12 +181,15 @@ describe('applyFilters (демо-набор)', () => {
 
   it('стадия лида выводится из исхода: CONVERTED — со сделкой; открытых в демо-наборе нет вовсе', () => {
     const converted = applyFilters(dataset.leads, dataset.deals, { leadStatusId: 'CONVERTED' })
-    expect(converted.leads.length).toBeGreaterThan(0)
+    expect(converted.leads.length).toBe(dataset.leads.filter(l => l.outcome === 'converted').length)
     expect(converted.leads.every(l => l.outcome === 'converted')).toBe(true)
     expect(converted.deals.length).toBe(dataset.deals.length)
-    // Макет: 1 250 лидов = 250 брака + 1 000 сконвертированных, «в работе» никого. Значит, стадии
-    // NEW и «В работе» в предпросмотре честно пусты, а не подменены чем-то похожим.
-    expect(applyFilters(dataset.leads, dataset.deals, { leadStatusId: 'NEW' }).leads).toEqual([])
+    // «Не обработан» — лид без первого ответа, как считает ядро: фильтр обязан сходиться с
+    // числом «не обработано» блока 6 на одном экране. Макет: 1 250 лидов = 250 брака + 1 000
+    // сконвертированных, «в работе» никого — стадия «В работе» в предпросмотре честно пуста.
+    const fresh = applyFilters(dataset.leads, dataset.deals, { leadStatusId: 'NEW' }).leads
+    expect(fresh.length).toBe(dataset.leads.filter(l => !l.firstResponseAt).length)
+    expect(fresh.length).toBeGreaterThan(0)
     expect(applyFilters(dataset.leads, dataset.deals, { leadStatusId: '1' }).leads).toEqual([])
   })
 

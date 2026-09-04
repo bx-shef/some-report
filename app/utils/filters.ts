@@ -93,6 +93,33 @@ export function chunkIds(ids: readonly number[], size = 500): number[][] {
 }
 
 /**
+ * Стадия лида демо-набора — из исхода: кода стадии у строк макета нет.
+ *
+ * ⚠ Одно правило для фильтра «стадия лида» и для детализации по клику, иначе фильтр «Не
+ * обработан» и число «не обработано» в блоке 6 разошлись бы на одном экране. «Не обработан» —
+ * лид без первого ответа, как считает ядро (`processingMetrics`), независимо от исхода.
+ */
+export function demoLeadStatus(lead: ReportLead): string {
+  if (lead.outcome === 'junk') return lead.junkReasonId ?? ''
+  if (lead.outcome === 'converted' || lead.outcome === 'lost') return 'CONVERTED'
+  return lead.firstResponseAt ? '1' : INITIAL_LEAD_STATUS
+}
+
+/**
+ * Лид демо-набора «в стадии» `statusId`.
+ *
+ * ⚠ «Не обработан» — отдельное правило: лид без первого ответа, каким бы ни был исход, — так
+ * считает ядро в блоке 6, и фильтр «Не обработан» обязан сходиться с этим числом. Для остальных
+ * стадий — исход: у макета брак и сконвертированные, у которых ответ мог и не случиться, — и
+ * список причины брака обязан сходиться с числом в блоке 3. В портале одно исключает другое; в
+ * макете лид может быть и «не обработан», и «брак» — это свойство макета, а не правил.
+ */
+export function demoLeadHasStatus(lead: ReportLead, statusId: string): boolean {
+  if (statusId === INITIAL_LEAD_STATUS) return !lead.firstResponseAt
+  return demoLeadStatus(lead) === statusId
+}
+
+/**
  * Те же фильтры для СТРОК демо-набора — чтобы предпросмотр вне портала вёл себя как живой отчёт.
  *
  * Правила те же, что у запросов: менеджер и стадия — по лиду (сделка остаётся, если остался её
@@ -104,16 +131,7 @@ export function applyFilters(leads: ReportLead[], deals: ReportDeal[], filters: 
   const keptLeads = leads.filter((lead) => {
     if (filters.sourceId && lead.sourceId !== filters.sourceId) return false
     if (hasManager(filters) && lead.assignedById !== filters.assignedById) return false
-    if (status) {
-      // Стадия из исхода: у строк демо-набора кода стадии нет. «Потерян» — стадия успеха без
-      // сделки, по коду это тот же `CONVERTED`, что и у сконвертированного.
-      const leadStatus = lead.outcome === 'junk'
-        ? (lead.junkReasonId ?? '')
-        : lead.outcome === 'converted' || lead.outcome === 'lost'
-          ? 'CONVERTED'
-          : lead.firstResponseAt ? '1' : INITIAL_LEAD_STATUS
-      if (leadStatus !== status) return false
-    }
+    if (status && !demoLeadHasStatus(lead, status)) return false
     return true
   })
   const leadIds = new Set(keptLeads.map(l => l.id))

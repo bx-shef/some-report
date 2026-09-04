@@ -2,6 +2,7 @@
 import type { ReportDictionaries, UnlinkedDeals } from '~/types/report'
 import { formatCount, formatMoney, formatPercent } from '~/utils/format'
 import { unlinkedSourceLabel } from '~/utils/labels'
+import { type DrillRequest, drill } from '~/utils/drilldown'
 
 /**
  * Успешные сделки без связи с лидом — в разрезе источников, с суммами.
@@ -32,7 +33,7 @@ defineProps<{
   filtered?: boolean
 }>()
 
-const emit = defineEmits<{ start: [] }>()
+const emit = defineEmits<{ start: [], drill: [DrillRequest] }>()
 </script>
 
 <template>
@@ -103,7 +104,12 @@ const emit = defineEmits<{ start: [] }>()
             Успешных без лида за период
           </div>
           <div class="text-lg font-semibold tabular-nums">
-            {{ formatCount(unlinked.total) }}
+            <DrillNumber
+              :request="drill.unlinked()"
+              @drill="emit('drill', $event)"
+            >
+              {{ formatCount(unlinked.total) }}
+            </DrillNumber>
           </div>
         </div>
         <div>
@@ -164,7 +170,12 @@ const emit = defineEmits<{ start: [] }>()
                 {{ unlinkedSourceLabel(dictionaries, row.sourceId) }}
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ formatCount(row.count) }}
+                <DrillNumber
+                  :request="drill.unlinkedSource(row.sourceId, unlinkedSourceLabel(dictionaries, row.sourceId))"
+                  @drill="emit('drill', $event)"
+                >
+                  {{ formatCount(row.count) }}
+                </DrillNumber>
               </td>
               <td class="py-2 pr-3 text-right tabular-nums opacity-70">
                 {{ formatPercent(row.share) }}

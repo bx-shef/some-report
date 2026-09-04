@@ -49,4 +49,16 @@ describe('ReportJunk', () => {
     expect(cell.attributes('colspan')).toBe('4')
     expect(cell.text()).toContain('За период брака нет')
   })
+
+  // Число причины — кнопка списка «тем же условием»: стадия брака этой причины.
+  it('клик по числу причины — событие drill со стадией этой причины; итог брака — с семантикой провала', async () => {
+    const wrapper = await render()
+    const [row] = report.junkByReason
+    const button = wrapper.findAll('button').find((b: { attributes: (name: string) => string | undefined }) => b.attributes('title')?.startsWith('Открыть список: Брак лидов:'))!
+    await button.trigger('click')
+    expect(wrapper.emitted('drill')?.[0]?.[0]).toMatchObject({ entity: 'lead', extra: { STATUS_ID: row!.reasonId } })
+    const total = wrapper.findAll('button').find((b: { attributes: (name: string) => string | undefined }) => b.attributes('title') === 'Открыть список: Брак лидов')!
+    await total.trigger('click')
+    expect(wrapper.emitted('drill')?.[1]?.[0]).toMatchObject({ extra: { STATUS_SEMANTIC_ID: 'F' } })
+  })
 })

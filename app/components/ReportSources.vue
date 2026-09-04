@@ -3,8 +3,10 @@ import type { ReportDictionaries, ReportMetrics, SourceRow } from '~/types/repor
 import { conversionBaseValue, share } from '~/utils/metrics'
 import { formatCount, formatMoney, formatPercent } from '~/utils/format'
 import { sourceLabel } from '~/utils/labels'
+import { type DrillRequest, drill } from '~/utils/drilldown'
 
 const props = defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries, currencyId: string }>()
+const emit = defineEmits<{ drill: [DrillRequest] }>()
 
 const baseLabel = computed(() =>
   props.report.summary.conversionBase === 'quality-leads'
@@ -120,13 +122,28 @@ const outsideSources = computed(() => ({
               {{ sourceLabel(dictionaries, row.sourceId) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatCount(row.leads) }}
+              <DrillNumber
+                :request="drill.bySource(row.sourceId, 'leads', sourceLabel(dictionaries, row.sourceId))"
+                @drill="emit('drill', $event)"
+              >
+                {{ formatCount(row.leads) }}
+              </DrillNumber>
             </td>
             <td class="py-2 pr-3 text-right tabular-nums text-red-600 dark:text-red-400">
-              {{ formatCount(row.junk) }} <span class="opacity-70">({{ formatPercent(row.junkShare, 0) }})</span>
+              <DrillNumber
+                :request="drill.bySource(row.sourceId, 'junk', sourceLabel(dictionaries, row.sourceId))"
+                @drill="emit('drill', $event)"
+              >
+                {{ formatCount(row.junk) }}
+              </DrillNumber> <span class="opacity-70">({{ formatPercent(row.junkShare, 0) }})</span>
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatCount(row.qualified) }}
+              <DrillNumber
+                :request="drill.bySource(row.sourceId, 'qualified', sourceLabel(dictionaries, row.sourceId))"
+                @drill="emit('drill', $event)"
+              >
+                {{ formatCount(row.qualified) }}
+              </DrillNumber>
             </td>
             <td class="w-32 py-2 pr-3">
               <div class="text-right text-xs tabular-nums">
@@ -139,7 +156,12 @@ const outsideSources = computed(() => ({
               />
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatCount(row.won) }}
+              <DrillNumber
+                :request="drill.bySource(row.sourceId, 'won', sourceLabel(dictionaries, row.sourceId))"
+                @drill="emit('drill', $event)"
+              >
+                {{ formatCount(row.won) }}
+              </DrillNumber>
             </td>
             <td class="w-32 py-2 pr-3">
               <div class="text-right text-xs tabular-nums">
