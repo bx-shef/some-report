@@ -176,3 +176,8 @@ export function validatePeriod(period: ReportPeriod, maxDays = 366): PeriodProbl
   }
   return undefined
 }
+
+/** Один и тот же период — по границам, а не по ссылке: объекты периода пересоздаются на каждый выбор. */
+export function samePeriod(a: ReportPeriod | undefined, b: ReportPeriod | undefined): boolean {
+  return a !== undefined && b !== undefined && a.from === b.from && a.to === b.to
+}

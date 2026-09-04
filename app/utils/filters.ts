@@ -14,9 +14,14 @@ import { INITIAL_LEAD_STATUS } from '~/utils/leadHistory'
 
 export const EMPTY_FILTERS: ReportFilters = {}
 
+/** Менеджер задан: идентификатор сотрудника в портале — натуральное число, `0` и `NaN` — «не задан». */
+function hasManager(filters: ReportFilters): boolean {
+  return filters.assignedById !== undefined && Number.isFinite(filters.assignedById) && filters.assignedById > 0
+}
+
 /** Хоть один фильтр задан. */
 export function hasFilters(filters: ReportFilters): boolean {
-  return Boolean(filters.sourceId || filters.assignedById || filters.leadStatusId || filters.junkReasonId || filters.lossReasonKey)
+  return Boolean(filters.sourceId || hasManager(filters) || filters.leadStatusId || filters.junkReasonId || filters.lossReasonKey)
 }
 
 /**
@@ -34,10 +39,22 @@ export function leadStatusFilter(filters: ReportFilters): string | undefined {
 export function leadRestFilter(filters: ReportFilters): Record<string, string | number> {
   const out: Record<string, string | number> = {}
   if (filters.sourceId) out.SOURCE_ID = filters.sourceId
-  if (filters.assignedById) out.ASSIGNED_BY_ID = filters.assignedById
+  if (hasManager(filters)) out.ASSIGNED_BY_ID = filters.assignedById!
   const status = leadStatusFilter(filters)
   if (status) out.STATUS_ID = status
   return out
+}
+
+/**
+ * Значение, которым фильтр ЗАКРЕПИЛ поле (`STATUS_ID`, `SOURCE_ID`), строкой; не закреплено — `undefined`.
+ *
+ * ⚠ Нужно там, где пофакторная команда пакета пишет в то же поле: `{ ...base, STATUS_ID: X }`
+ * молча заменил бы условие фильтра условием команды, и разбивка считалась бы по всем лидам, а
+ * итог — по отфильтрованным. Одно правило для построителя пакета и адаптера.
+ */
+export function lockedFilterValue(leadFilter: Record<string, string | number>, field: 'STATUS_ID' | 'SOURCE_ID'): string | undefined {
+  const value = leadFilter[field]
+  return value === undefined || value === '' ? undefined : String(value)
 }
 
 /**
@@ -45,7 +62,7 @@ export function leadRestFilter(filters: ReportFilters): Record<string, string | 
  * применяются к сделкам через список ID лидов (`LEAD_ID in (...)`).
  */
 export function needsLeadIds(filters: ReportFilters): boolean {
-  return Boolean(filters.assignedById || leadStatusFilter(filters))
+  return hasManager(filters) || Boolean(leadStatusFilter(filters))
 }
 
 /**
@@ -86,9 +103,15 @@ export function applyFilters(leads: ReportLead[], deals: ReportDeal[], filters: 
   const status = leadStatusFilter(filters)
   const keptLeads = leads.filter((lead) => {
     if (filters.sourceId && lead.sourceId !== filters.sourceId) return false
-    if (filters.assignedById && lead.assignedById !== filters.assignedById) return false
+    if (hasManager(filters) && lead.assignedById !== filters.assignedById) return false
     if (status) {
-      const leadStatus = lead.outcome === 'junk' ? (lead.junkReasonId ?? '') : lead.outcome === 'converted' ? 'CONVERTED' : lead.firstResponseAt ? '1' : INITIAL_LEAD_STATUS
+      // Стадия из исхода: у строк демо-набора кода стадии нет. «Потерян» — стадия успеха без
+      // сделки, по коду это тот же `CONVERTED`, что и у сконвертированного.
+      const leadStatus = lead.outcome === 'junk'
+        ? (lead.junkReasonId ?? '')
+        : lead.outcome === 'converted' || lead.outcome === 'lost'
+          ? 'CONVERTED'
+          : lead.firstResponseAt ? '1' : INITIAL_LEAD_STATUS
       if (leadStatus !== status) return false
     }
     return true

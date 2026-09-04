@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockNuxtImport } from '@nuxt/test-utils/runtime'
 import { useReportData } from '~/composables/useReportData'
+import { leadCountKey } from '~/utils/b24Adapter'
 
 /**
  * Загрузка живых данных: порядок вызовов и гонка ответов.
@@ -22,7 +23,18 @@ const portal = vi.hoisted(() => ({
   /** Фильтры команд последнего пакета счётчиков лидов. */
   batchFilters: {} as Record<string, Record<string, unknown>>,
   /** Сотрудники, которых отдаёт `user.get` страницами по 50. */
-  users: [] as Array<{ ID: string, NAME?: string, LAST_NAME?: string }>
+  users: [] as Array<{ ID: string, NAME?: string, LAST_NAME?: string }>,
+  /** `user.get` падает (нет права) — отчёт от этого страдать не должен. */
+  usersFail: false,
+  /** Справочники портала — чтобы пакет счётчиков строил и пофакторные команды. */
+  sources: [{ STATUS_ID: 'CALL', NAME: 'Звонок' }, { STATUS_ID: 'EMAIL', NAME: 'Почта' }],
+  leadStatuses: [
+    { STATUS_ID: 'NEW', NAME: 'Новый', SEMANTICS: '' },
+    { STATUS_ID: '1', NAME: 'В работе', SEMANTICS: '' },
+    { STATUS_ID: 'JUNK', NAME: 'Спам', SEMANTICS: 'F' },
+    { STATUS_ID: 'OTHER', NAME: 'Нецелевой', SEMANTICS: 'F' },
+    { STATUS_ID: 'CONVERTED', NAME: 'Сделка', SEMANTICS: 'S' }
+  ]
 }))
 
 /** Пустой, но исправный ответ пакета: у каждой команды `getTotal()` и `getData()`. */
@@ -31,7 +43,8 @@ function batchAnswer(commands: Record<string, unknown>) {
   for (const [key, command] of Object.entries(commands)) {
     const filter = (command as { params?: { filter?: Record<string, unknown> } }).params?.filter
     if (filter && ('>=DATE_CREATE' in filter)) portal.batchFilters[key] = filter
-    data[key] = { getTotal: () => (key === 'total' ? portal.leadTotal : key === 'unprocessed' ? Math.min(2, portal.leadTotal) : 0), getData: () => ({ result: [] }) }
+    const rows = key === 'sources' ? portal.sources : key === 'leadStatuses' ? portal.leadStatuses : []
+    data[key] = { getTotal: () => (key === 'total' ? portal.leadTotal : key === 'unprocessed' ? Math.min(2, portal.leadTotal) : 0), getData: () => ({ result: rows }) }
   }
   return { isSuccess: true, getData: () => data, getErrorMessages: () => [] }
 }
@@ -52,13 +65,18 @@ mockNuxtImport('useB24', () => () => ({
             // Курсорные выборки (`start: -1`): справка блока 7, строки лидов и история стадий блока 6.
             const cursor = (params as { start?: number }).start === -1
             const history = method === 'crm.stagehistory.list'
+            // Под фильтром по полям лида: сначала ID лидов (select только ID), потом сделки по
+            // списку — свои ключи, чтобы тест видел, что именно спросили.
+            const leadIds = (params.filter as { LEAD_ID?: unknown })?.LEAD_ID
+            const onlyId = ((params as { select?: string[] }).select ?? []).join(',') === 'ID'
             const key = method === 'crm.deal.list'
-              ? `closed:${params.filter?.['>=CLOSEDATE'] ?? '?'}`
+              ? Array.isArray(leadIds) ? `deals-by:${leadIds.join(',')}` : `closed:${params.filter?.['>=CLOSEDATE'] ?? '?'}`
               : history
                 ? `${(params.filter as { TYPE_ID?: unknown })?.TYPE_ID === 1 ? 'created' : 'history'}:${params.filter?.['>=CREATED_TIME'] ?? '?'}`
-                : cursor && method === 'crm.lead.list' ? `leads:${params.filter?.['>=DATE_CREATE'] ?? '?'}` : undefined
+                : cursor && method === 'crm.lead.list' ? `${onlyId ? 'ids' : 'leads'}:${params.filter?.['>=DATE_CREATE'] ?? '?'}` : undefined
             if (method === 'user.get') {
               portal.calls.push('user.get')
+              if (portal.usersFail) return Promise.reject(new Error('insufficient_scope'))
               const start = (params as { start?: number }).start ?? 0
               const page = portal.users.slice(start, start + 50)
               const next = start + 50 < portal.users.length ? { next: start + 50 } : {}
@@ -114,6 +132,7 @@ beforeEach(() => {
   portal.filters = {}
   portal.batchFilters = {}
   portal.users = []
+  portal.usersFail = false
 })
 
 const AUGUST = { from: '2026-08-01', to: '2026-08-31' }
@@ -402,7 +421,10 @@ describe('load', () => {
       await loading
       expect(data.filters.value).toEqual({ sourceId: 'CALL' })
       for (const [key, filter] of Object.entries(portal.batchFilters)) expect(filter, key).toMatchObject({ SOURCE_ID: 'CALL' })
-      expect(Object.keys(portal.batchFilters).length).toBeGreaterThan(1)
+      // Свой источник спрошен под фильтром, чужой — не спрошен вовсе, стадии — под фильтром.
+      expect(portal.batchFilters).toHaveProperty(leadCountKey.source('CALL'))
+      expect(portal.batchFilters).not.toHaveProperty(leadCountKey.source('EMAIL'))
+      expect(portal.batchFilters[leadCountKey.stage('1')]).toMatchObject({ SOURCE_ID: 'CALL', STATUS_ID: '1' })
       // «Успешных из всех» под фильтром сравнивало бы отфильтрованное с полным — контекста нет.
       expect(data.dataset.value.allDeals).toBeUndefined()
       await vi.waitFor(() => expect(portal.pending[`leads:${AUGUST.from}`]).toBeDefined())
@@ -423,12 +445,96 @@ describe('load', () => {
       await loading
       expect(data.dataset.value.deals).toHaveLength(1)
 
+      // Строки лидов для истории стадий — под тем же фильтром.
+      await vi.waitFor(() => expect(portal.pending[`leads:${AUGUST.from}`]).toBeDefined())
+      expect(portal.filters[`leads:${AUGUST.from}`]).toMatchObject({ ASSIGNED_BY_ID: 562 })
+
       const second = data.load(SEPTEMBER, { assignedById: 562 })
       await vi.waitFor(() => expect(portal.pending[`ids:${SEPTEMBER.from}`]).toBeDefined())
       portal.pending[`ids:${SEPTEMBER.from}`]!([])
       await second
       expect(data.dataset.value.deals).toEqual([])
       expect(portal.calls.filter(c => c.startsWith('deals-by:'))).toEqual(['deals-by:1,2'])
+    })
+
+    // ⚠ `{ ...base, STATUS_ID: 'NEW' }` при фильтре по стадии брака заменял бы условие фильтра:
+    // блок 6 показывал бы «не обработано 100 %» для лидов, которые по фильтру давно закрыты.
+    it('причина закрытия лида: «не обработано» и чужие причины не спрашиваются, обработано — все', async () => {
+      const data = useReportData()
+      const loading = data.load(AUGUST, { junkReasonId: 'JUNK' })
+      await vi.waitFor(() => expect(portal.pending[`ids:${AUGUST.from}`]).toBeDefined())
+      portal.pending[`ids:${AUGUST.from}`]!([])
+      await loading
+      expect(portal.batchFilters).toHaveProperty(leadCountKey.junkReason('JUNK'))
+      expect(portal.batchFilters).not.toHaveProperty(leadCountKey.junkReason('OTHER'))
+      expect(portal.batchFilters).not.toHaveProperty(leadCountKey.unprocessed)
+      expect(portal.batchFilters).not.toHaveProperty(leadCountKey.stage('1'))
+      expect(data.report.value.processing).toMatchObject({ processed: 7, unprocessed: 0 })
+      // Причины брака в словаре — только стадии провала: фильтр по ним строится из словаря.
+      expect(Object.keys(data.dataset.value.dictionaries.junkReasons).sort()).toEqual(['JUNK', 'OTHER'])
+    })
+
+    // ⚠ Применённые фильтры — только вместе с данными: обогнавшая выборка с фильтром побеждает,
+    // а опоздавший ответ без фильтра не возвращает панели «нет фильтров» над отфильтрованными числами.
+    it('смена только фильтра: опоздавший ответ прошлой выборки того же периода выбрасывается', async () => {
+      const data = useReportData()
+      const first = data.load(AUGUST)
+      await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+      const second = data.load(AUGUST, { assignedById: 562 })
+      await vi.waitFor(() => expect(portal.pending[`ids:${AUGUST.from}`]).toBeDefined())
+      portal.pending[`ids:${AUGUST.from}`]!([{ ID: '1' }])
+      await vi.waitFor(() => expect(portal.pending['deals-by:1']).toBeDefined())
+      portal.pending['deals-by:1']!([])
+      await second
+      expect(data.filters.value).toEqual({ assignedById: 562 })
+      portal.pending[AUGUST.from]!([{ ID: '10', LEAD_ID: '1', STAGE_ID: 'WON', OPPORTUNITY: '300', CURRENCY_ID: 'BYN', SOURCE_ID: 'CALL', DATE_CREATE: '2026-08-10T10:00:00+03:00' }])
+      await first
+      expect(data.filters.value).toEqual({ assignedById: 562 })
+      expect(data.dataset.value.deals).toEqual([])
+      expect(data.pending.value).toBe(false)
+    })
+
+    // Блок 7 и история стадий от фильтров не зависят: при том же периоде они остаются, а не
+    // уходят в новую минутную выборку на каждый клик по фильтру.
+    it('смена только фильтра не перечитывает справку блока 7 и историю стадий', async () => {
+      const data = useReportData()
+      const first = data.load(AUGUST)
+      await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+      portal.pending[AUGUST.from]!([])
+      await first
+      await vi.waitFor(() => expect(portal.pending[`closed:${AUGUST.from}`]).toBeDefined())
+      portal.pending[`closed:${AUGUST.from}`]!([{ ID: '1', SOURCE_ID: '', OPPORTUNITY: '500', CURRENCY_ID: 'BYN' }])
+      await vi.waitFor(() => expect(data.dataset.value.unlinkedDeals?.total).toBe(1))
+      await vi.waitFor(() => expect(portal.pending[`history:${AUGUST.from}`]).toBeDefined())
+      portal.pending[`history:${AUGUST.from}`]!([{ ID: '9', TYPE_ID: 2, OWNER_ID: '1', CREATED_TIME: '2026-08-10T10:30:00+03:00', STATUS_ID: '1' }])
+      portal.pending[`created:${AUGUST.from}`]!([])
+      portal.pending[`leads:${AUGUST.from}`]!([{ ID: '1', DATE_CREATE: '2026-08-10T10:00:00+03:00', SOURCE_ID: 'CALL', STATUS_ID: '1' }])
+      await vi.waitFor(() => expect(data.processingTimed.value).toBe(true))
+      const closedCalls = portal.calls.filter(c => c === `closed:${AUGUST.from}`).length
+      const historyCalls = portal.calls.filter(c => c.startsWith('history:')).length
+
+      const second = data.load(AUGUST, { sourceId: 'CALL' })
+      await vi.waitFor(() => expect(portal.filters[AUGUST.from]).toMatchObject({ SOURCE_ID: 'CALL' }))
+      portal.pending[AUGUST.from]!([])
+      await second
+      // Справка на месте и не перезапрошена; история — из памяти, заново только строки лидов.
+      expect(data.dataset.value.unlinkedDeals?.total).toBe(1)
+      expect(data.unlinkedPending.value).toBe(false)
+      expect(portal.calls.filter(c => c === `closed:${AUGUST.from}`).length).toBe(closedCalls)
+      await vi.waitFor(() => expect(portal.calls.filter(c => c === `leads:${AUGUST.from}`).length).toBe(2))
+      expect(portal.calls.filter(c => c.startsWith('history:')).length).toBe(historyCalls)
+      portal.pending[`leads:${AUGUST.from}`]!([{ ID: '1', DATE_CREATE: '2026-08-10T10:00:00+03:00', SOURCE_ID: 'CALL', STATUS_ID: '1' }])
+      await vi.waitFor(() => expect(data.processingTimed.value).toBe(true))
+      expect(data.report.value.processing?.avgFirstResponseMinutes).toBeCloseTo(30, 6)
+
+      // Другой период — справка и история заново.
+      const third = data.load(SEPTEMBER, { sourceId: 'CALL' })
+      await vi.waitFor(() => expect(portal.pending[SEPTEMBER.from]).toBeDefined())
+      portal.pending[SEPTEMBER.from]!([])
+      await third
+      expect(data.dataset.value.unlinkedDeals).toBeUndefined()
+      await vi.waitFor(() => expect(portal.pending[`closed:${SEPTEMBER.from}`]).toBeDefined())
+      await vi.waitFor(() => expect(portal.pending[`history:${SEPTEMBER.from}`]).toBeDefined())
     })
 
     it('причина проигрыша — сделки ждут справочник стадий; без кодов под названием — заведомо пустая выборка', async () => {
@@ -456,6 +562,27 @@ describe('load', () => {
       await vi.waitFor(() => expect(portal.pending[SEPTEMBER.from]).toBeDefined())
       portal.pending[SEPTEMBER.from]!([])
       await second
+      expect(portal.calls.filter(c => c === 'user.get')).toHaveLength(2)
+    })
+
+    it('user.get упал — словарь пуст, отчёт цел, следующая выборка спрашивает снова', async () => {
+      portal.usersFail = true
+      const data = useReportData()
+      const first = data.load(AUGUST)
+      await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+      portal.pending[AUGUST.from]!([])
+      await first
+      expect(data.error.value).toBeUndefined()
+      expect(data.isDemo.value).toBe(false)
+      expect(data.dataset.value.dictionaries.users ?? {}).toEqual({})
+
+      portal.usersFail = false
+      portal.users = [{ ID: '562', NAME: 'Анна', LAST_NAME: 'Иванова' }]
+      const second = data.load(SEPTEMBER)
+      await vi.waitFor(() => expect(portal.pending[SEPTEMBER.from]).toBeDefined())
+      portal.pending[SEPTEMBER.from]!([])
+      await second
+      expect(data.dataset.value.dictionaries.users).toEqual({ 562: 'Иванова Анна' })
       expect(portal.calls.filter(c => c === 'user.get')).toHaveLength(2)
     })
 

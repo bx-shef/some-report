@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { adaptUsers, leadCountKey } from '~/utils/b24Adapter'
+import { adaptLeadCounts, adaptUsers, leadCountKey } from '~/utils/b24Adapter'
 import { dealsFromLeadsParams, leadCountBatch, leadHistoryLeadParams, leadIdsParams, userListParams } from '~/utils/b24Query'
 import {
   EMPTY_FILTERS,
@@ -10,6 +10,7 @@ import {
   hasFilters,
   leadRestFilter,
   leadStatusFilter,
+  lockedFilterValue,
   needsLeadIds
 } from '~/utils/filters'
 import { buildMockDataset } from '~/utils/mockReport'
@@ -26,8 +27,17 @@ const AUGUST = { from: '2026-08-01', to: '2026-08-31' }
 describe('фрагменты REST-фильтра', () => {
   it('пустые фильтры — пустой фрагмент, без ключей с пустыми значениями', () => {
     expect(hasFilters(EMPTY_FILTERS)).toBe(false)
+    expect(hasFilters({ assignedById: 0 })).toBe(false)
+    expect(hasFilters({ assignedById: Number.NaN })).toBe(false)
     expect(leadRestFilter({ sourceId: '', assignedById: 0 })).toEqual({})
     expect(needsLeadIds({ sourceId: 'CALL' })).toBe(false)
+    expect(needsLeadIds({ assignedById: 0 })).toBe(false)
+  })
+
+  it('закреплённое фильтром поле — строкой; пустое или отсутствующее — не закреплено', () => {
+    expect(lockedFilterValue({ STATUS_ID: 'JUNK' }, 'STATUS_ID')).toBe('JUNK')
+    expect(lockedFilterValue({ ASSIGNED_BY_ID: 562 }, 'STATUS_ID')).toBeUndefined()
+    expect(lockedFilterValue({ SOURCE_ID: '' }, 'SOURCE_ID')).toBeUndefined()
   })
 
   it('источник и менеджер — поля лида; стадия и причина брака — одно поле STATUS_ID, причина точнее', () => {
@@ -60,6 +70,40 @@ describe('параметры запросов под фильтром', () => {
       expect(command.params.filter, key).toMatchObject({ ASSIGNED_BY_ID: 562 })
     }
     expect(commands[leadCountKey.unprocessed]!.params.filter).toMatchObject({ STATUS_ID: 'NEW', ASSIGNED_BY_ID: 562 })
+  })
+
+  // ⚠ Фильтр и пофакторная команда пишут в одно поле: `{ ...base, SOURCE_ID: 'EMAIL' }` при фильтре
+  // CALL молча заменял бы условие, и таблица источников считалась бы по всем лидам.
+  it('под фильтром по источнику команды о других источниках не шлются, свой — с фильтром', () => {
+    const commands = leadCountBatch(AUGUST, { junkStatusIds: ['JUNK'], sourceIds: ['CALL', 'EMAIL'], openStatusIds: ['NEW', '1'] }, { SOURCE_ID: 'CALL' })
+    expect(commands[leadCountKey.source('CALL')]!.params.filter).toEqual({ '>=DATE_CREATE': '2026-08-01', '<DATE_CREATE': '2026-09-01', 'SOURCE_ID': 'CALL' })
+    expect(commands).not.toHaveProperty(leadCountKey.source('EMAIL'))
+    expect(commands).not.toHaveProperty(leadCountKey.sourceJunk('EMAIL'))
+    // Стадии фильтром не закреплены — спрашиваются все, и все под фильтром источника.
+    expect(commands[leadCountKey.unprocessed]!.params.filter).toMatchObject({ SOURCE_ID: 'CALL', STATUS_ID: 'NEW' })
+    expect(commands[leadCountKey.stage('1')]!.params.filter).toMatchObject({ SOURCE_ID: 'CALL', STATUS_ID: '1' })
+  })
+
+  it('под фильтром по стадии брака: ни «не обработано», ни других причин, ни открытых стадий', () => {
+    const commands = leadCountBatch(AUGUST, { junkStatusIds: ['JUNK', 'OTHER'], sourceIds: ['CALL'], openStatusIds: ['NEW', '1'] }, { STATUS_ID: 'JUNK' })
+    expect(commands[leadCountKey.junkReason('JUNK')]!.params.filter).toMatchObject({ STATUS_ID: 'JUNK' })
+    expect(commands).not.toHaveProperty(leadCountKey.junkReason('OTHER'))
+    expect(commands).not.toHaveProperty(leadCountKey.unprocessed)
+    expect(commands).not.toHaveProperty(leadCountKey.stage('1'))
+    // Источники не закреплены — под фильтром стадии спрашиваются как обычно.
+    expect(commands[leadCountKey.source('CALL')]!.params.filter).toMatchObject({ STATUS_ID: 'JUNK', SOURCE_ID: 'CALL' })
+    // Фильтр по самой NEW — «не обработано» спрашивается, это и есть всего.
+    expect(leadCountBatch(AUGUST, { junkStatusIds: [], sourceIds: [] }, { STATUS_ID: 'NEW' })).toHaveProperty(leadCountKey.unprocessed)
+  })
+
+  it('адаптер: под фильтром по стадии брака «не обработано» — ноль, а не «не считали»', () => {
+    const totals = { [leadCountKey.total]: 5, [leadCountKey.junk]: 5, [leadCountKey.junkReason('JUNK')]: 5 }
+    const filtered = adaptLeadCounts({ totals, sourceIds: [], junkStatusIds: ['JUNK', 'OTHER'], openStatusIds: ['NEW', '1'], leadFilter: { STATUS_ID: 'JUNK' } })
+    expect(filtered.unprocessed).toBe(0)
+    expect(filtered.processing).toMatchObject({ processed: 5, unprocessed: 0 })
+    expect(filtered.junkByReason).toEqual({ JUNK: 5 })
+    // Без фильтра отсутствующий счётчик по-прежнему значит «не считали».
+    expect(adaptLeadCounts({ totals, sourceIds: [], junkStatusIds: ['JUNK'] }).unprocessed).toBeUndefined()
   })
 
   it('строки лидов для истории и список ID — под тем же фильтром', () => {
@@ -144,6 +188,14 @@ describe('applyFilters (демо-набор)', () => {
     // NEW и «В работе» в предпросмотре честно пусты, а не подменены чем-то похожим.
     expect(applyFilters(dataset.leads, dataset.deals, { leadStatusId: 'NEW' }).leads).toEqual([])
     expect(applyFilters(dataset.leads, dataset.deals, { leadStatusId: '1' }).leads).toEqual([])
+  })
+
+  // «Потерян» — стадия успеха без сделки: по коду это CONVERTED, как и у сконвертированного.
+  it('стадия CONVERTED — и сконвертированные, и потерянные без сделки', () => {
+    const lead = { ...dataset.leads[0]!, id: 999_999, outcome: 'lost' as const, dealIds: [] }
+    const rows = applyFilters([lead], [], { leadStatusId: 'CONVERTED' })
+    expect(rows.leads.map(l => l.id)).toEqual([999_999])
+    expect(applyFilters([lead], [], { leadStatusId: 'NEW' }).leads).toEqual([])
   })
 
   it('стадия лида и причина брака вместе — побеждает причина', () => {

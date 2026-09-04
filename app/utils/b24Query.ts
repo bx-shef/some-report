@@ -2,6 +2,7 @@ import type { ReportPeriod } from '~/types/report'
 import { dealCountKey, leadCountKey } from '~/utils/b24Adapter'
 import { INITIAL_LEAD_STATUS } from '~/utils/leadHistory'
 import { fromIsoDate, toIsoDate } from '~/utils/period'
+import { lockedFilterValue } from '~/utils/filters'
 
 /**
  * Запросы к порталу: что именно спрашиваем у CRM за период отчёта.
@@ -135,24 +136,36 @@ export function leadCountBatch(
 ): Record<string, BatchCommand> {
   const base = { ...periodFilter(period), ...leadFilter }
   const method = 'crm.lead.list'
+  // ⚠ Фильтр по стадии или источнику и пофакторная команда пишут в ОДНО поле фильтра. Команду о
+  // чужом значении не шлём: `{ ...base, STATUS_ID: X }` заменил бы условие фильтра условием
+  // команды, и разбивка считалась бы по всем лидам, а итог — по отфильтрованным (ревью PR
+  // фильтров). Ответ такой команды — ноль по построению, и `adaptLeadCounts` так его и читает.
+  const lockedStatus = lockedFilterValue(leadFilter, 'STATUS_ID')
+  const lockedSource = lockedFilterValue(leadFilter, 'SOURCE_ID')
+  const statusFits = (statusId: string) => lockedStatus === undefined || lockedStatus === statusId
+  const sourceFits = (sourceId: string) => lockedSource === undefined || lockedSource === sourceId
   const commands: Record<string, BatchCommand> = {
     [leadCountKey.total]: countCommand(method, base),
     [leadCountKey.junk]: countCommand(method, { ...base, STATUS_SEMANTIC_ID: 'F' }),
     [leadCountKey.converted]: countCommand(method, { ...base, STATUS_SEMANTIC_ID: 'S' }),
-    [leadCountKey.inWork]: countCommand(method, { ...base, STATUS_SEMANTIC_ID: 'P' }),
-    // «Не обработано» — лиды, которые до сих пор в `NEW`. Обработано = всего − это число:
-    // решение владельца от 2026-09-04, «ушёл со стадии „Не обработан“ — обработан».
-    [leadCountKey.unprocessed]: countCommand(method, { ...base, STATUS_ID: INITIAL_LEAD_STATUS })
+    [leadCountKey.inWork]: countCommand(method, { ...base, STATUS_SEMANTIC_ID: 'P' })
+  }
+  // «Не обработано» — лиды, которые до сих пор в `NEW`. Обработано = всего − это число:
+  // решение владельца от 2026-09-04, «ушёл со стадии „Не обработан“ — обработан».
+  if (statusFits(INITIAL_LEAD_STATUS)) {
+    commands[leadCountKey.unprocessed] = countCommand(method, { ...base, STATUS_ID: INITIAL_LEAD_STATUS })
   }
   for (const statusId of dictionaries.junkStatusIds) {
+    if (!statusFits(statusId)) continue
     commands[leadCountKey.junkReason(statusId)] = countCommand(method, { ...base, STATUS_ID: statusId })
   }
   // `NEW` уже спрошен как «не обработано» — второй раз тот же счётчик не шлём.
   for (const statusId of dictionaries.openStatusIds ?? []) {
-    if (statusId === INITIAL_LEAD_STATUS) continue
+    if (statusId === INITIAL_LEAD_STATUS || !statusFits(statusId)) continue
     commands[leadCountKey.stage(statusId)] = countCommand(method, { ...base, STATUS_ID: statusId })
   }
   for (const sourceId of dictionaries.sourceIds) {
+    if (!sourceFits(sourceId)) continue
     commands[leadCountKey.source(sourceId)] = countCommand(method, { ...base, SOURCE_ID: sourceId })
     commands[leadCountKey.sourceJunk(sourceId)] = countCommand(method, { ...base, SOURCE_ID: sourceId, STATUS_SEMANTIC_ID: 'F' })
     commands[leadCountKey.sourceConverted(sourceId)] = countCommand(method, { ...base, SOURCE_ID: sourceId, STATUS_SEMANTIC_ID: 'S' })

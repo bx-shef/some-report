@@ -1,6 +1,7 @@
 import { UNSPECIFIED_SOURCE, share, UNSPECIFIED_REASON, processingFromCounts } from '~/utils/metrics'
 import { mergeReasons } from '~/utils/reasonMerge'
 import { INITIAL_LEAD_STATUS } from '~/utils/leadHistory'
+import { lockedFilterValue } from '~/utils/filters'
 import type {
   DealsContext,
   UnlinkedDeals,
@@ -508,6 +509,11 @@ export const leadCountKey = {
 export interface LeadCountsInput {
   /** Открытые стадии лида — для разбивки блока 6. Нет — разбивки нет. */
   openStatusIds?: readonly string[]
+  /**
+   * Фрагмент фильтра лидов, под которым собран пакет (`leadRestFilter`). По нему адаптер знает,
+   * что счётчик `NEW` под фильтром по другой стадии не спрашивали, потому что он — ноль.
+   */
+  leadFilter?: Record<string, string | number>
   /** Ключ (см. `leadCountKey`) → `total` из ответа портала. Отсутствующий ключ читается как 0. */
   totals: Record<string, number>
   /** Коды источников, по которым спрашивали. */
@@ -566,7 +572,12 @@ export function adaptLeadCounts(input: LeadCountsInput): LeadAggregate {
   if (rest.leads > 0) bySource[UNSPECIFIED_SOURCE] = rest
 
   // Открытые лиды по стадиям — только если стадии передали; счётчик, которого не спрашивали, — ноль.
-  const unprocessed = leadCountKey.unprocessed in input.totals ? Math.min(total, get(leadCountKey.unprocessed)) : undefined
+  // Под фильтром по стадии, отличной от `NEW`, «не обработано» — ноль по построению, и пакет его
+  // не спрашивал (см. `leadCountBatch`); без фильтра отсутствующий ключ значит «не считали».
+  const lockedStatus = lockedFilterValue(input.leadFilter ?? {}, 'STATUS_ID')
+  const unprocessed = leadCountKey.unprocessed in input.totals
+    ? Math.min(total, get(leadCountKey.unprocessed))
+    : lockedStatus !== undefined && lockedStatus !== INITIAL_LEAD_STATUS ? 0 : undefined
   let byOpenStage: Record<string, number> | undefined
   if (input.openStatusIds) {
     byOpenStage = Object.create(null) as Record<string, number>

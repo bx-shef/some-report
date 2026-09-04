@@ -1,6 +1,8 @@
 // @vitest-environment nuxt
+import type { DefineComponent } from 'vue'
 import { describe, expect, it } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
+import { B24SelectMenu } from '#components'
 import ReportFilters from '~/components/ReportFilters.vue'
 import type { ReportFilters as Filters } from '~/types/report'
 import { buildMockDataset } from '~/utils/mockReport'
@@ -9,10 +11,10 @@ import { buildMockDataset } from '~/utils/mockReport'
  * Панель фильтров: что она отдаёт наружу. Сам выпадающий список — компонент Bitrix24 UI, его
  * не проверяем; проверяем правила сборки значения, которые живут здесь.
  *
- * Компонент ищем по имени файла (`SelectMenu`): у него generic-типы, и поиск по импорту из
- * `#components` тайпчекер сводит к DOM-обёртке без `vm` и `props`.
+ * Компонент ищем по самому определению из `#components`. Приведение типа — потому что у
+ * generic-компонента тип функции, и тайпчекер сводил бы результат к DOM-обёртке без `vm`.
  */
-const SELECT = { name: 'SelectMenu' }
+const SELECT = B24SelectMenu as unknown as DefineComponent
 const dictionaries = buildMockDataset().dictionaries
 
 function render(modelValue: Filters = {}, extra: Partial<{ disabled: boolean }> = {}, dict = dictionaries) {
@@ -54,6 +56,23 @@ describe('ReportFilters', () => {
     expect(await pickAt(fromReason, 2, 'CONVERTED')).toEqual({ leadStatusId: 'CONVERTED' })
   })
 
+  it('причина проигрыша — пятый список; подпись о правилах есть только при выборе', async () => {
+    const wrapper = await render()
+    expect(wrapper.text()).not.toContain('Менеджер — ответственный лида')
+    expect(await pickAt(wrapper, 4, 'дорого')).toEqual({ lossReasonKey: 'дорого' })
+    const active = await render({ lossReasonKey: 'дорого' })
+    expect(active.text()).toContain('Менеджер — ответственный лида')
+    expect(active.text()).toContain('выбор одного снимает другое')
+  })
+
+  // Пока идёт выборка, менять фильтры нельзя: каждая смена — новый запрос к порталу.
+  it('disabled закрывает все пять списков и кнопку «Сбросить»', async () => {
+    const wrapper = await render({ sourceId: 'CALL' }, { disabled: true })
+    for (const menu of wrapper.findAllComponents(SELECT)) expect((menu.props() as Record<string, unknown>).disabled).toBe(true)
+    const button = wrapper.findAll('button').find((b: { text: () => string }) => b.text().includes('Сбросить'))!
+    expect(button.attributes('disabled')).toBeDefined()
+  })
+
   it('«Сбросить» отдаёт пустые фильтры', async () => {
     const wrapper = await render({ sourceId: 'CALL', lossReasonKey: 'X' })
     const button = wrapper.findAll('button').find((b: { text: () => string }) => b.text().includes('Сбросить'))!
@@ -64,8 +83,8 @@ describe('ReportFilters', () => {
   // Права `user_brief` может не быть — тогда список пуст, и выбор менеджера закрыт с объяснением.
   it('без списка сотрудников выбор менеджера закрыт и подписан', async () => {
     const wrapper = await render({}, {}, { ...dictionaries, users: {} })
-    const manager = wrapper.findAllComponents(SELECT)[1]!
-    expect(manager.props('disabled')).toBe(true)
-    expect(manager.props('placeholder')).toContain('недоступен')
+    const manager = wrapper.findAllComponents(SELECT)[1]!.props() as Record<string, unknown>
+    expect(manager.disabled).toBe(true)
+    expect(manager.placeholder).toContain('недоступен')
   })
 })

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { ReportFilters, ReportPeriod } from '~/types/report'
-import { hasFilters } from '~/utils/filters'
+import { hasFilters, needsLeadIds } from '~/utils/filters'
 import { formatDate } from '~/utils/format'
-import { periodLengthDays, resolvePreset } from '~/utils/period'
+import { periodLengthDays, resolvePreset, samePeriod } from '~/utils/period'
 import { PROCESSING_MINUTES_PER_MONTH, UNLINKED_MINUTES_PER_MONTH } from '~/composables/useReportData'
 
 /**
@@ -59,10 +59,6 @@ onMounted(async () => {
   if (b24.isInit() && !samePeriod(period.value, requested)) await load(period.value, filters.value)
   await fit()
 })
-
-function samePeriod(a: ReportPeriod, b: ReportPeriod): boolean {
-  return a.from === b.from && a.to === b.to
-}
 
 /**
  * Сколько ждать справку блока 7, в минутах: ≈ 5 500 строк на месяц по замеру боевого портала
@@ -136,6 +132,17 @@ const dataNotes = computed(() => {
  * читает нули как «приложение сломалось» — и он прав в том, что экран ему ничего не объяснил.
  * Поэтому здесь либо «в портале вообще нет лидов», либо «в этом периоде нет, последний был тогда-то».
  */
+/**
+ * Фильтр по причине проигрыша оставляет ТОЛЬКО проигранные сделки этой причины — успешных среди
+ * них нет по определению, и сводка, воронка, источники честно показывают ноль продаж при полных
+ * лидах. Без подписи это читается как «в этом месяце ничего не продали» (ревью PR фильтров).
+ */
+const lossReasonNote = computed(() =>
+  appliedFilters.value.lossReasonKey && !pending.value
+    ? 'Выбрана причина проигрыша сделки: в сводке, воронке и источниках успешных сделок и выручки нет по построению — фильтр оставляет только проигранные сделки этой причины, лиды и квалифицированные при этом полные. Смотрите блок 4 «Разбивка причин проигрыша сделок».'
+    : undefined
+)
+
 const emptyPeriodNote = computed(() => {
   if (pending.value || report.value.summary.totalLeads > 0) return undefined
   // Под фильтром пустота — свойство фильтра, а не портала: подсказка про последний лид врала бы.
@@ -197,6 +204,9 @@ async function fit() {
           class="text-sm opacity-70"
         >
           Читаем лиды и сделки портала… Месяц занимает около 15 секунд, год — до минуты.
+          <template v-if="needsLeadIds(filters)">
+            Под фильтром по менеджеру или стадии дольше: сначала лиды под фильтром, потом их сделки.
+          </template>
         </p>
 
         <!-- ⚠ Демо-плашку заказчик однажды не заметил и принял числа макета за свои. Поэтому
@@ -217,6 +227,13 @@ async function fit() {
           :description="`${error} ${isDemo
             ? 'Показан демонстрационный набор, а не ваши данные.'
             : `На экране остались данные предыдущей выборки за ${formatDate(dataset.period.from)} — ${formatDate(dataset.period.to)}.`}`"
+        />
+
+        <B24Alert
+          v-if="lossReasonNote"
+          color="air-primary-warning"
+          title="Успешных сделок под этим фильтром не бывает"
+          :description="lossReasonNote"
         />
 
         <B24Alert
