@@ -482,6 +482,16 @@ describe('aggregateLeads', () => {
     expect(rows.find(r => r.sourceId === 'CALL')).toMatchObject({ won: 1, revenue: 7 })
   })
 
+  // ⚠ Без карты лидов сделка по лиду ПРОШЛОГО месяца несёт источник, у которого за период нет
+  // ни одного лида. Строка «лидов 0, успешных 1» с конверсией 300 % при трёх таких сделках —
+  // ровно то, чего в отчёте быть не должно; оба режима её не рисуют.
+  it('без карты лидов сделка источника без лидов строки не создаёт', () => {
+    const agg = aggregateLeads([lead({ id: 2, outcome: 'converted', dealIds: [10], sourceId: 'CALL' })], ALL)
+    delete agg.leadSourceById
+    const rows = sourceRows(agg, [deal({ id: 11, leadId: 99, outcome: 'won', amount: 7, sourceId: 'WEB' })], ALL)
+    expect(rows.find(r => r.sourceId === 'WEB')).toBeUndefined()
+  })
+
   // Сделка, чей лид известен по карте, но в выборке отсутствует, в разрез не входит: иначе выручка
   // легла бы на источник, которого в таблице лидов нет, и итоги разошлись бы со сводкой.
   it('с картой лидов сделка чужого лида в разрез не входит', () => {

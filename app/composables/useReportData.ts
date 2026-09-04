@@ -1,6 +1,6 @@
 import type { ConversionBase, ReportDataset, ReportMetrics, ReportPeriod } from '~/types/report'
 import type { AdapterWarnings, B24CurrencyRow, B24LeadRow, B24StatusRow, B24DealRow } from '~/utils/b24Adapter'
-import { adaptDeals, adaptDealsContext, adaptLeadCounts, statusIdsBySemantic, statusNames } from '~/utils/b24Adapter'
+import { adaptDeals, adaptDealsContext, adaptLeadCounts, baseCurrency, statusIdsBySemantic, statusNames } from '~/utils/b24Adapter'
 import {
   type BatchCommand,
   categoryListParams,
@@ -174,7 +174,9 @@ export function useReportData() {
         method: 'crm.lead.list',
         params: latestLeadParams()
       })
-      const rows = result.getData()
+      // ⚠ `getData()` отдаёт конверт `{ result, time }`, а не сами строки. Проверка `Array.isArray`
+      // прямо на конверте была всегда ложной — и подсказка о последнем лиде не работала никогда.
+      const rows = result.getData()?.result
       const date = Array.isArray(rows) ? rows[0]?.DATE_CREATE : undefined
       return typeof date === 'string' && date ? date.slice(0, 10) : undefined
     } catch {
@@ -208,28 +210,28 @@ export function useReportData() {
       const sources = (books.sources ?? []) as B24StatusRow[]
       const leadStatuses = (books.leadStatuses ?? []) as B24StatusRow[]
 
-      // 2. Стадии сделок ВСЕХ направлений: `DEAL_STAGE` — только направление по умолчанию,
-      //    у заказчика их четыре. Без остальных причина проигрыша приедет кодом вместо названия.
-      const categoryIds = await fetchCategoryIds()
-      const stageBooks = await batchRows<B24StatusRow>(dealStageBatch(categoryIds))
-      const dealStages = Object.values(stageBooks).flat()
-
-      // 3. Лиды — счётчиками. Что спросить, знает `leadCountBatch`; что с этим делать — `adaptLeadCounts`.
       const junkStatusIds = statusIdsBySemantic(leadStatuses, 'F')
       const sourceIds = sources.map(row => row.STATUS_ID).filter(Boolean)
-      const leadTotals = await batchTotals(leadCountBatch(period, { junkStatusIds, sourceIds }))
 
-      // 4. Сделки из лидов — строками: ради выручки и причин проигрыша. Их ~10 % от всех.
-      const dealRows = await fetchAll<B24DealRow>('crm.deal.list', dealsFromLeadsParams(period))
-
-      // 5. Сделки всего портала — три счётчика, чтобы «успешных: 636» не читалось как «всего продаж».
-      const dealTotals = await batchTotals(dealContextBatch(period))
+      // Шаги 2–5 независимы друг от друга — идут параллельно. Последовательно они стоили бы ещё
+      // 4–5 секунд поверх самого долгого шага (строки сделок), ожидая ничего.
+      const [dealStages, leadTotals, dealRows, dealTotals] = await Promise.all([
+        // 2. Стадии сделок ВСЕХ направлений: `DEAL_STAGE` — только направление по умолчанию,
+        //    у заказчика их четыре. Без остальных причина проигрыша приедет кодом вместо названия.
+        fetchCategoryIds().then(ids => batchRows<B24StatusRow>(dealStageBatch(ids))).then(books => Object.values(books).flat()),
+        // 3. Лиды — счётчиками. Что спросить, знает `leadCountBatch`; что с этим делать — `adaptLeadCounts`.
+        batchTotals(leadCountBatch(period, { junkStatusIds, sourceIds })),
+        // 4. Сделки из лидов — строками: ради выручки и причин проигрыша. Их ~10 % от всех.
+        fetchAll<B24DealRow>('crm.deal.list', dealsFromLeadsParams(period)),
+        // 5. Сделки всего портала — три счётчика, чтобы «успешных: 636» не читалось как «всего продаж».
+        batchTotals(dealContextBatch(period))
+      ])
 
       if (mine !== seq) return
 
       const leadAggregate = adaptLeadCounts({ totals: leadTotals, sourceIds, junkStatusIds })
       const adaptedDeals = adaptDeals(dealRows, currencies)
-      const currencyId = currencies.find(row => String(row.BASE).toUpperCase() === 'Y')?.CURRENCY ?? currencies[0]?.CURRENCY ?? ''
+      const currencyId = baseCurrency(currencies)
 
       dataset.value = {
         leads: [],

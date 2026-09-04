@@ -350,10 +350,13 @@ export function sourceRows(
       ? leads.leadSourceById[deal.leadId]
       : sourceKey(deal.sourceId)
     if (sourceId === undefined) continue
-    const row = acc.get(sourceId) ?? { leads: 0, junk: 0, qualified: 0, won: 0, revenue: 0 }
+    // ⚠ Источник без единого лида за период строки не получает — ни в одном из режимов. Иначе
+    // сделка по лиду прошлого месяца рисовала бы строку «лидов 0, успешных 1, конверсия 0 %», а
+    // при одном лиде и трёх таких сделках — конверсию 300 %.
+    const row = acc.get(sourceId)
+    if (!row) continue
     row.won += 1
     row.revenue += deal.amount
-    acc.set(sourceId, row)
   }
 
   return [...acc.entries()]

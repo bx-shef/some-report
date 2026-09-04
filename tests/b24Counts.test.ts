@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { adaptDealsContext, adaptLeadCounts, dealCountKey, leadCountKey, statusIdsBySemantic } from '~/utils/b24Adapter'
+import { adaptDeals, adaptDealsContext, adaptLeadCounts, dealCountKey, leadCountKey, statusIdsBySemantic } from '~/utils/b24Adapter'
 import { dealContextBatch, dealStageBatch, dealsFromLeadsParams, leadCountBatch } from '~/utils/b24Query'
-import { UNSPECIFIED_SOURCE } from '~/utils/metrics'
+import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
 
 /**
  * Режим счётчиков: что спрашиваем у портала и как читаем ответ.
@@ -77,6 +77,14 @@ describe('adaptLeadCounts', () => {
     expect(agg.bySource[UNSPECIFIED_SOURCE]).toEqual({ leads: 40, junk: 20, qualified: 5 })
   })
 
+  // Брак на стадии, которой нет в справочнике, в итоге по семантике ЕСТЬ. Без остатка таблица причин
+  // молча недосчитывала бы этих лидов — со остатком они в «причина не указана», как и по строкам.
+  it('брак на неизвестной стадии кладёт в «причина не указана»', () => {
+    const totals = { [leadCountKey.total]: 10, [leadCountKey.junk]: 6, [leadCountKey.junkReason('JUNK')]: 4 }
+    const agg = adaptLeadCounts({ totals, sourceIds: [], junkStatusIds: ['JUNK'] })
+    expect(agg.junkByReason).toEqual({ JUNK: 4, [UNSPECIFIED_REASON]: 2 })
+  })
+
   it('источник без лидов в таблицу не попадает', () => {
     expect(agg.bySource.WEB).toBeUndefined()
   })
@@ -114,5 +122,46 @@ describe('сделки', () => {
     const batch = dealStageBatch([0, 1, 3, 4])
     expect(Object.keys(batch).sort()).toEqual(['c1', 'c3', 'c4', 'default'])
     expect(batch.c3?.params.filter).toEqual({ ENTITY_ID: 'DEAL_STAGE_3' })
+  })
+})
+
+describe('adaptDeals', () => {
+  const BYN = [{ CURRENCY: 'BYN', BASE: 'Y', AMOUNT: '1', AMOUNT_CNT: '1' }]
+  const row = (patch: Record<string, unknown>) => ({
+    ID: '1', LEAD_ID: '10', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '100', CURRENCY_ID: 'BYN', SOURCE_ID: 'CALL', ...patch
+  })
+
+  it('переводит строку в сделку с лидом, исходом и суммой', () => {
+    const { deals } = adaptDeals([row({})], BYN)
+    expect(deals[0]).toMatchObject({ id: 1, leadId: 10, outcome: 'won', amount: 100, sourceId: 'CALL' })
+  })
+
+  it('проигрыш несёт код стадии как причину', () => {
+    const { deals } = adaptDeals([row({ STAGE_ID: 'C3:LOSE', STAGE_SEMANTIC_ID: 'F' })], BYN)
+    expect(deals[0]).toMatchObject({ outcome: 'lost', lossReasonId: 'C3:LOSE' })
+  })
+
+  it('повтор по ID отбрасывает и считает', () => {
+    const { deals, duplicateIds } = adaptDeals([row({}), row({ OPPORTUNITY: '999' })], BYN)
+    expect(deals).toHaveLength(1)
+    expect(duplicateIds).toBe(1)
+  })
+
+  // Выборка уже отфильтрована по LEAD_ID — сделка без лида здесь означает, что фильтр поехал.
+  it('сделку без лида считает отдельно', () => {
+    expect(adaptDeals([row({ LEAD_ID: null })], BYN).dealsWithoutLead).toBe(1)
+  })
+
+  // ⚠ На портале заказчика ВСЕ успешные сделки из лидов с нулём — это факт о процессе в CRM, и
+  // «выручка 0» без этого счётчика читалась бы как поломка отчёта.
+  it('успешную сделку с нулевой суммой считает отдельно', () => {
+    const { wonWithoutAmount } = adaptDeals([row({ OPPORTUNITY: '0.00' }), row({ ID: '2' })], BYN)
+    expect(wonWithoutAmount).toBe(1)
+  })
+
+  it('валюту без курса не конвертирует и считает', () => {
+    const { deals, unconvertedDeals } = adaptDeals([row({ CURRENCY_ID: 'XYZ' })], BYN)
+    expect(deals[0]?.amount).toBe(100)
+    expect(unconvertedDeals).toBe(1)
   })
 })

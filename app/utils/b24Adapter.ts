@@ -6,7 +6,7 @@ import type {
   ReportDictionaries,
   ReportLead
 } from '~/types/report'
-import { UNSPECIFIED_SOURCE } from '~/utils/metrics'
+import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
 
 /**
  * Перевод сырых строк REST Битрикс24 в нормализованные лиды и сделки.
@@ -477,10 +477,16 @@ export function adaptLeadCounts(input: LeadCountsInput): LeadAggregate {
   const inWork = get(leadCountKey.inWork)
 
   const junkByReason: Record<string, number> = Object.create(null)
+  let junkKnown = 0
   for (const statusId of input.junkStatusIds) {
     const count = get(leadCountKey.junkReason(statusId))
     if (count > 0) junkByReason[statusId] = count
+    junkKnown += count
   }
+  // ⚠ Брак на стадии, которой нет в справочнике (удалена, переименована), в итоге по семантике
+  // ЕСТЬ, а в разбивке по стадиям — нет. Без остатка таблица причин недосчитывала бы этих лидов
+  // молча; со остатком они лежат в «причина не указана» — как и при построчном разборе.
+  if (junk - junkKnown > 0) junkByReason[UNSPECIFIED_REASON] = junk - junkKnown
 
   const bySource: Record<string, { leads: number, junk: number, qualified: number }> = Object.create(null)
   let known = { leads: 0, junk: 0, qualified: 0 }

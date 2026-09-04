@@ -12,6 +12,8 @@ import { useReportData } from '~/composables/useReportData'
  */
 const portal = vi.hoisted(() => ({
   initialized: true,
+  /** Сколько лидов «нашёл» портал за период. Ноль включает подсказку о последнем лиде. */
+  leadTotal: 7,
   /** Отложенные ответы постраничной выборки по периоду: тест сам решает, кто ответит первым. */
   pending: {} as Record<string, (rows: unknown[]) => void>,
   calls: [] as string[]
@@ -21,7 +23,7 @@ const portal = vi.hoisted(() => ({
 function batchAnswer(commands: Record<string, unknown>) {
   const data: Record<string, { getTotal: () => number, getData: () => { result: unknown[] } }> = {}
   for (const key of Object.keys(commands)) {
-    data[key] = { getTotal: () => (key === 'total' ? 7 : 0), getData: () => ({ result: [] }) }
+    data[key] = { getTotal: () => (key === 'total' ? portal.leadTotal : 0), getData: () => ({ result: [] }) }
   }
   return { isSuccess: true, getData: () => data, getErrorMessages: () => [] }
 }
@@ -36,7 +38,17 @@ mockNuxtImport('useB24', () => () => ({
     actions: {
       v2: {
         batch: { make: async ({ calls }: { calls: Record<string, unknown> }) => batchAnswer(calls) },
-        call: { make: async () => ({ isSuccess: true, getData: () => ({ result: { categories: [] } }) }) },
+        call: {
+          make: async ({ method }: { method: string }) => ({
+            isSuccess: true,
+            // ⚠ Как и живой SDK: `getData()` отдаёт КОНВЕРТ `{ result }`, а не сами строки.
+            getData: () => ({
+              result: method === 'crm.lead.list'
+                ? [{ ID: '5', DATE_CREATE: '2026-08-17T10:00:00+03:00' }]
+                : { categories: [] }
+            })
+          })
+        },
         callList: {
           make: ({ params }: { params: { filter: Record<string, string> } }) => {
             const from = params.filter['>=DATE_CREATE'] ?? '?'
@@ -53,6 +65,7 @@ mockNuxtImport('useB24', () => () => ({
 
 beforeEach(() => {
   portal.initialized = true
+  portal.leadTotal = 7
   portal.pending = {}
   portal.calls = []
 })
@@ -79,6 +92,18 @@ describe('load', () => {
     expect(data.dataset.value.period).toEqual(AUGUST)
     expect(data.dataset.value.leadAggregate?.total).toBe(7)
     expect(data.pending.value).toBe(false)
+  })
+
+  // ⚠ Подсказка читала конверт ответа вместо строк и не срабатывала НИКОГДА — на пустом периоде
+  // экран уверял, что в портале нет ни одного лида и стоит проверить доступ к CRM.
+  it('на пустом периоде узнаёт дату последнего лида', async () => {
+    portal.leadTotal = 0
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await loading
+    expect(data.latestLeadDate.value).toBe('2026-08-17')
   })
 
   // ⚠ Тот самый сценарий: август спросили первым, но ответил он последним.
