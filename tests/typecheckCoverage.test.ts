@@ -65,11 +65,15 @@ describe('охват typecheck', () => {
 
   // `pnpm smoke` здесь по той же причине: убрать шаг из workflow — самый тихий способ вернуть
   // дыру с импорт-картой, и без сторожа этого не заметит никто.
-  it('CI гоняет lint, test, typecheck, сборку и браузерный смоук CSP', () => {
-    const ci = read('.github/workflows/ci.yml')
-    for (const step of ['pnpm lint', 'pnpm test', 'pnpm typecheck', 'pnpm generate', 'pnpm smoke', 'pnpm smoke:image']) {
-      expect(ci).toContain(step)
+  // ⚠ Каждая команда ищется В СВОЕЙ джобе, а не во всём файле: `pnpm smoke:image` в docker-build
+  // содержит подстроку `pnpm smoke`, и поиск по файлу не заметил бы пропажу шага из `ci`.
+  it('CI гоняет lint, test, typecheck, сборку и оба смоука CSP — каждый в своей джобе', () => {
+    const workflow = read('.github/workflows/ci.yml')
+    const job = (name: string): string => workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  [a-z-]+:\n/)[0] ?? ''
+    for (const step of ['pnpm lint', 'pnpm test', 'pnpm typecheck', 'pnpm generate', 'run: pnpm smoke\n']) {
+      expect(job('ci'), step).toContain(step)
     }
+    expect(job('docker-build')).toContain('run: pnpm smoke:image http://127.0.0.1:8080')
   })
 
   // `continue-on-error: true` делает шаг красным, а джобу зелёной — самый тихий способ погасить
