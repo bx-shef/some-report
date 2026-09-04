@@ -1,7 +1,11 @@
 // Маршруты — из единого источника: из него же строится список пререндера. Копия списка здесь
 // означала бы, что новая страница живёт в дев-сервере, но не попадает в статику, — и заметить это
 // можно только открыв собранный сайт.
+import { fileURLToPath } from 'node:url'
 import { PRERENDER_ROUTES } from './app/config/routes'
+
+/** См. `app/utils/emptyModule.ts`: необязательные зависимости `jspdf` в сборку не попадают. */
+const EMPTY_MODULE = fileURLToPath(new URL('./app/utils/emptyModule.ts', import.meta.url))
 
 export default defineNuxtConfig({
   modules: [
@@ -36,6 +40,16 @@ export default defineNuxtConfig({
     prerender: {
       crawlLinks: true,
       routes: PRERENDER_ROUTES
+    }
+  },
+
+  vite: {
+    resolve: {
+      alias: {
+        html2canvas: EMPTY_MODULE,
+        canvg: EMPTY_MODULE,
+        dompurify: EMPTY_MODULE
+      }
     }
   },
 

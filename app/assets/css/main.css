@@ -72,3 +72,12 @@
 @theme static {
   --ui-container: 90rem;
 }
+
+/*
+ * Снимок для PDF: таблицы со своей прокруткой обрезались бы по краю. На время снимка корень
+ * отчёта помечен `data-exporting`, и прокрутка у таблиц снимается — см. `useExport`.
+ */
+[data-exporting] .overflow-x-auto {
+  overflow: visible !important;
+}
+

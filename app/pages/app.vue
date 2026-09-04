@@ -30,7 +30,7 @@ const b24 = useB24()
 
 /** Экспорт: Excel из таблиц и PDF-снимок всего отчёта (`main`), под применёнными фильтрами. */
 const reportRoot = useTemplateRef<HTMLElement>('reportRoot')
-const { pending: exportPending, error: exportError, exportExcel, exportPdf } = useExport({ report, dataset, filters: appliedFilters, isDemo })
+const { pending: exportPending, error: exportError, exportExcel, exportPdf } = useExport({ report, dataset, filters: appliedFilters, isDemo, processingPending, unlinkedPending })
 
 /** Детализация по клику: список записей за числом — под ПРИМЕНЁННЫМИ фильтрами, а не выбранными. */
 const {
@@ -205,6 +205,7 @@ async function fit() {
             color="air-secondary-no-accent"
             :label="exportPending === 'excel' ? 'Готовим Excel…' : 'Excel'"
             :disabled="pending || Boolean(exportPending)"
+            data-export-exclude
             @click="exportExcel"
           />
           <B24Button
@@ -212,6 +213,7 @@ async function fit() {
             color="air-secondary-no-accent"
             :label="exportPending === 'pdf' ? 'Готовим PDF…' : 'PDF'"
             :disabled="pending || Boolean(exportPending)"
+            data-export-exclude
             @click="exportPdf(reportRoot)"
           />
         </template>

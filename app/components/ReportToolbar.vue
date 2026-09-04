@@ -132,10 +132,12 @@ watch([customFrom, customTo], () => {
       </div>
     </div>
 
+    <!-- В PDF-снимок кнопки периода не попадают (`data-export-exclude`): период там — подписью. -->
     <div
       role="group"
       aria-label="Период отчёта"
       class="flex flex-wrap items-center gap-2"
+      data-export-exclude
     >
       <span class="text-xs opacity-60">Период:</span>
       <button
@@ -163,6 +165,7 @@ watch([customFrom, customTo], () => {
     <div
       v-if="isCustomActive"
       class="space-y-2"
+      data-export-exclude
     >
       <PeriodField
         v-model:from="customFrom"

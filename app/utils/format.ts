@@ -20,10 +20,18 @@ export function formatCount(value: number): string {
  * ⚠ `digits` по умолчанию `1`, но целые доли печатаются без «,0»: «80 %» вместо «80,0 %».
  * Так на макете, и так короче в плотных таблицах, где процент стоит рядом с числом.
  */
+/**
+ * Доля → проценты, округлённые как на экране. Одна функция для `formatPercent` и для листов
+ * Excel: два округления (`toFixed` и `Math.round`) расходятся на границах вроде 0,2875 —
+ * экран печатал бы 28,7 %, файл 28,8, и человек нашёл бы «ошибку» там, где её нет.
+ */
+export function roundPercent(value: number, digits = 1): number {
+  return Number((value * 100).toFixed(digits))
+}
+
 export function formatPercent(value: number, digits = 1): string {
   if (!Number.isFinite(value)) return '—'
-  const pct = value * 100
-  const rounded = Number(pct.toFixed(digits))
+  const rounded = roundPercent(value, digits)
   const fraction = Number.isInteger(rounded) ? 0 : digits
   return `${new Intl.NumberFormat(LOCALE, {
     minimumFractionDigits: fraction,

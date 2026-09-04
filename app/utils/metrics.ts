@@ -13,7 +13,8 @@ import type {
   ReportMetrics,
   ReportOptions,
   SourceRow,
-  SummaryMetrics
+  SummaryMetrics,
+  SourceTotals
 } from '~/types/report'
 
 /**
@@ -443,6 +444,7 @@ export function buildReportFromAggregate(
 ): ReportMetrics {
   const summary = summaryMetrics(leads, deals, options, allDeals)
   const bySource = sourceRows(leads, deals, options)
+  const totals = sourceTotals(bySource, options.conversionBase)
   return {
     summary,
     funnel: funnelStages(summary),
@@ -451,7 +453,35 @@ export function buildReportFromAggregate(
     preDealLoss: preDealLoss(leads, summary),
     lostDeals: lostDeals(deals, summary),
     bySource,
-    topSources: topSources(bySource)
+    topSources: topSources(bySource),
+    sourceTotals: totals,
+    outsideSources: {
+      deals: Math.max(0, summary.wonDeals - totals.won),
+      revenue: Math.max(0, summary.revenue - totals.revenue)
+    }
+  }
+}
+
+/**
+ * «Итого» таблицы источников — по её строкам. Конверсии итога — от знаменателя итога, той же
+ * формулой, что у строк: иначе «Итого» показывало бы среднее по строкам, а не долю по множеству.
+ */
+export function sourceTotals(rows: readonly SourceRow[], conversionBase: ConversionBase): SourceTotals {
+  const sum = (pick: (row: SourceRow) => number) => rows.reduce((acc, row) => acc + pick(row), 0)
+  const leads = sum(row => row.leads)
+  const junk = sum(row => row.junk)
+  const base = conversionBaseValue(leads, junk, conversionBase)
+  const qualified = sum(row => row.qualified)
+  const won = sum(row => row.won)
+  return {
+    leads,
+    junk,
+    junkShare: share(junk, leads),
+    qualified,
+    crToDeal: share(qualified, base),
+    won,
+    crToSale: share(won, base),
+    revenue: sum(row => row.revenue)
   }
 }
 

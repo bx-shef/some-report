@@ -4,6 +4,22 @@ import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
 import AppPage from '~/pages/app.vue'
 import ReportFilters from '~/components/ReportFilters.vue'
 
+/** Библиотеки экспорта подменены: страница обязана отдать снимку САМ корень отчёта. */
+const exportLib = vi.hoisted(() => ({ snapshot: undefined as HTMLElement | undefined }))
+vi.mock('html-to-image', () => ({
+  toJpeg: async (element: HTMLElement) => {
+    exportLib.snapshot = element
+    return 'data:image/jpeg;base64,AAAA'
+  },
+  getFontEmbedCSS: async () => ''
+}))
+vi.mock('jspdf', () => ({
+  jsPDF: class {
+    addImage() {}
+    output() { return new Blob(['pdf']) }
+  }
+}))
+
 /**
  * Экран отчёта до и после первой выборки.
  *
@@ -189,6 +205,30 @@ describe('страница отчёта в портале', () => {
     await vi.waitFor(() => expect(document.body.textContent).toContain('карточек в CRM у них нет'))
     expect(document.body.textContent).toContain('Лид #')
     demo.unmount()
+  })
+
+  // Единственное, чего не видит тест композабла: `ref="reportRoot"` на <main> доходит до снимка.
+  it('кнопка PDF отдаёт снимку корень отчёта, пока идёт экспорт — кнопки закрыты', async () => {
+    vi.stubGlobal('URL', Object.assign(class extends URL {}, { createObjectURL: () => 'blob:test', revokeObjectURL: () => {} }))
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', { configurable: true, get: () => 1000 })
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', { configurable: true, get: () => 2000 })
+    try {
+      const wrapper = await mountSuspended(AppPage)
+      await vi.waitFor(() => expect(mainKeys()).toHaveLength(1))
+      portal.pending[mainKeys()[0]!]!([])
+      await vi.waitFor(() => expect(wrapper.text()).toContain('1. Сводка'))
+      const pdf = wrapper.findAll('button').find((b: { text: () => string }) => b.text() === 'PDF')!
+      await pdf.trigger('click')
+      await vi.waitFor(() => expect(exportLib.snapshot?.tagName).toBe('MAIN'))
+      await vi.waitFor(() => expect(click).toHaveBeenCalledTimes(1))
+      expect(wrapper.text()).not.toContain('Не удалось подготовить файл')
+    } finally {
+      vi.unstubAllGlobals()
+      click.mockRestore()
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollWidth
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight
+    }
   })
 
   it('вне портала «Загрузка» сменяется демо-набором с предупреждением', async () => {
