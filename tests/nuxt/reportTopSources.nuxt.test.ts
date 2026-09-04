@@ -1,6 +1,7 @@
 // @vitest-environment nuxt
 import { describe, expect, it } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
+import ReportSources from '~/components/ReportSources.vue'
 import ReportTopSources from '~/components/ReportTopSources.vue'
 import { buildReport } from '~/utils/metrics'
 import { buildMockDataset } from '~/utils/mockReport'
@@ -44,6 +45,18 @@ describe('ReportTopSources', () => {
     expect(first[0]).toContain('1.')
     expect(first[1]!.replace(/\s/g, '')).toBe(String(top.leads))
     expect(first[5]!.replace(/\s/g, '')).toBe(String(top.won))
+  })
+
+  // ⚠ Формат процентов — тоже «число»: 64 % в блоке 5 и 64,3 % здесь читались бы как расхождение.
+  it('проценты печатает с той же точностью, что таблица источников', async () => {
+    const top = (await render()).findAll('tbody tr')[0]!.findAll('td').map(td => nbsp(td.text()))
+    const sources = await mountSuspended(ReportSources, {
+      props: { report, dictionaries: dataset.dictionaries, currencyId: dataset.currencyId }
+    })
+    const full = sources.findAll('tbody tr')[0]!.text()
+    // Конверсия в продажу первой строки — одна и та же строка в обеих таблицах.
+    expect(nbsp(full)).toContain(top[7]!)
+    expect(top[7]).toMatch(/^\d+ %$/)
   })
 
   it('без лидов говорит об этом словами', async () => {

@@ -41,9 +41,16 @@ onMounted(async () => {
   // Внутри портала берём живые лиды и сделки. Снаружи `load()` тихо ничего не делает.
   await load(period.value)
   booting.value = false
-  booted = true
+  // ⚠ Пока шла первая выборка, кнопки периода были живые, а наблюдатель ниже молчал. Если
+  // человек успел нажать «Прошлый месяц», выбранный период уже не тот, что загружен, — иначе
+  // подсветка показывала бы август над сентябрьскими числами, и второй клик ничего бы не менял.
+  if (b24.isInit() && !samePeriod(period.value, dataset.value.period)) await load(period.value)
   await fit()
 })
+
+function samePeriod(a: ReportPeriod, b: ReportPeriod): boolean {
+  return a.from === b.from && a.to === b.to
+}
 
 /**
  * Первая загрузка идёт из `onMounted`, а НЕ из наблюдателя за периодом.
@@ -51,12 +58,10 @@ onMounted(async () => {
  * ⚠ Наблюдатель регистрируется в setup, и присвоение `period.value` в `onMounted` запускало бы
  * его тоже — две выборки одного периода на каждое открытие. Гонку данных `seq` в композабле
  * снял бы, но портал получал бы вдвое больше запросов, а именно запросы здесь и дороги.
+ * Смена периода человеком после загрузки — новая выборка; гонку ответов сторожит композабл.
  */
-let booted = false
-
-// Смена периода человеком — новая выборка. Гонку ответов сторожит сам композабл.
 watch(period, async (next) => {
-  if (!booted) return
+  if (booting.value) return
   await load(next)
   await fit()
 })
@@ -126,19 +131,18 @@ async function fit() {
   await nextTick()
   await b24.fitWindow()
 }
-
-// Экран «Загрузка» и отчёт — разной высоты; портал должен узнать о смене.
-watch(booting, fit)
 </script>
 
 <template>
   <InPortalGate @ready="fit">
     <main class="mx-auto max-w-[90rem] space-y-4 p-4 lg:p-6">
+      <!-- Пока идёт первая выборка, на панели ни значка «Демо», ни периода демо-набора:
+           «Загрузка» ниже обещает, что чужих чисел на экране нет, — и подпись тоже. -->
       <ReportToolbar
         v-model:period="period"
-        :applied-period="dataset.period"
+        :applied-period="booting ? undefined : dataset.period"
         :today="today"
-        :is-demo="isDemo"
+        :is-demo="!booting && isDemo"
       />
 
       <B24Card v-if="booting">

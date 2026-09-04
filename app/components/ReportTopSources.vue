@@ -7,8 +7,9 @@ import { sourceLabel } from '~/utils/labels'
  * Топ-5 источников по количеству лидов — отдельный блок из ТЗ от 2026-09-04.
  *
  * ⚠ Это не пересчёт, а первые пять строк уже посчитанной таблицы источников (`topSources` в
- * ядре): колонки те же, что просит ТЗ, и числа обязаны совпадать с блоком 5 строка в строку.
- * Пересчитывать здесь что-либо — заводить второе место, где та же цифра может разойтись.
+ * ядре): колонки те же, что просит ТЗ, и числа обязаны совпадать с блоком 5 строка в строку —
+ * включая точность процентов (`formatPercent(x, 0)`, как там). Пересчитывать здесь что-либо —
+ * заводить второе место, где та же цифра может разойтись.
  */
 defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries, currencyId: string }>()
 </script>
@@ -64,13 +65,13 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries, currencyI
               {{ formatCount(row.leads) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatPercent(row.junkShare) }}
+              {{ formatPercent(row.junkShare, 0) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatCount(row.qualified) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatPercent(row.crToDeal) }}
+              {{ formatPercent(row.crToDeal, 0) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatCount(row.won) }}
@@ -79,7 +80,7 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries, currencyI
               {{ formatMoney(row.revenue, currencyId) }}
             </td>
             <td class="py-2 text-right tabular-nums">
-              {{ formatPercent(row.crToSale) }}
+              {{ formatPercent(row.crToSale, 0) }}
             </td>
           </tr>
           <tr v-if="!report.topSources.length">
