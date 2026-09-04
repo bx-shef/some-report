@@ -71,9 +71,35 @@ RUN node --experimental-strip-types --disable-warning=ExperimentalWarning \
 # nginx-unprivileged работает не от root и слушает 8080.
 FROM nginxinc/nginx-unprivileged:1.31-alpine AS runner
 COPY --from=builder /app/.output/public /usr/share/nginx/html
-COPY --from=builder /app/nginx.conf /etc/nginx/conf.d/default.conf
-# Проверяем ИТОГОВЫЙ конфиг (хеши уже подставлены) на этапе сборки: синтаксическая ошибка должна
-# ронять образ здесь, а не всплывать при выкате.
-RUN nginx -t
+
+# Конфиг кладём ШАБЛОНОМ: штатный энтрипойнт nginx подставит в него переменные окружения при
+# старте контейнера. Так один образ обслуживает и облачные порталы, и коробочные — каждый со
+# своим доменом, без пересборки.
+COPY --from=builder /app/nginx.conf /etc/nginx/templates/default.conf.template
+
+# Кто может встраивать отчёт и куда он имеет право ходить. По умолчанию — облачные зоны
+# Битрикс24; коробочный портал добавляет свой origin в `deploy/.env`.
+#
+# ⚠ Значение по умолчанию обязано быть непустым. Пустой список в `frame-ancestors` запрещает
+# встраивание ВСЕМ, и портал показал бы пустую область без единой ошибки в интерфейсе.
+# ⚠ Ограничиваем энтрипойнт ОДНОЙ переменной. По умолчанию он подставляет в шаблон ВСЕ
+# переменные окружения, а конфиг nginx полон собственных `$uri`, `$host`, `$request_uri`. Совпади
+# имя переменной окружения с именем директивы nginx — и конфиг молча поедет: `error_page 405 =200
+# $uri` превратился бы в `error_page 405 =200`, то есть портал снова увидел бы пустоту вместо
+# отчёта. Фильтр делает подстановку ровно той, что описана здесь.
+ENV NGINX_ENVSUBST_FILTER="B24_PORTAL_ORIGINS"
+
+ENV B24_PORTAL_ORIGINS="https://*.bitrix24.ru https://*.bitrix24.by https://*.bitrix24.com https://*.bitrix24.eu https://*.bitrix24.kz https://*.bitrix24.ua https://*.bitrix24.de https://*.bitrix24.fr https://*.bitrix24.it https://*.bitrix24.pl https://*.bitrix24.es https://*.bitrix24.uk https://*.bitrix24.com.br https://*.bitrix24.com.tr https://*.bitrix24.mx https://*.bitrix24.co https://*.bitrix24.cn https://*.bitrix24.in https://*.bitrix24.id https://*.bitrix24.jp https://*.bitrix24.vn https://*.bitrix24.tech"
+
+# ⚠ Проверяем ИТОГОВЫЙ конфиг на этапе сборки — с подставленными хешами И подставленной
+# переменной. Синтаксическая ошибка должна ронять образ здесь, а не всплывать при выкате, когда
+# контейнер уже не поднимается и сайт отдаёт 503.
+#
+# Временный `default.conf` тут же удаляем: при старте его напишет энтрипойнт из шаблона, и файл,
+# оставшийся от сборки, читался бы как «конфиг уже есть» при разборе неполадок.
+RUN envsubst '${B24_PORTAL_ORIGINS}' \
+      < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf \
+    && nginx -t \
+    && rm /etc/nginx/conf.d/default.conf
 EXPOSE 8080
 CMD ["nginx", "-g", "daemon off;"]
