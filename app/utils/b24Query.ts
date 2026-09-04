@@ -1,5 +1,5 @@
 import type { ReportPeriod } from '~/types/report'
-import { dealCountKey, leadCountKey } from '~/utils/b24Adapter'
+import { dealCountKey, leadCountKey, unlinkedDealKey } from '~/utils/b24Adapter'
 
 /**
  * Запросы к порталу: что именно спрашиваем у CRM за период отчёта.
@@ -149,6 +149,32 @@ export function dealContextBatch(period: ReportPeriod): Record<string, BatchComm
     [dealCountKey.lost]: countCommand(method, { ...base, STAGE_SEMANTIC_ID: 'F' }),
     [dealCountKey.inWork]: countCommand(method, { ...base, STAGE_SEMANTIC_ID: 'P' })
   }
+}
+
+/**
+ * Сделки без связи с лидом за период — счётчиками, по источникам.
+ *
+ * ⚠ `LEAD_ID: ''` — так портал понимает «поле пусто» (проверено на боевом портале: 9 191 из
+ * 10 178 за август). Два счётчика на источник (всего и успешных) плюс строка «источник пуст»
+ * и все сделки периода для доли — порядка 60 команд, два пакета. Строк не читаем: тут нужно
+ * только «сколько», и ради этого 180 страниц по 0,54 с никто ждать не будет.
+ */
+export function unlinkedDealBatch(period: ReportPeriod, sourceIds: readonly string[]): Record<string, BatchCommand> {
+  const base = periodFilter(period)
+  const method = 'crm.deal.list'
+  const unlinked = { ...base, LEAD_ID: '' }
+  const commands: Record<string, BatchCommand> = {
+    [unlinkedDealKey.allDeals]: countCommand(method, base),
+    [unlinkedDealKey.total]: countCommand(method, unlinked),
+    [unlinkedDealKey.won]: countCommand(method, { ...unlinked, STAGE_SEMANTIC_ID: 'S' }),
+    [unlinkedDealKey.noSource]: countCommand(method, { ...unlinked, SOURCE_ID: '' }),
+    [unlinkedDealKey.noSourceWon]: countCommand(method, { ...unlinked, SOURCE_ID: '', STAGE_SEMANTIC_ID: 'S' })
+  }
+  for (const sourceId of sourceIds) {
+    commands[unlinkedDealKey.source(sourceId)] = countCommand(method, { ...unlinked, SOURCE_ID: sourceId })
+    commands[unlinkedDealKey.sourceWon(sourceId)] = countCommand(method, { ...unlinked, SOURCE_ID: sourceId, STAGE_SEMANTIC_ID: 'S' })
+  }
+  return commands
 }
 
 /**

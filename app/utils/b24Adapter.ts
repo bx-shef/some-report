@@ -1,13 +1,15 @@
+import { UNSPECIFIED_SOURCE, share, UNSPECIFIED_REASON } from '~/utils/metrics'
 import { mergeReasons } from '~/utils/reasonMerge'
 import type {
   DealsContext,
+  UnlinkedDeals,
+  UnlinkedDealsRow,
   LeadAggregate,
   LeadOutcome,
   ReportDeal,
   ReportDictionaries,
   ReportLead
 } from '~/types/report'
-import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
 
 /**
  * Перевод сырых строк REST Битрикс24 в нормализованные лиды и сделки.
@@ -559,6 +561,52 @@ export function adaptLeadCounts(input: LeadCountsInput): LeadAggregate {
 
 /** Ключи счётчиков сделок всего портала. */
 export const dealCountKey = { won: 'dealsWon', lost: 'dealsLost', inWork: 'dealsInWork' } as const
+
+/** Код строки «источник вне справочника»: удалён из портала, а сделки на нём остались. */
+export const UNKNOWN_SOURCE = '__unknown_source__'
+
+/**
+ * Ключи счётчиков сделок без связи с лидом — один словарь для запроса и для разбора.
+ *
+ * `noSource` — сделки, у которых `SOURCE_ID` пуст: на боевом портале это 8 778 из 9 191 за
+ * август, то есть главная строка блока. `allDeals` — все сделки периода, чтобы показать долю.
+ */
+export const unlinkedDealKey = {
+  total: 'unlinked',
+  won: 'unlinkedWon',
+  noSource: 'unlinkedNoSource',
+  noSourceWon: 'unlinkedNoSourceWon',
+  allDeals: 'dealsAll',
+  source: (sourceId: string) => `unlinkedSrc:${sourceId}`,
+  sourceWon: (sourceId: string) => `unlinkedSrcWon:${sourceId}`
+} as const
+
+/**
+ * Счётчики сделок без лида → блок «Сделки без связи с лидом».
+ *
+ * ⚠ Сумма строк обязана сходиться с итогом. Сделка с источником, которого уже нет в
+ * справочнике, ни в одну строку по источникам не попадёт — остаток от итога уходит в строку
+ * «вне справочника», а не теряется. Без этого руководитель сложил бы таблицу и не получил
+ * число из заголовка.
+ */
+export function adaptUnlinkedDeals(totals: Record<string, number>, sourceIds: readonly string[]): UnlinkedDeals {
+  const get = (key: string): number => Math.max(0, toNumber(totals[key]))
+  const total = get(unlinkedDealKey.total)
+  const rows: UnlinkedDealsRow[] = []
+  let accounted = 0
+  for (const sourceId of sourceIds) {
+    const count = get(unlinkedDealKey.source(sourceId))
+    accounted += count
+    if (count > 0) rows.push({ sourceId, count, share: share(count, total), won: get(unlinkedDealKey.sourceWon(sourceId)) })
+  }
+  const noSource = get(unlinkedDealKey.noSource)
+  accounted += noSource
+  if (noSource > 0) rows.push({ sourceId: UNSPECIFIED_SOURCE, count: noSource, share: share(noSource, total), won: get(unlinkedDealKey.noSourceWon) })
+  const unknown = total - accounted
+  if (unknown > 0) rows.push({ sourceId: UNKNOWN_SOURCE, count: unknown, share: share(unknown, total), won: 0 })
+  rows.sort((a, b) => b.count - a.count || a.sourceId.localeCompare(b.sourceId))
+  return { total, won: get(unlinkedDealKey.won), shareOfAllDeals: share(total, get(unlinkedDealKey.allDeals)), rows }
+}
 
 /** Счётчики сделок всего портала → контекст для сводки. */
 export function adaptDealsContext(totals: Record<string, number>): DealsContext {

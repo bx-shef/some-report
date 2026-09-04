@@ -144,6 +144,34 @@ export interface DealsContext {
   inWork: number
 }
 
+/** Сделки без связи с лидом по одному источнику. */
+export interface UnlinkedDealsRow {
+  /** Код источника; `UNSPECIFIED_SOURCE` — источник у сделки пуст; `UNKNOWN_SOURCE` — вне справочника. */
+  sourceId: string
+  count: number
+  /** Доля от всех сделок без лида. */
+  share: number
+  won: number
+}
+
+/**
+ * Сделки за период, у которых `LEAD_ID` пуст, — в разрезе источников.
+ *
+ * ⚠ Это не оговорка и не «ждём настройку связи» — это факт о процессе клиента, который отчёт
+ * обязан ПОКАЗАТЬ. На боевом портале таких сделок 90 %, и почти все они ещё и без источника.
+ * Приходит счётчиками (строк не читаем), поэтому ни выручки, ни причин — только количество.
+ */
+export interface UnlinkedDeals {
+  /** Сделок без лида всего. */
+  total: number
+  /** Из них на стадии «успех». */
+  won: number
+  /** Доля от всех сделок периода. */
+  shareOfAllDeals: number
+  /** Строки по источникам, по убыванию; нулевые не входят. */
+  rows: UnlinkedDealsRow[]
+}
+
 /** Строка «показатель + доля» — базовый кирпич всех разбивок. */
 export interface CountShare {
   count: number
@@ -301,4 +329,6 @@ export interface ReportDataset {
   currencyId: string
   /** Границы периода — печатаются в шапке отчёта. */
   period: ReportPeriod
+  /** Сделки без связи с лидом по источникам — только с портала (режим счётчиков). */
+  unlinkedDeals?: UnlinkedDeals
 }

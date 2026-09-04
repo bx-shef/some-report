@@ -1,5 +1,6 @@
 import type { ReportDictionaries } from '~/types/report'
 import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
+import { UNKNOWN_SOURCE } from '~/utils/b24Adapter'
 
 /**
  * Код → имя для печати. Отдельным модулем, потому что «что показать вместо неизвестного кода» —
@@ -30,4 +31,19 @@ export function junkReasonLabel(dictionaries: ReportDictionaries, id: string): s
 
 export function lossReasonLabel(dictionaries: ReportDictionaries, id: string): string {
   return labelFor(dictionaries.lossReasons, id, UNSPECIFIED_REASON_LABEL)
+}
+
+/** Подписи строк блока «Сделки без связи с лидом». */
+export const NO_SOURCE_LABEL = 'Источник не указан'
+export const UNKNOWN_SOURCE_LABEL = 'Источник вне справочника'
+
+/**
+ * Источник СДЕЛКИ без лида. Пустой источник здесь — не «другие», а именно «не указан»: на боевом
+ * портале это 8 778 сделок из 9 191, главная строка блока, и назвать её «другими источниками»
+ * значило бы спрятать факт, ради которого блок и заведён.
+ */
+export function unlinkedSourceLabel(dictionaries: ReportDictionaries, id: string): string {
+  if (id === UNSPECIFIED_SOURCE) return NO_SOURCE_LABEL
+  if (id === UNKNOWN_SOURCE) return UNKNOWN_SOURCE_LABEL
+  return dictionaries.sources[id] ?? id
 }

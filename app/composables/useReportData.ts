@@ -1,7 +1,8 @@
 import { mergeReasons } from '~/utils/reasonMerge'
 import type { ConversionBase, ReportDataset, ReportMetrics, ReportPeriod } from '~/types/report'
 import type { AdapterWarnings, B24CurrencyRow, B24LeadRow, B24StatusRow, B24DealRow } from '~/utils/b24Adapter'
-import { adaptDeals, adaptDealsContext, adaptLeadCounts, baseCurrency, statusIdsBySemantic, statusNames, lossStages } from '~/utils/b24Adapter'
+import { adaptDeals, adaptDealsContext, adaptLeadCounts, baseCurrency, statusIdsBySemantic, statusNames, lossStages,
+  adaptUnlinkedDeals } from '~/utils/b24Adapter'
 import {
   type BatchCommand,
   categoryListParams,
@@ -10,8 +11,8 @@ import {
   dealsFromLeadsParams,
   dictionaryBatch,
   latestLeadParams,
-  leadCountBatch
-} from '~/utils/b24Query'
+  leadCountBatch,
+  unlinkedDealBatch } from '~/utils/b24Query'
 import { buildReport, buildReportFromAggregate } from '~/utils/metrics'
 import { resolvePreset } from '~/utils/period'
 import { buildMockDataset } from '~/utils/mockReport'
@@ -216,7 +217,7 @@ export function useReportData() {
 
       // Шаги 2–5 независимы друг от друга — идут параллельно. Последовательно они стоили бы ещё
       // 4–5 секунд поверх самого долгого шага (строки сделок), ожидая ничего.
-      const [dealStages, leadTotals, dealRows, dealTotals] = await Promise.all([
+      const [dealStages, leadTotals, dealRows, dealTotals, unlinkedTotals] = await Promise.all([
         // 2. Стадии сделок ВСЕХ направлений: `DEAL_STAGE` — только направление по умолчанию,
         //    у заказчика их четыре. Без остальных причина проигрыша приедет кодом вместо названия.
         fetchCategoryIds().then(ids => batchRows<B24StatusRow>(dealStageBatch(ids))).then(books => Object.values(books).flat()),
@@ -225,7 +226,10 @@ export function useReportData() {
         // 4. Сделки из лидов — строками: ради выручки и причин проигрыша. Их ~10 % от всех.
         fetchAll<B24DealRow>('crm.deal.list', dealsFromLeadsParams(period)),
         // 5. Сделки всего портала — три счётчика, чтобы «успешных: 636» не читалось как «всего продаж».
-        batchTotals(dealContextBatch(period))
+        batchTotals(dealContextBatch(period)),
+        // 6. Сделки БЕЗ лида по источникам — факт о процессе, который отчёт обязан показать,
+        //    а не спрятать в оговорку: на боевом портале это 90 % сделок.
+        batchTotals(unlinkedDealBatch(period, sourceIds))
       ])
 
       if (mine !== seq) return
@@ -243,6 +247,7 @@ export function useReportData() {
         deals: adaptedDeals.deals,
         leadAggregate,
         allDeals: adaptDealsContext(dealTotals),
+        unlinkedDeals: adaptUnlinkedDeals(unlinkedTotals, sourceIds),
         dictionaries: {
           sources: statusNames(sources),
           junkReasons: statusNames(leadStatuses),

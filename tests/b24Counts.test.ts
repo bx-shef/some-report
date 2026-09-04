@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { adaptDeals, adaptDealsContext, adaptLeadCounts, dealCountKey, leadCountKey, lossStages, statusIdsBySemantic } from '~/utils/b24Adapter'
+import { UNKNOWN_SOURCE, adaptDeals, adaptDealsContext, adaptLeadCounts, adaptUnlinkedDeals, dealCountKey, leadCountKey, lossStages, statusIdsBySemantic, unlinkedDealKey } from '~/utils/b24Adapter'
+import { UNSPECIFIED_SOURCE, UNSPECIFIED_REASON } from '~/utils/metrics'
+import { unlinkedDealBatch, dealContextBatch, dealStageBatch, dealsFromLeadsParams, leadCountBatch } from '~/utils/b24Query'
 import { mergeReasons } from '~/utils/reasonMerge'
-import { dealContextBatch, dealStageBatch, dealsFromLeadsParams, leadCountBatch } from '~/utils/b24Query'
-import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
 
 /**
  * Режим счётчиков: что спрашиваем у портала и как читаем ответ.
@@ -206,5 +206,60 @@ describe('lossStages', () => {
     expect(lossStages(rows).map(r => r.STATUS_ID)).toEqual(['LOSE', 'C1:LOSE'])
     expect(mergeReasons(lossStages(rows)).foldedCodes).toBe(1)
     expect(mergeReasons(rows).foldedCodes).toBe(3)
+  })
+})
+
+describe('сделки без связи с лидом', () => {
+  const period = { from: '2026-08-01', to: '2026-08-31' }
+
+  // ⚠ `LEAD_ID: ''` — так портал понимает «поле пусто». Проверено на боевом портале: 9 191 из 10 178.
+  it('пакет спрашивает пустой LEAD_ID, итог, успешных и каждый источник дважды', () => {
+    const batch = unlinkedDealBatch(period, ['CALL', 'WEB'])
+    expect(Object.keys(batch)).toHaveLength(5 + 2 * 2)
+    expect(batch[unlinkedDealKey.total]!.params.filter).toMatchObject({ 'LEAD_ID': '', '>=DATE_CREATE': '2026-08-01' })
+    expect(batch[unlinkedDealKey.won]!.params.filter).toMatchObject({ LEAD_ID: '', STAGE_SEMANTIC_ID: 'S' })
+    expect(batch[unlinkedDealKey.noSource]!.params.filter).toMatchObject({ LEAD_ID: '', SOURCE_ID: '' })
+    expect(batch[unlinkedDealKey.source('CALL')]!.params.filter).toMatchObject({ LEAD_ID: '', SOURCE_ID: 'CALL' })
+    // Все сделки периода — БЕЗ условия на лид: это знаменатель доли.
+    expect(batch[unlinkedDealKey.allDeals]!.params.filter).not.toHaveProperty('LEAD_ID')
+  })
+
+  // Живые числа августа: 9 191 без лида из 10 178, из них 8 778 без источника.
+  it('строит строки по источникам, пустой источник — отдельной строкой, доли от итога', () => {
+    const totals = {
+      [unlinkedDealKey.allDeals]: 10178,
+      [unlinkedDealKey.total]: 9191,
+      [unlinkedDealKey.won]: 5534,
+      [unlinkedDealKey.noSource]: 8778,
+      [unlinkedDealKey.noSourceWon]: 5477,
+      [unlinkedDealKey.source('CALL')]: 113,
+      [unlinkedDealKey.sourceWon('CALL')]: 5,
+      [unlinkedDealKey.source('WEB')]: 0,
+      [unlinkedDealKey.sourceWon('WEB')]: 0
+    }
+    const result = adaptUnlinkedDeals(totals, ['CALL', 'WEB'])
+    expect(result.total).toBe(9191)
+    expect(result.won).toBe(5534)
+    expect(result.shareOfAllDeals).toBeCloseTo(9191 / 10178, 6)
+    // Нулевой WEB не рисуется; строки по убыванию; остаток 300 — источник вне справочника.
+    expect(result.rows.map(r => [r.sourceId, r.count, r.won])).toEqual([
+      [UNSPECIFIED_SOURCE, 8778, 5477],
+      [UNKNOWN_SOURCE, 300, 0],
+      ['CALL', 113, 5]
+    ])
+    expect(result.rows[0]!.share).toBeCloseTo(8778 / 9191, 6)
+  })
+
+  // ⚠ Сумма строк обязана сходиться с итогом — иначе руководитель сложит таблицу и не получит
+  // число из заголовка.
+  it('сумма строк равна итогу даже при источниках вне справочника', () => {
+    const totals = { [unlinkedDealKey.total]: 50, [unlinkedDealKey.source('A')]: 20, [unlinkedDealKey.noSource]: 10, [unlinkedDealKey.allDeals]: 100 }
+    const result = adaptUnlinkedDeals(totals, ['A'])
+    expect(result.rows.reduce((sum, r) => sum + r.count, 0)).toBe(50)
+  })
+
+  it('пустой ответ портала не даёт NaN', () => {
+    const result = adaptUnlinkedDeals({}, ['A'])
+    expect(result).toEqual({ total: 0, won: 0, shareOfAllDeals: 0, rows: [] })
   })
 })
