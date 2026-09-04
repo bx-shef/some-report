@@ -169,9 +169,9 @@ describe('adaptPortalData', () => {
       { STATUS_ID: 'JUNK', NAME: 'Некачественный лид' }
     ],
     dealStages: [
-      { STATUS_ID: 'WON', NAME: 'Сделка успешна' },
-      { STATUS_ID: 'LOSE', NAME: 'Сделка провалена' },
-      { STATUS_ID: 'APOLOGY', NAME: 'Анализ причины провала' }
+      { STATUS_ID: 'WON', NAME: 'Сделка успешна', SEMANTICS: 'S' },
+      { STATUS_ID: 'LOSE', NAME: 'Сделка провалена', SEMANTICS: 'F' },
+      { STATUS_ID: 'APOLOGY', NAME: 'Анализ причины провала', SEMANTICS: 'F' }
     ],
     leads: [
       { ID: '1', STATUS_ID: 'NEW', STATUS_SEMANTIC_ID: 'P', SOURCE_ID: 'CALL', ASSIGNED_BY_ID: '1', DATE_CREATE: '2026-08-01T10:00:00+03:00' },
@@ -265,8 +265,11 @@ describe('adaptPortalData', () => {
     const merged = adaptPortalData({
       ...input,
       dealStages: [
-        { STATUS_ID: 'LOSE', NAME: 'Отказ - Дорого', ENTITY_ID: 'DEAL_STAGE' },
-        { STATUS_ID: 'C1:LOSE', NAME: 'Отказ - дорого', ENTITY_ID: 'DEAL_STAGE_1' }
+        // «Новая» продублирована в обоих направлениях — в счётчик свёрнутых попасть НЕ должна.
+        { STATUS_ID: 'NEW', NAME: 'Новая', ENTITY_ID: 'DEAL_STAGE', SEMANTICS: null },
+        { STATUS_ID: 'C1:NEW', NAME: 'Новая', ENTITY_ID: 'DEAL_STAGE_1', SEMANTICS: null },
+        { STATUS_ID: 'LOSE', NAME: 'Отказ - Дорого', ENTITY_ID: 'DEAL_STAGE', SEMANTICS: 'F' },
+        { STATUS_ID: 'C1:LOSE', NAME: 'Отказ - дорого', ENTITY_ID: 'DEAL_STAGE_1', SEMANTICS: 'F' }
       ],
       deals: [
         { ID: '21', LEAD_ID: '1', STAGE_ID: 'LOSE', STAGE_SEMANTIC_ID: 'F', OPPORTUNITY: '10', CURRENCY_ID: 'BYN' },

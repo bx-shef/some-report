@@ -297,11 +297,18 @@ function dealFromRow(
 export function adaptDeals(
   rows: B24DealRow[],
   currencies: B24CurrencyRow[],
-  dealStages: readonly B24StatusRow[] = []
+  /**
+   * Код стадии провала → каноничный ключ причины (`mergeReasons(lossStages(…)).keyByCode`).
+   *
+   * ⚠ Принимаем ГОТОВУЮ карту, а не справочник: вызывающий строит и словарь имён, и эту карту
+   * из одного `mergeReasons`, и рассинхрон между тем, чем помечена сделка, и тем, под чем лежит
+   * её имя, становится невозможен по построению. Пересчёт здесь из справочника оставлял бы два
+   * места, которым надо совпасть.
+   */
+  reasonKeyByCode: Record<string, string> = {}
 ): { deals: ReportDeal[], unconvertedDeals: number, dealsWithoutLead: number, duplicateIds: number, wonWithoutAmount: number } {
   const rates = currencyRates(currencies)
   const currencyId = baseCurrency(currencies)
-  const reasonKeyByCode = mergeReasons(dealStages).keyByCode
   const seen = new Set<number>()
   let duplicateIds = 0
   let unconvertedDeals = 0
@@ -340,7 +347,7 @@ export function adaptDeals(
 export function adaptPortalData(input: AdapterInput): AdaptedData {
   const rates = currencyRates(input.currencies)
   const currencyId = baseCurrency(input.currencies)
-  const reasons = mergeReasons(input.dealStages)
+  const reasons = mergeReasons(lossStages(input.dealStages))
   const reasonKeyByCode = reasons.keyByCode
 
   /**
@@ -443,6 +450,18 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
 }
 
 /** Коды стадий с заданной семантикой — например, все стадии брака лида (`F`). */
+/**
+ * Только стадии провала — то, из чего складываются причины проигрыша.
+ *
+ * ⚠ Сводить надо ИМЕННО их. Стадии «Новая», «Обработка», «Успех» тоже продублированы во всех
+ * направлениях, и сведение по всему справочнику давало бы счётчик «стадий свёрнуто» втрое больше
+ * правды: на экране он объясняет, почему строк в таблице причин меньше, чем стадий, — и
+ * с чужими стадиями внутри не сходился бы ни с чем.
+ */
+export function lossStages(rows: readonly B24StatusRow[]): B24StatusRow[] {
+  return rows.filter(row => toSemantic(row.SEMANTICS) === 'F' && toText(row.SEMANTICS) !== '')
+}
+
 export function statusIdsBySemantic(rows: B24StatusRow[], semantic: B24Semantic): string[] {
   return rows
     .filter(row => toSemantic(row.SEMANTICS) === semantic && toText(row.SEMANTICS) !== '')

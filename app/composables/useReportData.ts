@@ -1,7 +1,7 @@
 import { mergeReasons } from '~/utils/reasonMerge'
 import type { ConversionBase, ReportDataset, ReportMetrics, ReportPeriod } from '~/types/report'
 import type { AdapterWarnings, B24CurrencyRow, B24LeadRow, B24StatusRow, B24DealRow } from '~/utils/b24Adapter'
-import { adaptDeals, adaptDealsContext, adaptLeadCounts, baseCurrency, statusIdsBySemantic, statusNames } from '~/utils/b24Adapter'
+import { adaptDeals, adaptDealsContext, adaptLeadCounts, baseCurrency, statusIdsBySemantic, statusNames, lossStages } from '~/utils/b24Adapter'
 import {
   type BatchCommand,
   categoryListParams,
@@ -231,10 +231,11 @@ export function useReportData() {
       if (mine !== seq) return
 
       const leadAggregate = adaptLeadCounts({ totals: leadTotals, sourceIds, junkStatusIds })
-      // Стадии всех направлений нужны сделкам ДО словаря: по ним сделка получает каноничный
-      // ключ причины, а не код своей стадии.
-      const reasons = mergeReasons(dealStages)
-      const adaptedDeals = adaptDeals(dealRows, currencies, dealStages)
+      // Одно сведение на прогон: из него и карта ключей для сделок, и словарь имён. Сводим
+      // ТОЛЬКО стадии провала — «Новая» и «Успех» тоже продублированы по направлениям, и
+      // счётчик свёрнутых стадий с ними внутри не сходился бы ни с чем.
+      const reasons = mergeReasons(lossStages(dealStages))
+      const adaptedDeals = adaptDeals(dealRows, currencies, reasons.keyByCode)
       const currencyId = baseCurrency(currencies)
 
       dataset.value = {

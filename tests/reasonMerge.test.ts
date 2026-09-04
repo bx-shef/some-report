@@ -26,6 +26,11 @@ describe('normalizeReasonName', () => {
     expect(normalizeReasonName('  Отказ  -  Тендер/биржа ')).toBe(normalizeReasonName('Отказ - тендер/биржа'))
   })
 
+  it('пробелы вокруг косой черты и точка в конце не значат ничего', () => {
+    expect(normalizeReasonName('Отказ - Тендер / биржа')).toBe(normalizeReasonName('Отказ - Тендер/биржа'))
+    expect(normalizeReasonName('Отказ - Дорого.')).toBe(normalizeReasonName('Отказ - Дорого'))
+  })
+
   it('ё и е не различает', () => {
     expect(normalizeReasonName('Ещё думает')).toBe(normalizeReasonName('Еще думает'))
   })
@@ -85,6 +90,26 @@ describe('mergeReasons', () => {
     expect(merged.names[merged.keyByCode['4']!]).toBe('Отказ - не складской ассортимент')
     // И ключ у обоих один — сведение от выбора написания не зависит.
     expect(merged.keyByCode['4']).toBe(merged.keyByCode['C4:4'])
+  })
+
+  // Живая пара из PORTAL.md: дефис без пробела против ТИРЕ в пробелах. Проверка по одному
+  // дефису тире не видела, и аккуратное написание не побеждало никогда.
+  it('тире в пробелах — тоже аккуратное написание', () => {
+    const merged = mergeReasons([
+      { STATUS_ID: '2', NAME: 'Отказ -Нет нужного количества на складе', ENTITY_ID: 'DEAL_STAGE' },
+      { STATUS_ID: 'C4:APOLOGY', NAME: 'Отказ – Нет нужного количества на складе', ENTITY_ID: 'DEAL_STAGE_4' }
+    ])
+    expect(merged.names[merged.keyByCode['2']!]).toBe('Отказ – Нет нужного количества на складе')
+  })
+
+  // Порядок строк не должен менять ни ключ, ни выбранное написание.
+  it('результат не зависит от порядка строк', () => {
+    const a = { STATUS_ID: '4', NAME: 'Отказ -Не складской ассортимент' }
+    const b = { STATUS_ID: 'C4:4', NAME: 'Отказ - не складской ассортимент' }
+    const direct = mergeReasons([a, b])
+    const reversed = mergeReasons([b, a])
+    expect(direct.keyByCode['4']).toBe(reversed.keyByCode['4'])
+    expect(direct.names[direct.keyByCode['4']!]).toBe(reversed.names[reversed.keyByCode['4']!])
   })
 
   it('считает, сколько кодов свёрнуто', () => {
