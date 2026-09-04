@@ -101,6 +101,9 @@ export function useReportData() {
     let context: { ctx: Ctx, mine: number } | undefined
     async function go(): Promise<void> {
       if (!context || context.mine !== seq) return
+      // Второе нажатие «Посчитать», пока считается первое, запустило бы выборку ещё раз: тот же
+      // курсор, те же страницы, вдвое больше запросов к порталу — и запись результата дважды.
+      if (pending.value) return
       const { ctx, mine } = context
       deferred.value = false
       pending.value = true
@@ -414,9 +417,10 @@ export function useReportData() {
   /**
    * Блок 6: время первого ответа и просрочка — из истории стадий (#26).
    *
-   * Две выборки подряд: строки лидов периода (когда создан, откуда) и переходы по стадиям. Из
-   * них — те же строки лидов, что у демо-набора, и то же ядро `processingMetrics`. Числа
-   * «обработано / не обработано» при этом остаются от счётчиков — см. `mergeProcessing`.
+   * Три выборки подряд: строки лидов периода (когда создан, откуда), переходы и закрытия по
+   * стадиям и создания сразу в стадии не-NEW. Из них — те же строки лидов, что у демо-набора, и
+   * то же ядро `processingMetrics`. Числа «обработано / не обработано» при этом остаются от
+   * счётчиков — см. `mergeProcessing`.
    */
   /**
    * История стадий ПРИШЛА и время посчитано. Нужен явно: по данным это не отличить — у периода,
@@ -425,22 +429,32 @@ export function useReportData() {
   const processingTimed = ref(false)
   const processing = backgroundJob<{ period: ReportPeriod, junkStatusIds: string[], convertedStatusIds: string[] }>(async ({ period, junkStatusIds, convertedStatusIds }, mine) => {
     const stale = () => mine !== seq
-    const leadRows = await fetchAllUntil<B24LeadHistoryRow>('crm.lead.list', leadHistoryLeadParams(period), stale)
-    if (stale()) return
-    // Два запроса истории: переходы и закрытия (основная масса) и создания сразу в стадии
-    // не-NEW (обычно единицы) — см. `leadHistoryParams`.
-    const history = await fetchAllUntil<B24StageHistoryRow>('crm.stagehistory.list', leadHistoryParams(period), stale)
-    if (stale()) return
-    const createdInStage = await fetchAllUntil<B24StageHistoryRow>('crm.stagehistory.list', leadCreatedInStageParams(period), stale)
+    // Три выборки независимы и идут параллельно: строки лидов и история — по несколько тысяч
+    // строк в месяц каждая, друг за другом они ждали бы вдвое дольше. Два запроса истории —
+    // переходы и закрытия (основная масса) и создания сразу в стадии не-NEW (обычно единицы),
+    // см. `leadHistoryParams`.
+    const [leadRows, history, createdInStage] = await Promise.all([
+      fetchAllUntil<B24LeadHistoryRow>('crm.lead.list', leadHistoryLeadParams(period), stale),
+      fetchAllUntil<B24StageHistoryRow>('crm.stagehistory.list', leadHistoryParams(period), stale),
+      fetchAllUntil<B24StageHistoryRow>('crm.stagehistory.list', leadCreatedInStageParams(period), stale)
+    ])
     if (stale()) return
     const leads = leadsFromHistory(leadRows, [...history, ...createdInStage], junkStatusIds, convertedStatusIds)
     // «Сейчас» для просрочки — конец периода, но не позже настоящего «сейчас»: в текущем месяце
-    // лид, созданный час назад, ещё не просрочен, хотя до конца месяца далеко.
-    const periodEnd = Date.parse(`${period.to}T23:59:59`)
+    // лид, созданный час назад, ещё не просрочен, хотя до конца месяца далеко. Конец периода —
+    // в UTC (`Z`), как и у демо-расчёта выше: без суффикса браузер взял бы СВОЙ часовой пояс, и
+    // граница просрочки ездила бы на три часа между Минском и CI.
+    const periodEnd = Date.parse(`${period.to}T23:59:59Z`)
     const now = new Date(Math.min(Date.now(), Number.isFinite(periodEnd) ? periodEnd : Date.now())).toISOString()
     const timed = processingMetrics(leads, { conversionBase, firstResponseSlaMinutes: firstResponseSlaMinutes.value, now })
+    // ⚠ Между чтением `dataset.value` и записью — ни одного `await`: блок 7 пишет в тот же объект
+    // из своей фоновой выборки, и пауза здесь потеряла бы его результат (или он — наш).
     const aggregate = dataset.value.leadAggregate
-    if (!aggregate?.processing) return
+    if (!aggregate?.processing) {
+      // Счётчик «не обработано» не пришёл в пакете — сливать время не во что. Молчать нельзя:
+      // индикатор погас бы, а блок остался «не посчитан» без причины.
+      throw new Error('Счётчики обработки лидов не пришли из портала — время первого ответа не посчитать')
+    }
     dataset.value = { ...dataset.value, leadAggregate: { ...aggregate, processing: mergeProcessing(aggregate.processing, timed) } }
     processingTimed.value = true
   })

@@ -66,6 +66,20 @@ describe('ReportProcessing', () => {
     expect(text).toContain('Обработанных лидов нет')
   })
 
+  // Строки по источникам — из истории, «Обработано» — счётчик; сумма колонки выходит меньше, и
+  // без подписи это читается как ошибка отчёта. Пока истории нет, подписи нечего объяснять.
+  it('таблица по источникам подписана, откуда числа, — только когда история пришла', async () => {
+    expect((await render({ timed: true })).text()).toContain('сумма по источникам может быть чуть меньше')
+    expect((await render({ pending: true })).text()).not.toContain('сумма по источникам')
+    expect((await render({ report: full, timed: undefined })).text()).not.toContain('сумма по источникам')
+  })
+
+  it('кнопка «Посчитать» неактивна, пока выборка идёт', async () => {
+    const wrapper = await render({ deferred: true, pending: true, estimateMinutes: 24 })
+    const button = wrapper.findAll('button').find((b: { text: () => string }) => b.text().includes('Посчитать'))!
+    expect(button.attributes('disabled')).toBeDefined()
+  })
+
   it('демо-набор: время посчитано по строкам, таблицы стадий нет', async () => {
     const wrapper = await render({ report: full, timed: undefined })
     expect(wrapper.text()).not.toContain('ждёт историю стадий')

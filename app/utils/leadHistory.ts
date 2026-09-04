@@ -22,15 +22,23 @@ export interface B24StageHistoryRow {
   STATUS_ID?: string | null
 }
 
-/** Строка `crm.lead.list`, нужная истории: когда создан и откуда пришёл. */
+/** Строка `crm.lead.list`, нужная истории: когда создан, откуда пришёл, кто отвечает. */
 export interface B24LeadHistoryRow {
   ID: string | number
   DATE_CREATE?: string | null
   SOURCE_ID?: string | null
   STATUS_ID?: string | null
+  /** Ответственный — «менеджер» по решению владельца; фильтр по нему ляжет на эти строки. */
+  ASSIGNED_BY_ID?: string | number | null
 }
 
-/** Начальная стадия лида — системная `NEW` («Не обработан»): её нельзя удалить или переименовать кодом. */
+/**
+ * Начальная стадия лида — системная `NEW` («Не обработан»). Код стадии здесь захардкожен, хотя
+ * семантику остальных стадий отчёт берёт из справочника: у лида начальная стадия одна, её код
+ * портал не даёт сменить через интерфейс, а удалить — только через REST с `FORCED`. На боевом
+ * портале заказчика подтверждено замером (`docs/PORTAL.md`). Ставя приложение на другой портал,
+ * перепроверить первым делом.
+ */
 export const INITIAL_LEAD_STATUS = 'NEW'
 
 function toId(value: string | number | null | undefined): number {
@@ -80,7 +88,7 @@ export function leadsFromHistory(
       id,
       createdAt: row.DATE_CREATE ?? '',
       sourceId: (row.SOURCE_ID ?? '').trim(),
-      assignedById: 0,
+      assignedById: toId(row.ASSIGNED_BY_ID),
       outcome: junk.has(status) ? 'junk' : converted.has(status) ? 'converted' : 'in-work',
       ...(junk.has(status) ? { junkReasonId: status } : {}),
       dealIds: [],

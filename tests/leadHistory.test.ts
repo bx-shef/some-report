@@ -37,14 +37,14 @@ describe('leadHistoryParams', () => {
   it('строки лидов для истории — по периоду создания, с источником и стадией', () => {
     const params = leadHistoryLeadParams(AUGUST)
     expect(params.filter).toEqual({ '>=DATE_CREATE': '2026-08-01', '<DATE_CREATE': '2026-09-01' })
-    expect(params.select).toEqual(['ID', 'DATE_CREATE', 'SOURCE_ID', 'STATUS_ID'])
+    expect(params.select).toEqual(['ID', 'DATE_CREATE', 'SOURCE_ID', 'STATUS_ID', 'ASSIGNED_BY_ID'])
   })
 })
 
 describe('leadsFromHistory', () => {
   const leads = [
-    { ID: '1', DATE_CREATE: '2026-08-10T10:00:00+03:00', SOURCE_ID: 'CALL', STATUS_ID: '1' },
-    { ID: '2', DATE_CREATE: '2026-08-10T11:00:00+03:00', SOURCE_ID: '', STATUS_ID: 'JUNK' },
+    { ID: '1', DATE_CREATE: '2026-08-10T10:00:00+03:00', SOURCE_ID: 'CALL', STATUS_ID: '1', ASSIGNED_BY_ID: '562' },
+    { ID: '2', DATE_CREATE: '2026-08-10T11:00:00+03:00', SOURCE_ID: '', STATUS_ID: 'JUNK', ASSIGNED_BY_ID: null },
     { ID: '3', DATE_CREATE: '2026-08-10T12:00:00+03:00', SOURCE_ID: 'WEB', STATUS_ID: INITIAL_LEAD_STATUS },
     { ID: 3, DATE_CREATE: '2026-08-10T12:00:00+03:00', SOURCE_ID: 'WEB', STATUS_ID: INITIAL_LEAD_STATUS }
   ]
@@ -69,6 +69,8 @@ describe('leadsFromHistory', () => {
     ])
     expect(result[1]!.junkReasonId).toBe('JUNK')
     expect(result[0]!.sourceId).toBe('CALL')
+    // Ответственный — из строки лида; без него — 0, а не NaN: по нему фильтруют.
+    expect(result.map(l => l.assignedById)).toEqual([562, 0, 0])
   })
 
   // Лид, созданный сразу «в работу»: перехода нет, есть запись создания со стадией — ответ в

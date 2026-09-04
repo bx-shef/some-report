@@ -131,6 +131,7 @@ const timingMissing = computed(() => processing.value !== undefined && props.tim
           size="sm"
           color="air-primary"
           label="Посчитать"
+          :disabled="pending"
           @click="emit('start')"
         />
       </div>
@@ -157,6 +158,16 @@ const timingMissing = computed(() => processing.value !== undefined && props.tim
         <h3 class="text-sm font-semibold">
           Среднее время ответа по источникам
         </h3>
+        <!-- Строки — из истории стадий, «Обработано» выше — счётчик портала. Ответ позже трёх
+             дней после конца периода в историю не попадает, и сумма по источникам выходит чуть
+             меньше. Без подписи руководитель сложит колонку и найдёт «ошибку». -->
+        <p
+          v-if="timed"
+          class="mt-1 text-xs opacity-60"
+        >
+          По истории стадий: сумма по источникам может быть чуть меньше «Обработано» выше —
+          ответы позже трёх дней после конца периода в историю не берутся.
+        </p>
         <table class="mt-2 w-full text-sm">
           <tbody>
             <tr

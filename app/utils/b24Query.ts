@@ -170,7 +170,7 @@ export function dealContextBatch(period: ReportPeriod): Record<string, BatchComm
 }
 
 /** Строка лида для истории стадий: когда создан, откуда, где сейчас. */
-export const LEAD_HISTORY_LEAD_SELECT = ['ID', 'DATE_CREATE', 'SOURCE_ID', 'STATUS_ID'] as const
+export const LEAD_HISTORY_LEAD_SELECT = ['ID', 'DATE_CREATE', 'SOURCE_ID', 'STATUS_ID', 'ASSIGNED_BY_ID'] as const
 
 /** Лиды периода — строками, только для расчёта времени первого ответа (см. `leadHistoryParams`). */
 export function leadHistoryLeadParams(period: ReportPeriod) {

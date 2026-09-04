@@ -205,18 +205,20 @@ describe('load', () => {
     expect(data.processingPending.value).toBe(true)
     expect(data.processingTimed.value).toBe(false)
 
+    // Три выборки независимы и стартуют РАЗОМ: строки лидов, переходы, создания сразу в стадии.
+    // Друг за другом месяц ждал бы вдвое дольше — и это проверяется, а не подразумевается.
     await vi.waitFor(() => expect(portal.pending[`leads:${AUGUST.from}`]).toBeDefined())
-    portal.pending[`leads:${AUGUST.from}`]!([
-      { ID: '1', DATE_CREATE: '2026-08-10T10:00:00+03:00', SOURCE_ID: 'CALL', STATUS_ID: '1' },
-      { ID: '2', DATE_CREATE: '2026-08-10T10:00:00+03:00', SOURCE_ID: 'CALL', STATUS_ID: 'NEW' }
-    ])
-    await vi.waitFor(() => expect(portal.pending[`history:${AUGUST.from}`]).toBeDefined())
+    expect(portal.pending[`history:${AUGUST.from}`]).toBeDefined()
+    expect(portal.pending[`created:${AUGUST.from}`]).toBeDefined()
     portal.pending[`history:${AUGUST.from}`]!([
       { ID: '9', TYPE_ID: 2, OWNER_ID: '1', CREATED_TIME: '2026-08-10T10:30:00+03:00', STATUS_ID: '1' }
     ])
     // Второй запрос истории — создания сразу в стадии не-NEW; здесь их нет.
-    await vi.waitFor(() => expect(portal.pending[`created:${AUGUST.from}`]).toBeDefined())
     portal.pending[`created:${AUGUST.from}`]!([])
+    portal.pending[`leads:${AUGUST.from}`]!([
+      { ID: '1', DATE_CREATE: '2026-08-10T10:00:00+03:00', SOURCE_ID: 'CALL', STATUS_ID: '1' },
+      { ID: '2', DATE_CREATE: '2026-08-10T10:00:00+03:00', SOURCE_ID: 'CALL', STATUS_ID: 'NEW' }
+    ])
     await vi.waitFor(() => expect(data.processingPending.value).toBe(false))
     expect(data.processingTimed.value).toBe(true)
     const processing = data.report.value.processing!
@@ -258,6 +260,10 @@ describe('load', () => {
     data.startUnlinked()
     expect(data.unlinkedDeferred.value).toBe(false)
     await vi.waitFor(() => expect(portal.pending[`closed:${YEAR.from}`]).toBeDefined())
+    // Второе нажатие, пока идёт первое, — не вторая выборка с тем же курсором.
+    data.startUnlinked()
+    await Promise.resolve()
+    expect(portal.calls.filter(c => c === `closed:${YEAR.from}`)).toHaveLength(1)
     portal.pending[`closed:${YEAR.from}`]!([])
     await vi.waitFor(() => expect(data.unlinkedPending.value).toBe(false))
     expect(data.dataset.value.unlinkedDeals?.total).toBe(0)
