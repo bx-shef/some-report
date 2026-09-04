@@ -268,6 +268,22 @@ describe('успешные сделки без связи с лидом', () => 
     expect(result.rows.map(r => [r.sourceId, r.count, r.revenue])).toEqual([[UNSPECIFIED_SOURCE, 2, 30], ['CALL', 1, 30]])
   })
 
+  // ⚠ Блок про деньги: строка с одной сделкой на 1 000 выше строки с пятью по 20 — и тест
+  // обязан различать «по сумме» и «по количеству», иначе перестановка операндов сортировки
+  // прошла бы зелёной.
+  it('сортирует по сумме, а не по количеству; при равенстве — по количеству, потом по коду', () => {
+    const rows = [
+      { ID: '1', SOURCE_ID: 'B', OPPORTUNITY: '20' }, { ID: '2', SOURCE_ID: 'B', OPPORTUNITY: '20' },
+      { ID: '3', SOURCE_ID: 'B', OPPORTUNITY: '20' }, { ID: '4', SOURCE_ID: 'B', OPPORTUNITY: '20' },
+      { ID: '5', SOURCE_ID: 'B', OPPORTUNITY: '20' },
+      { ID: '6', SOURCE_ID: 'A', OPPORTUNITY: '1000' },
+      { ID: '7', SOURCE_ID: 'D', OPPORTUNITY: '100' },
+      { ID: '8', SOURCE_ID: 'C', OPPORTUNITY: '100' }
+    ]
+    const result = adaptUnlinkedWonDeals(rows, currencies, ['A', 'B', 'C', 'D'])
+    expect(result.rows.map(r => r.sourceId)).toEqual(['A', 'B', 'C', 'D'])
+  })
+
   it('нулевая сумма: доли строк и подвала — нули, а не 100 % против нулей', () => {
     const result = adaptUnlinkedWonDeals([{ ID: '1', SOURCE_ID: 'CALL', OPPORTUNITY: '0' }], currencies, ['CALL'])
     expect(result.rows[0]!.shareOfRevenue).toBe(0)
