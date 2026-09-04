@@ -4,9 +4,9 @@ import { mountSuspended } from '@nuxt/test-utils/runtime'
 import ReportToolbar from '~/components/ReportToolbar.vue'
 
 /**
- * Единственный интерактивный элемент отчёта — переключатель знаменателя конверсий. Ошибка в нём
- * не даст ни ошибки типов, ни видимой поломки: отчёт просто покажет проценты не от той базы.
- * Именно поэтому он покрыт, а не «на глаз».
+ * Панель отчёта: подпись периода, признак демо и выбор интервала. Переключателя знаменателя
+ * здесь больше нет (решение владельца от 2026-09-04) — и тест сторожит, что он не вернулся:
+ * два ответа на один вопрос рядом с заголовком подрывали доверие к числу.
  */
 const period = { from: '2026-08-01', to: '2026-08-31' }
 /** 3 сентября 2026 — день, когда заказчик открыл отчёт и увидел пустой текущий месяц. */
@@ -14,7 +14,7 @@ const TODAY = new Date(2026, 8, 3)
 
 function mount(props: Partial<InstanceType<typeof ReportToolbar>['$props']> = {}) {
   return mountSuspended(ReportToolbar, {
-    props: { conversionBase: 'quality-leads', period, isDemo: true, today: TODAY, ...props }
+    props: { period, isDemo: true, today: TODAY, ...props }
   })
 }
 
@@ -23,28 +23,16 @@ describe('ReportToolbar', () => {
     expect((await mount()).text()).toContain('01.08.2026 — 31.08.2026')
   })
 
-  it('нажатие на «Все лиды» просит сменить базу именно на неё', async () => {
-    const wrapper = await mount()
-    const all = wrapper.findAll('button').find(b => b.text() === 'Все лиды')!
-    await all.trigger('click')
-    expect(wrapper.emitted('update:conversionBase')).toEqual([['all-leads']])
+  it('переключателя знаменателя на панели нет — знаменатель один, по ТЗ', async () => {
+    const text = (await mount()).text()
+    expect(text).not.toContain('Конверсии считать от')
+    expect(text).not.toContain('Все лиды')
   })
 
-  it('нажатие на «Качественные лиды» просит сменить базу на неё', async () => {
-    const wrapper = await mount({ conversionBase: 'all-leads' })
-    const quality = wrapper.findAll('button').find(b => b.text() === 'Качественные лиды')!
-    await quality.trigger('click')
-    expect(wrapper.emitted('update:conversionBase')).toEqual([['quality-leads']])
-  })
-
-  // Активная база должна быть видна не только цветом: скринридер читает aria-pressed.
-  // ⚠ Ищем ВНУТРИ fieldset базы: рядом на панели живут кнопки периода, у них своя отметка.
-  it('отмечает активную базу для вспомогательных технологий', async () => {
-    const wrapper = await mount({ conversionBase: 'all-leads' })
-    const pressed = wrapper.find('fieldset').findAll('button')
-      .filter((b: { attributes: (n: string) => string | undefined }) => b.attributes('aria-pressed') === 'true')
-    expect(pressed).toHaveLength(1)
-    expect(pressed[0]!.text()).toBe('Все лиды')
+  it('календарная неделя есть среди интервалов', async () => {
+    const labels = (await mount()).findAll('button').map((b: { text: () => string }) => b.text())
+    expect(labels).toContain('Текущая неделя')
+    expect(labels).toContain('Прошлая неделя')
   })
 
   it('говорит вслух, что данные демонстрационные', async () => {

@@ -37,7 +37,7 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries, currencyI
     </div>
 
     <div class="mt-5 overflow-x-auto">
-      <table class="w-full min-w-[360px] text-sm">
+      <table class="w-full min-w-[520px] text-sm">
         <thead>
           <tr class="border-b border-[color:var(--chart-track)] text-left text-xs opacity-60">
             <th class="py-2 pr-3 font-normal">
@@ -46,8 +46,17 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries, currencyI
             <th class="py-2 pr-3 text-right font-normal">
               Сделок
             </th>
-            <th class="py-2 text-right font-normal">
+            <!-- ТЗ: по каждой причине — количество, % от проигранных, потерянная выручка и её %.
+                 Доли в ядре считались всегда; на экране их не было, и таблица отвечала на
+                 половину вопроса. -->
+            <th class="py-2 pr-3 text-right font-normal">
+              Доля от проигранных
+            </th>
+            <th class="py-2 pr-3 text-right font-normal">
               Сумма потерянных сделок
+            </th>
+            <th class="py-2 text-right font-normal">
+              Доля от потерянной суммы
             </th>
           </tr>
         </thead>
@@ -63,13 +72,19 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries, currencyI
             <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatCount(row.count) }}
             </td>
-            <td class="py-2 text-right tabular-nums">
+            <td class="py-2 pr-3 text-right tabular-nums">
+              {{ formatPercent(row.shareOfLost, 0) }}
+            </td>
+            <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatMoney(row.lostRevenue, currencyId) }}
+            </td>
+            <td class="py-2 text-right tabular-nums">
+              {{ formatPercent(row.shareOfLostRevenue, 0) }}
             </td>
           </tr>
           <tr v-if="!report.lostDeals.byReason.length">
             <td
-              colspan="3"
+              colspan="5"
               class="py-4 text-center opacity-60"
             >
               За период проигранных сделок нет
@@ -84,8 +99,14 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries, currencyI
             <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatCount(report.lostDeals.count) }}
             </td>
-            <td class="py-2 text-right tabular-nums">
+            <td class="py-2 pr-3 text-right tabular-nums">
+              100 %
+            </td>
+            <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatMoney(report.lostDeals.lostRevenue, currencyId) }}
+            </td>
+            <td class="py-2 text-right tabular-nums">
+              100 %
             </td>
           </tr>
         </tfoot>

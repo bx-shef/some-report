@@ -39,17 +39,15 @@ import { buildMockDataset } from '~/utils/mockReport'
  */
 export function useReportData() {
   /**
-   * Знаменатель конверсий.
+   * Знаменатель конверсий — `Лиды − Брак`, как в ТЗ от 2026-09-04.
    *
-   * ✅ `all-leads` — выбор ЗАКАЗЧИКА (ООО «Анкрон», 2026-09-03): конверсии считаются от всего
-   * потока лидов, как на согласованном макете. Это отвечает на вопрос «как работает канал
-   * привлечения целиком»: деньги на брак всё равно потрачены.
-   *
-   * ⚠ Раньше здесь стояла формула ТЗ (`quality-leads`, лиды без брака) — она давала 100 % и 62 %
-   * там, где макет показывает 80 % и 49,6 %. Переключатель оставлен инструментом сравнения, но
-   * умолчание теперь то, что выбрал заказчик. Подробности — `docs/METRICS.md`.
+   * ✅ Решение владельца от 2026-09-04: считать по ТЗ и убрать переключатель из интерфейса.
+   * История вопроса длинная (макет считал от всех лидов, 03.09 заказчик подтвердил макет, ТЗ
+   * от 04.09 вернуло формулу «лиды без брака») — она в `docs/METRICS.md`. В ядре знаменатель
+   * остаётся параметром `ConversionBase`: это чистая функция под тестом, и следующий разворот
+   * этого вопроса — снова одна строка здесь, а не правка формул.
    */
-  const conversionBase = ref<ConversionBase>('all-leads')
+  const conversionBase: ConversionBase = 'quality-leads'
 
   /**
    * Норматив первого ответа, минуты. Пусто — просроченные не считаем.
@@ -88,7 +86,7 @@ export function useReportData() {
 
   const report = computed<ReportMetrics>(() => {
     const options = {
-      conversionBase: conversionBase.value,
+      conversionBase,
       firstResponseSlaMinutes: firstResponseSlaMinutes.value,
       now: dataset.value.period.to + 'T23:59:59Z'
     }
@@ -297,5 +295,5 @@ export function useReportData() {
     }
   }
 
-  return { dataset, report, conversionBase, firstResponseSlaMinutes, pending, error, source, isDemo, warnings, latestLeadDate, load }
+  return { dataset, report, firstResponseSlaMinutes, pending, error, source, isDemo, warnings, latestLeadDate, load }
 }

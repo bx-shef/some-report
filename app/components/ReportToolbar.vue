@@ -1,18 +1,17 @@
 <script setup lang="ts">
-import type { ConversionBase, ReportPeriod } from '~/types/report'
+import type { ReportPeriod } from '~/types/report'
 import { formatDate } from '~/utils/format'
 import { PERIOD_PRESETS, matchPreset, resolvePreset, validatePeriod, type PeriodPresetId } from '~/utils/period'
 
 /**
- * Панель отчёта: период и знаменатель конверсий.
+ * Панель отчёта: период.
  *
- * ⚠ Переключатель базы — не настройка «на всякий случай». ТЗ и согласованный макет считают
- * конверсии по-разному (см. `docs/METRICS.md`), и на одних и тех же данных отчёт даёт 100 % или
- * 80 %. Пока клиент сверяет отчёт с макетом, переключатель делает разницу видимой ровно там, где
- * на неё смотрят.
+ * ⚠ Переключателя знаменателя конверсий здесь больше нет — и это решение владельца от
+ * 2026-09-04, а не упрощение. Пока клиент сверял отчёт с макетом, переключатель показывал
+ * разницу между «все лиды» и «лиды без брака»; ТЗ от 04.09 закрепило второе, и два ответа на
+ * один вопрос рядом с заголовком подрывали бы доверие к числу. Знаменатель — `docs/METRICS.md`.
  */
 const props = defineProps<{
-  conversionBase: ConversionBase
   /** Выбранный период — подсвечивает интервал и уходит в запрос. */
   period: ReportPeriod
   /**
@@ -26,14 +25,8 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'update:conversionBase': [ConversionBase]
   'update:period': [ReportPeriod]
 }>()
-
-const BASES: Array<{ value: ConversionBase, label: string, hint: string }> = [
-  { value: 'quality-leads', label: 'Качественные лиды', hint: 'Лиды − Брак. Так написано в ТЗ' },
-  { value: 'all-leads', label: 'Все лиды', hint: 'Весь поток. Так посчитаны цифры на макете' }
-]
 
 const periodText = computed(() => {
   const shown = props.appliedPeriod ?? props.period
@@ -134,29 +127,6 @@ watch([customFrom, customTo], () => {
       <div class="rounded-lg border border-[color:var(--chart-track)] px-3 py-1.5 text-sm">
         {{ periodText }}
       </div>
-
-      <fieldset class="flex items-center gap-2">
-        <legend class="sr-only">
-          Знаменатель конверсий
-        </legend>
-        <span class="text-xs opacity-60">Конверсии считать от:</span>
-        <div class="flex overflow-hidden rounded-lg border border-[color:var(--chart-track)]">
-          <button
-            v-for="base in BASES"
-            :key="base.value"
-            type="button"
-            class="px-3 py-1.5 text-sm transition-colors"
-            :class="base.value === conversionBase
-              ? 'bg-[color:var(--chart-1)] text-white'
-              : 'hover:bg-[color:var(--chart-track)]'"
-            :title="base.hint"
-            :aria-pressed="base.value === conversionBase"
-            @click="emit('update:conversionBase', base.value)"
-          >
-            {{ base.label }}
-          </button>
-        </div>
-      </fieldset>
     </div>
 
     <div

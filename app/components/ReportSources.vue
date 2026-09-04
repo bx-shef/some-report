@@ -215,13 +215,5 @@ const outsideSources = computed(() => ({
       {{ formatMoney(outsideSources.revenue, currencyId) }}. Их источник неизвестен, поэтому в эту
       таблицу они не попадают — в сводке выше они учтены.
     </p>
-
-    <div
-      v-if="report.topSources.length"
-      class="mt-4 text-xs opacity-60"
-    >
-      Топ-5 источников по количеству лидов:
-      {{ report.topSources.map(r => sourceLabel(dictionaries, r.sourceId)).join(' · ') }}
-    </div>
   </B24Card>
 </template>

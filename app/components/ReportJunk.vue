@@ -69,7 +69,7 @@ const items = computed(() =>
     </div>
 
     <div class="mt-5 overflow-x-auto">
-      <table class="w-full min-w-[420px] text-sm">
+      <table class="w-full min-w-[440px] text-sm">
         <thead>
           <tr class="border-b border-[color:var(--chart-track)] text-left text-xs opacity-60">
             <th class="py-2 pr-3 font-normal">
@@ -77,6 +77,11 @@ const items = computed(() =>
             </th>
             <th class="py-2 pr-3 text-right font-normal">
               Количество лидов
+            </th>
+            <!-- ТЗ просит обе доли: от всех лидов и от брака. Первая говорит «сколько потока ушло
+                 в дубли», вторая — «из чего состоит брак»; одна без другой читается неверно. -->
+            <th class="py-2 pr-3 text-right font-normal">
+              Доля от лидов
             </th>
             <th class="py-2 text-right font-normal">
               Доля от брака
@@ -95,13 +100,16 @@ const items = computed(() =>
             <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatCount(row.count) }}
             </td>
+            <td class="py-2 pr-3 text-right tabular-nums">
+              {{ formatPercent(row.shareOfLeads) }}
+            </td>
             <td class="py-2 text-right tabular-nums">
               {{ formatPercent(row.shareOfJunk, 0) }}
             </td>
           </tr>
           <tr v-if="!report.junkByReason.length">
             <td
-              colspan="3"
+              colspan="4"
               class="py-4 text-center opacity-60"
             >
               За период брака нет
@@ -115,6 +123,9 @@ const items = computed(() =>
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatCount(report.summary.junk) }}
+            </td>
+            <td class="py-2 pr-3 text-right tabular-nums">
+              {{ formatPercent(report.summary.junkShare) }}
             </td>
             <td class="py-2 text-right tabular-nums">
               100 %

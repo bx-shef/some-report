@@ -6,7 +6,7 @@ import { resolvePreset } from '~/utils/period'
 /**
  * Главный экран — сам отчёт. Открывается порталом из пункта CRM-аналитики (`CRM_ANALYTICS_MENU`).
  */
-const { dataset, report, conversionBase, isDemo, pending, error, warnings, latestLeadDate, load } = useReportData()
+const { dataset, report, isDemo, pending, error, warnings, latestLeadDate, load } = useReportData()
 
 /**
  * «Сегодня» фиксируется ОДИН раз на открытие отчёта.
@@ -22,6 +22,15 @@ const b24 = useB24()
 
 useHead({ title: 'Отчёт' })
 
+/**
+ * До первой выборки на экране НИЧЕГО, кроме «Загрузка».
+ *
+ * ⚠ Раньше до прихода данных портала показывался демо-набор: руководитель открывал отчёт и
+ * секунд пятнадцать видел «1 250 лидов», которых у него нет. Плашка «это НЕ ваш портал» не
+ * спасала — числа читают раньше плашек. Решение владельца от 2026-09-04: просто «Загрузка».
+ */
+const booting = ref(true)
+
 onMounted(async () => {
   await b24.init()
   // ⚠ Период подменяем на текущий месяц ТОЛЬКО внутри портала. Снаружи на экране остаётся
@@ -30,10 +39,22 @@ onMounted(async () => {
   // однажды принял чужие цифры за свои.
   if (b24.isInit()) period.value = resolvePreset('this-month', today)!
   // Внутри портала берём живые лиды и сделки. Снаружи `load()` тихо ничего не делает.
-  await load(period.value)
-  booted = true
+  const requested = period.value
+  await load(requested)
+  booting.value = false
+  // ⚠ Пока шла первая выборка, кнопки периода были живые, а наблюдатель ниже молчал. Если
+  // человек успел нажать «Прошлый месяц», выбранный период уже не тот, что запрошен, — иначе
+  // подсветка показывала бы август над сентябрьскими числами, и второй клик ничего бы не менял.
+  // Сравниваем с ЗАПРОШЕННЫМ периодом, а не с `dataset.period`: при ошибке портала набор
+  // остаётся демонстрационным со своим периодом, и сравнение с ним слало бы второй запрос
+  // в упавший портал без участия человека.
+  if (b24.isInit() && !samePeriod(period.value, requested)) await load(period.value)
   await fit()
 })
+
+function samePeriod(a: ReportPeriod, b: ReportPeriod): boolean {
+  return a.from === b.from && a.to === b.to
+}
 
 /**
  * Первая загрузка идёт из `onMounted`, а НЕ из наблюдателя за периодом.
@@ -41,12 +62,10 @@ onMounted(async () => {
  * ⚠ Наблюдатель регистрируется в setup, и присвоение `period.value` в `onMounted` запускало бы
  * его тоже — две выборки одного периода на каждое открытие. Гонку данных `seq` в композабле
  * снял бы, но портал получал бы вдвое больше запросов, а именно запросы здесь и дороги.
+ * Смена периода человеком после загрузки — новая выборка; гонку ответов сторожит композабл.
  */
-let booted = false
-
-// Смена периода человеком — новая выборка. Гонку ответов сторожит сам композабл.
 watch(period, async (next) => {
-  if (!booted) return
+  if (booting.value) return
   await load(next)
   await fit()
 })
@@ -116,97 +135,116 @@ async function fit() {
   await nextTick()
   await b24.fitWindow()
 }
-
-// Смена базы конверсий меняет не блоки, а подписи — но таблицы под ними всё равно сдвигаются.
-watch(conversionBase, fit)
 </script>
 
 <template>
   <InPortalGate @ready="fit">
     <main class="mx-auto max-w-[90rem] space-y-4 p-4 lg:p-6">
+      <!-- Пока идёт первая выборка, на панели ни значка «Демо», ни периода демо-набора:
+           «Загрузка» ниже обещает, что чужих чисел на экране нет, — и подпись тоже. -->
       <ReportToolbar
-        v-model:conversion-base="conversionBase"
         v-model:period="period"
-        :applied-period="dataset.period"
+        :applied-period="booting ? undefined : dataset.period"
         :today="today"
-        :is-demo="isDemo"
+        :is-demo="!booting && isDemo"
       />
 
-      <p
-        v-if="pending"
-        class="text-sm opacity-70"
-      >
-        Читаем лиды и сделки портала… Месяц занимает около 15 секунд, год — до минуты.
-      </p>
+      <B24Card v-if="booting">
+        <p class="py-8 text-center text-lg font-semibold">
+          Загрузка…
+        </p>
+        <p class="pb-6 text-center text-sm opacity-70">
+          Читаем лиды и сделки портала. Месяц занимает около 15 секунд, год — до минуты.
+        </p>
+      </B24Card>
 
-      <!-- ⚠ Демо-плашку заказчик однажды не заметил и принял числа макета за свои. Поэтому
-           формулировка теперь не «данные демонстрационные», а «это НЕ ваш портал». -->
-      <B24Alert
-        v-if="isDemo"
-        color="air-primary-warning"
-        title="Это НЕ данные вашего портала"
-        description="На экране демонстрационный набор с согласованного макета: 1 250 лидов, 250 брака, 485 000 выручки. Ваши лиды здесь не считаются. Отчёт берёт живые данные, только когда открыт внутри Битрикс24 — из раздела CRM-аналитики или по плитке приложения."
-      />
+      <template v-else>
+        <p
+          v-if="pending"
+          class="text-sm opacity-70"
+        >
+          Читаем лиды и сделки портала… Месяц занимает около 15 секунд, год — до минуты.
+        </p>
 
-      <B24Alert
-        v-if="error"
-        color="air-primary-alert"
-        title="Не удалось прочитать данные портала"
-        :description="`${error} Показан демонстрационный набор, а не ваши данные.`"
-      />
+        <!-- ⚠ Демо-плашку заказчик однажды не заметил и принял числа макета за свои. Поэтому
+             формулировка теперь не «данные демонстрационные», а «это НЕ ваш портал». -->
+        <B24Alert
+          v-if="isDemo"
+          color="air-primary-warning"
+          title="Это НЕ данные вашего портала"
+          description="На экране демонстрационный набор с согласованного макета: 1 250 лидов, 250 брака, 485 000 выручки. Ваши лиды здесь не считаются. Отчёт берёт живые данные, только когда открыт внутри Битрикс24 — из раздела CRM-аналитики или по плитке приложения."
+        />
 
-      <B24Alert
-        v-if="emptyPeriodNote"
-        color="air-primary-warning"
-        title="За этот период данных нет"
-        :description="emptyPeriodNote"
-      />
+        <!-- ⚠ После удачной первой выборки неудачная вторая оставляет на экране ПРЕЖНИЕ данные
+             портала, а не демо-набор: подпись обязана говорить, что именно осталось. -->
+        <B24Alert
+          v-if="error"
+          color="air-primary-alert"
+          title="Не удалось прочитать данные портала"
+          :description="`${error} ${isDemo
+            ? 'Показан демонстрационный набор, а не ваши данные.'
+            : `На экране остались данные предыдущей выборки за ${formatDate(dataset.period.from)} — ${formatDate(dataset.period.to)}.`}`"
+        />
 
-      <!-- Оговорки к данным САМОГО портала: не ошибки отчёта, а то, что стоит поправить в CRM. -->
-      <B24Alert
-        v-if="dataNotes.length"
-        color="air-primary-warning"
-        title="Что нужно знать про эти числа"
-        :description="dataNotes.join(' ')"
-      />
+        <B24Alert
+          v-if="emptyPeriodNote"
+          color="air-primary-warning"
+          title="За этот период данных нет"
+          :description="emptyPeriodNote"
+        />
 
-      <ReportSummary
-        :report="report"
-        :currency-id="dataset.currencyId"
-      />
+        <!-- Оговорки к данным САМОГО портала: не ошибки отчёта, а то, что стоит поправить в CRM. -->
+        <B24Alert
+          v-if="dataNotes.length"
+          color="air-primary-warning"
+          title="Что нужно знать про эти числа"
+          :description="dataNotes.join(' ')"
+        />
 
-      <div class="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.3fr)_minmax(0,1.2fr)]">
-        <ReportFunnel
+        <ReportSummary
           :report="report"
           :currency-id="dataset.currencyId"
         />
-        <ReportJunk
-          :report="report"
-          :dictionaries="dataset.dictionaries"
-        />
-        <ReportLosses
+
+        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1.3fr)_minmax(0,1.2fr)]">
+          <ReportFunnel
+            :report="report"
+            :currency-id="dataset.currencyId"
+          />
+          <ReportJunk
+            :report="report"
+            :dictionaries="dataset.dictionaries"
+          />
+          <ReportLosses
+            :report="report"
+            :dictionaries="dataset.dictionaries"
+            :currency-id="dataset.currencyId"
+          />
+        </div>
+
+        <ReportSources
           :report="report"
           :dictionaries="dataset.dictionaries"
           :currency-id="dataset.currencyId"
         />
-      </div>
 
-      <ReportSources
-        :report="report"
-        :dictionaries="dataset.dictionaries"
-        :currency-id="dataset.currencyId"
-      />
+        <ReportTopSources
+          :report="report"
+          :dictionaries="dataset.dictionaries"
+          :currency-id="dataset.currencyId"
+        />
 
-      <ReportProcessing
-        :report="report"
-        :dictionaries="dataset.dictionaries"
-      />
+        <ReportProcessing
+          :report="report"
+          :dictionaries="dataset.dictionaries"
+        />
 
-      <ReportUnlinkedDeals
-        v-if="dataset.unlinkedDeals"
-        :unlinked="dataset.unlinkedDeals"
-        :dictionaries="dataset.dictionaries"
-      />
+        <ReportUnlinkedDeals
+          v-if="dataset.unlinkedDeals"
+          :unlinked="dataset.unlinkedDeals"
+          :dictionaries="dataset.dictionaries"
+        />
+      </template>
     </main>
   </InPortalGate>
 </template>
