@@ -69,7 +69,7 @@ describe('охват typecheck', () => {
   // содержит подстроку `pnpm smoke`, и поиск по файлу не заметил бы пропажу шага из `ci`.
   it('CI гоняет lint, test, typecheck, сборку и оба смоука CSP — каждый в своей джобе', () => {
     const workflow = read('.github/workflows/ci.yml')
-    const job = (name: string): string => workflow.split(`\n  ${name}:\n`)[1]?.split(/\n  [a-z-]+:\n/)[0] ?? ''
+    const job = (name: string): string => workflow.split(`\n  ${name}:\n`)[1]?.split(/\n {2}[a-z-]+:\n/)[0] ?? ''
     for (const step of ['pnpm lint', 'pnpm test', 'pnpm typecheck', 'pnpm generate', 'run: pnpm smoke\n']) {
       expect(job('ci'), step).toContain(step)
     }
