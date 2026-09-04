@@ -75,6 +75,16 @@ export function useReportData() {
   const b24 = useB24()
 
   /**
+   * Номер последней запрошенной выборки.
+   *
+   * ⚠ Период переключают кликами, и ответы приходят не в том порядке, в каком их спросили.
+   * Медленный ответ прошлого периода, придя последним, затёр бы быстрый ответ нового — на экране
+   * оказались бы данные одного периода под подписью другого. Заметить такое можно только сверкой
+   * с CRM вручную.
+   */
+  let seq = 0
+
+  /**
    * Выборка всех страниц списочного метода.
    *
    * ⚠ Именно `callList`, а не `call` со `start`: у заказчика до 5 000 лидов и сделок в месяц
@@ -113,6 +123,7 @@ export function useReportData() {
     await b24.init()
     if (!b24.isInit()) return
 
+    const mine = ++seq
     pending.value = true
     error.value = undefined
     try {
@@ -131,6 +142,8 @@ export function useReportData() {
         fetchAll<B24DealRow>('crm.deal.list', dealListParams(period))
       ])
 
+      if (mine !== seq) return
+
       const adapted = adaptPortalData({
         leads,
         deals,
@@ -143,6 +156,7 @@ export function useReportData() {
         // честно сообщает, что данных не выбирали, вместо того чтобы показать ноль обработанных.
       })
 
+      if (mine !== seq) return
       dataset.value = {
         leads: adapted.leads,
         deals: adapted.deals,
@@ -158,9 +172,11 @@ export function useReportData() {
       // оставляет на экране демонстрационный набор, и он обязан остаться подписанным как демо.
       source.value = 'portal'
     } catch (e) {
-      error.value = e instanceof Error ? e.message : String(e)
+      if (mine === seq) error.value = e instanceof Error ? e.message : String(e)
     } finally {
-      pending.value = false
+      // ⚠ Гасим индикатор только за СВОЙ запрос: иначе устаревший ответ снял бы «загружается» с
+      // ещё идущей выборки, и экран замер бы со старыми числами без единого признака работы.
+      if (mine === seq) pending.value = false
     }
   }
 

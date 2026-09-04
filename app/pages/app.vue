@@ -1,19 +1,42 @@
 <script setup lang="ts">
+import type { ReportPeriod } from '~/types/report'
 import { formatDate } from '~/utils/format'
+import { currentMonthPeriod } from '~/utils/b24Query'
 
 /**
  * Главный экран — сам отчёт. Открывается порталом из пункта CRM-аналитики (`CRM_ANALYTICS_MENU`).
  */
 const { dataset, report, conversionBase, isDemo, pending, error, warnings, latestLeadDate, load } = useReportData()
+
+/**
+ * «Сегодня» фиксируется ОДИН раз на открытие отчёта.
+ *
+ * ⚠ Не `new Date()` в каждом вычислении: пересчёт в полночь молча сдвинул бы подсветку интервала
+ * и границы «последних 7 дней» под руками у человека.
+ */
+const today = new Date()
+
+/** Выбранный период. Умолчание — текущий месяц: отчёт открывают посмотреть, как идут дела сейчас. */
+const period = ref<ReportPeriod>(dataset.value.period)
 const b24 = useB24()
 
 useHead({ title: 'Отчёт' })
 
 onMounted(async () => {
   await b24.init()
-  // Внутри портала берём живые лиды и сделки. Снаружи `load()` тихо ничего не делает и на
-  // экране остаётся демонстрационный набор — брать данные неоткуда.
-  await load()
+  // ⚠ Период подменяем на текущий месяц ТОЛЬКО внутри портала. Снаружи на экране остаётся
+  // демонстрационный набор со своим периодом, и подпись обязана совпадать с данными: шапка
+  // «сентябрь» над августовскими числами — это ровно то враньё, из-за которого заказчик уже
+  // однажды принял чужие цифры за свои.
+  if (b24.isInit()) period.value = currentMonthPeriod(today)
+  // Внутри портала берём живые лиды и сделки. Снаружи `load()` тихо ничего не делает.
+  await load(period.value)
+  await fit()
+})
+
+// Смена периода — новая выборка. Гонку ответов сторожит сам композабл.
+watch(period, async (next) => {
+  await load(next)
   await fit()
 })
 
@@ -86,7 +109,8 @@ watch(conversionBase, fit)
     <main class="mx-auto max-w-[90rem] space-y-4 p-4 lg:p-6">
       <ReportToolbar
         v-model:conversion-base="conversionBase"
-        :period="dataset.period"
+        v-model:period="period"
+        :today="today"
         :is-demo="isDemo"
       />
 
