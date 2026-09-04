@@ -118,6 +118,9 @@ watch([customFrom, customTo], () => {
         Аналитика по лидам
       </h1>
 
+      <!-- Кнопки экспорта — от страницы: панель периода про них не знает. -->
+      <slot name="actions" />
+
       <B24Badge
         v-if="isDemo"
         color="air-primary-warning"

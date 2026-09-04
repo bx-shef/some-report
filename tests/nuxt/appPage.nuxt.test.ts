@@ -89,6 +89,8 @@ describe('страница отчёта в портале', () => {
     expect(before).not.toContain('Сводка')
     // Панель фильтров — тоже после первой выборки: смена фильтра до неё слала бы второй запрос.
     expect(before).not.toContain('Фильтры:')
+    // И кнопки экспорта: выгружать нечего, пока чисел нет.
+    expect(wrapper.findAll('button').some((b: { text: () => string }) => b.text() === 'Excel')).toBe(false)
     expect(before).not.toContain('Демо-данные')
     expect(before).not.toContain('Это НЕ данные вашего портала')
     // Период демо-набора (август) на панели не показывается — только выбранный.
@@ -99,6 +101,8 @@ describe('страница отчёта в портале', () => {
     const after = wrapper.text()
     expect(after).toContain('1. Сводка')
     expect(after).toContain('Фильтры:')
+    expect(wrapper.findAll('button').some((b: { text: () => string }) => b.text() === 'Excel')).toBe(true)
+    expect(wrapper.findAll('button').some((b: { text: () => string }) => b.text() === 'PDF')).toBe(true)
     expect(after).not.toContain('Демо-данные')
     // Справка блока 7 ещё считается — и говорит об этом сама, не задерживая отчёт.
     expect(after).toContain('Считаем успешные сделки без лида')

@@ -63,6 +63,7 @@ backend».
 | Адаптер портала | `app/utils/b24Adapter.ts`, `app/utils/reasonMerge.ts`, `app/utils/leadHistory.ts` | всё портальное: сырые строки REST → нормализованные лид/сделка; сведение одноимённых причин из разных направлений — тоже чистая функция и тоже под тестом |
 | Фильтры | `app/utils/filters.ts` | что значит каждый фильтр для запросов к порталу и для строк демо-набора — чистые функции, под тестом |
 | Детализация | `app/utils/drilldown.ts`, `app/composables/useDrilldown.ts` | что за списком за каждым числом — чистые функции; листание страницами и слайдер — композабл и `ReportDrilldown.vue` |
+| Экспорт | `app/utils/exportSheets.ts`, `app/composables/useExport.ts` | листы Excel из метрик — чистая функция под тестом на сходимость с экраном; запись файлов и PDF-снимок — композабл, библиотеки по нажатию |
 | Данные | `app/composables/useReportData.ts` | единственное место, которое знает, откуда берутся лиды |
 | Встройка | `app/config/b24.ts`, `app/utils/installDiagnostics.ts`, `app/pages/install.vue` | плоские константы отдельно от SDK; разбор ответов портала — чистыми функциями, страница только рисует |
 | Экран | `app/components/Report*.vue` | только рисуют; ни одной формулы |
