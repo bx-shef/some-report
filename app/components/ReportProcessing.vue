@@ -1,21 +1,41 @@
 <script setup lang="ts">
 import type { ReportDictionaries, ReportMetrics } from '~/types/report'
 import { formatCount, formatDuration, formatPercent } from '~/utils/format'
-import { sourceLabel } from '~/utils/labels'
+import { leadStageLabel, sourceLabel } from '~/utils/labels'
 
 /**
  * Обработка лидов и потери до сделки — блоки из ТЗ, которых нет на макете. Стоят рядом намеренно:
  * оба отвечают на вопрос «где лид умер, не дойдя до сделки», и порознь читаются хуже.
+ *
+ * Числа «обработано / не обработано» приходят сразу, счётчиками портала («обработан» — ушёл со
+ * стадии «Не обработан», решение владельца от 2026-09-04). Время первого ответа, просрочка и
+ * разрез по источникам требуют истории стадий — она приходит фоном минуты через две, а на
+ * длинном периоде — по кнопке. Блок показывает, что именно ещё считается, а не нули.
  */
-const props = defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries }>()
+const props = withDefaults(defineProps<{
+  report: ReportMetrics
+  dictionaries: ReportDictionaries
+  /** История стадий ещё читается. */
+  pending?: boolean
+  /** Период длинный — история ждёт кнопки. */
+  deferred?: boolean
+  /** Сколько минут ждать историю — считает страница по длине периода. */
+  estimateMinutes?: number
+  error?: string
+}>(), { pending: false, deferred: false, estimateMinutes: 2, error: undefined })
+
+const emit = defineEmits<{ start: [] }>()
 
 /**
- * Обработка лидов может отсутствовать целиком — когда время первого ответа не выбиралось.
+ * Обработка лидов может отсутствовать целиком — когда нет ни счётчиков, ни строк.
  *
  * ⚠ Показать в этом случае «обработано 0 %, просрочено 100 %» значило бы выдать факт о том, что
  * данных не запрашивали, за факт о работе живых людей. Это разные утверждения, и первое клевещет.
  */
 const processing = computed(() => props.report.processing)
+
+/** Время ответа ещё не посчитано: истории нет (идёт, отложена или упала). */
+const timingMissing = computed(() => processing.value !== undefined && processing.value.avgFirstResponseMinutes === undefined && processing.value.bySource.length === 0)
 </script>
 
 <template>
@@ -29,8 +49,8 @@ const processing = computed(() => props.report.processing)
     <B24Alert
       v-if="!processing"
       color="air-primary-warning"
-      title="Время первого ответа не выбиралось"
-      description="«Первый ответ» — перевод лида в стадию «взят в работу» (ответ заказчика). История стадий пока не выбирается, поэтому блок не считается: «обработано 0 %» выглядело бы как факт о работе отдела."
+      title="Обработка лидов не посчитана"
+      description="Нет ни счётчиков стадий, ни истории стадий — считать не по чему. Блок молчит, чтобы не показывать «обработано 0 %» как факт о работе отдела."
     />
 
     <div
@@ -63,13 +83,13 @@ const processing = computed(() => props.report.processing)
         <div class="text-xs opacity-60">
           Просрочено
         </div>
-        <!-- Норматив не задан — печатаем прочерк, а не ноль: «в срок всё» и «не с чем сравнивать»
-             это разные утверждения, и ноль соврал бы. -->
+        <!-- Норматив не задан или история ещё не пришла — прочерк, а не ноль: «в срок всё» и
+             «не с чем сравнивать» — разные утверждения, и ноль соврал бы. -->
         <div class="mt-1 text-xl font-semibold leading-none">
           {{ processing.overdue === undefined ? '—' : formatCount(processing.overdue) }}
         </div>
         <div class="mt-1 text-xs opacity-60">
-          {{ processing.overdue === undefined ? 'норматив не задан' : formatPercent(processing.overdueShare ?? 0) }}
+          {{ processing.overdue === undefined ? (timingMissing ? 'ждёт историю стадий' : 'норматив не задан') : formatPercent(processing.overdueShare ?? 0) }}
         </div>
       </div>
       <div>
@@ -79,7 +99,48 @@ const processing = computed(() => props.report.processing)
         <div class="mt-1 text-xl font-semibold leading-none">
           {{ formatDuration(processing.avgFirstResponseMinutes) }}
         </div>
+        <div
+          v-if="timingMissing"
+          class="mt-1 text-xs opacity-60"
+        >
+          ждёт историю стадий
+        </div>
       </div>
+    </div>
+
+    <!-- Состояние истории стадий: считаем / по кнопке / упала. Только когда времени ещё нет. -->
+    <div
+      v-if="processing && timingMissing"
+      class="mt-4"
+    >
+      <div
+        v-if="deferred"
+        class="flex flex-wrap items-center gap-3 text-sm"
+      >
+        <span class="opacity-70">
+          Период длинный: история стадий за него займёт примерно {{ estimateMinutes }} мин.
+          Обработано и не обработано уже посчитаны, время ответа и просрочка — по кнопке.
+        </span>
+        <B24Button
+          size="sm"
+          color="air-primary"
+          label="Посчитать"
+          @click="emit('start')"
+        />
+      </div>
+      <p
+        v-else-if="pending"
+        class="text-sm opacity-70"
+      >
+        Считаем время первого ответа по истории стадий… примерно {{ estimateMinutes }} мин.
+        Обработано и не обработано уже посчитаны.
+      </p>
+      <B24Alert
+        v-else-if="error"
+        color="air-primary-alert"
+        title="Не удалось прочитать историю стадий"
+        :description="error"
+      />
     </div>
 
     <div
@@ -112,7 +173,7 @@ const processing = computed(() => props.report.processing)
                 colspan="3"
                 class="py-4 text-center opacity-60"
               >
-                Обработанных лидов нет
+                {{ timingMissing ? 'Ждёт историю стадий' : 'Обработанных лидов нет' }}
               </td>
             </tr>
           </tbody>
@@ -124,7 +185,8 @@ const processing = computed(() => props.report.processing)
           Потери до сделки
         </h3>
         <p class="mt-1 text-xs opacity-60">
-          По формуле ТЗ: Всего − Брак − Квалифицировано.
+          По формуле ТЗ: Всего − Брак − Квалифицировано. Лид не брак и не сконвертирован —
+          открытый, ещё в работе; причин закрытия у него нет, есть стадия.
         </p>
         <dl class="mt-2 space-y-2 text-sm">
           <div class="flex items-baseline justify-between border-b border-[color:var(--chart-track)] pb-2">
@@ -147,6 +209,37 @@ const processing = computed(() => props.report.processing)
             </dd>
           </div>
         </dl>
+
+        <!-- Открытые лиды по стадиям — только со счётчиков портала; у демо-набора этого нет. -->
+        <table
+          v-if="report.preDealLoss.byStage?.length"
+          class="mt-3 w-full text-sm"
+        >
+          <thead>
+            <tr class="border-b border-[color:var(--chart-track)] text-left text-xs opacity-60">
+              <th class="py-1 pr-3 font-normal">
+                Открытые лиды по стадии
+              </th>
+              <th class="py-1 text-right font-normal">
+                Лидов
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="row in report.preDealLoss.byStage"
+              :key="row.stageId"
+              class="border-b border-[color:var(--chart-track)]"
+            >
+              <td class="py-2 pr-3">
+                {{ leadStageLabel(dictionaries, row.stageId) }}
+              </td>
+              <td class="py-2 text-right tabular-nums">
+                {{ formatCount(row.count) }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
         <!-- Разложение не косметическое: формула ТЗ считает потерей и лид, который ещё в работе,
              а на коротком периоде таких большинство. -->
         <p

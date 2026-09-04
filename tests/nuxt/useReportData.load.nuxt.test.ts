@@ -23,7 +23,7 @@ const portal = vi.hoisted(() => ({
 function batchAnswer(commands: Record<string, unknown>) {
   const data: Record<string, { getTotal: () => number, getData: () => { result: unknown[] } }> = {}
   for (const key of Object.keys(commands)) {
-    data[key] = { getTotal: () => (key === 'total' ? portal.leadTotal : 0), getData: () => ({ result: [] }) }
+    data[key] = { getTotal: () => (key === 'total' ? portal.leadTotal : key === 'unprocessed' ? Math.min(2, portal.leadTotal) : 0), getData: () => ({ result: [] }) }
   }
   return { isSuccess: true, getData: () => data, getErrorMessages: () => [] }
 }
@@ -41,8 +41,14 @@ mockNuxtImport('useB24', () => () => ({
         call: {
           make: ({ method, params }: { method: string, params: { filter?: Record<string, string> } }) => {
             // Справка блока 7 — своим курсором по ID (отменяемая выборка), страница за страницей.
-            if (method === 'crm.deal.list') {
-              const key = `closed:${params.filter?.['>=CLOSEDATE'] ?? '?'}`
+            // Курсорные выборки (`start: -1`): справка блока 7, строки лидов и история стадий блока 6.
+            const cursor = (params as { start?: number }).start === -1
+            const key = method === 'crm.deal.list'
+              ? `closed:${params.filter?.['>=CLOSEDATE'] ?? '?'}`
+              : method === 'crm.stagehistory.list'
+                ? `history:${params.filter?.['>=CREATED_TIME'] ?? '?'}`
+                : cursor && method === 'crm.lead.list' ? `leads:${params.filter?.['>=DATE_CREATE'] ?? '?'}` : undefined
+            if (key) {
               portal.calls.push(key)
               return new Promise((resolve) => {
                 portal.pending[key] = rows => resolve(rows instanceof Error
@@ -183,6 +189,51 @@ describe('load', () => {
     expect(portal.calls.filter(c => c === `closed:${AUGUST.from}`).length).toBe(calls)
   })
 
+  // Блок 6: «обработано» — сразу, счётчиком NEW; время и просрочка — фоном, из строк лидов и
+  // истории стадий, тем же ядром, что считает демо-набор.
+  it('обработка лидов: счётчики сразу, время первого ответа — после истории стадий', async () => {
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await loading
+    // Счётчики: всего 7, в «Не обработан» 2 → обработано 5, время ещё не известно.
+    expect(data.report.value.processing).toMatchObject({ processed: 5, unprocessed: 2 })
+    expect(data.report.value.processing?.avgFirstResponseMinutes).toBeUndefined()
+    expect(data.processingPending.value).toBe(true)
+
+    await vi.waitFor(() => expect(portal.pending[`leads:${AUGUST.from}`]).toBeDefined())
+    portal.pending[`leads:${AUGUST.from}`]!([
+      { ID: '1', DATE_CREATE: '2026-08-10T10:00:00+03:00', SOURCE_ID: 'CALL', STATUS_ID: '1' },
+      { ID: '2', DATE_CREATE: '2026-08-10T10:00:00+03:00', SOURCE_ID: 'CALL', STATUS_ID: 'NEW' }
+    ])
+    await vi.waitFor(() => expect(portal.pending[`history:${AUGUST.from}`]).toBeDefined())
+    portal.pending[`history:${AUGUST.from}`]!([
+      { ID: '9', TYPE_ID: 2, OWNER_ID: '1', CREATED_TIME: '2026-08-10T10:30:00+03:00', STATUS_ID: '1' }
+    ])
+    await vi.waitFor(() => expect(data.processingPending.value).toBe(false))
+    const processing = data.report.value.processing!
+    // Числа — от счётчиков, время — из истории: 30 минут по единственному ответу.
+    expect(processing.processed).toBe(5)
+    expect(processing.avgFirstResponseMinutes).toBeCloseTo(30, 6)
+    expect(processing.bySource.map(r => r.sourceId)).toEqual(['CALL'])
+    // Лид 2 без ответа с 10 августа — просрочен по нормативу 120 минут.
+    expect(processing.overdue).toBe(1)
+  })
+
+  it('история стадий: ошибка — своя, счётчики блока 6 на месте', async () => {
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await loading
+    await vi.waitFor(() => expect(portal.pending[`leads:${AUGUST.from}`]).toBeDefined())
+    portal.pending[`leads:${AUGUST.from}`]!(new Error('история недоступна'))
+    await vi.waitFor(() => expect(data.processingPending.value).toBe(false))
+    expect(data.processingError.value).toContain('история недоступна')
+    expect(data.report.value.processing).toMatchObject({ processed: 5, unprocessed: 2 })
+  })
+
   // ⚠ Год — ≈ 1 300 страниц. Сама справка на таком периоде не стартует; стартует по кнопке —
   // и только для того периода, что на экране.
   it('на периоде длиннее квартала справка ждёт кнопки, по кнопке — стартует', async () => {
@@ -194,7 +245,8 @@ describe('load', () => {
     await loading
     expect(data.unlinkedDeferred.value).toBe(true)
     expect(data.unlinkedPending.value).toBe(false)
-    expect(portal.calls.some(c => c.startsWith('closed:'))).toBe(false)
+    expect(data.processingDeferred.value).toBe(true)
+    expect(portal.calls.some(c => c.startsWith('closed:') || c.startsWith('leads:'))).toBe(false)
 
     data.startUnlinked()
     expect(data.unlinkedDeferred.value).toBe(false)
