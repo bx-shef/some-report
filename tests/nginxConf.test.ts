@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { extractCspHeader } from '../scripts/cspSmoke'
 
 /**
  * Сторож боевого конфига.
@@ -12,7 +13,14 @@ import { describe, expect, it } from 'vitest'
  * импорт-картой, заблокированной собственной CSP.
  */
 const conf = readFileSync(join(import.meta.dirname, '..', 'nginx.conf'), 'utf-8')
-const cspLine = conf.split('\n').find(line => line.includes('add_header Content-Security-Policy')) ?? ''
+// Тот же разбор, что у смоука: закомментированная строка за директиву не считается.
+const cspLine = ((): string => {
+  try {
+    return extractCspHeader(conf)
+  } catch {
+    return ''
+  }
+})()
 
 function directive(name: string): string {
   return new RegExp(`${name}[^;]*`).exec(cspLine)?.[0] ?? ''

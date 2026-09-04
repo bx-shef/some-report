@@ -1,6 +1,6 @@
 # some-report — Аналитика по лидам
 
-> Last reviewed: 2026-09-03
+> Last reviewed: 2026-09-04
 
 Приложение Битрикс24: отчёт о пути лида от поступления до закрытия сделки. Встраивается в раздел
 **CRM-аналитика** портала и открывается там же, где штатные отчёты. Nuxt 4 (SSG), данные только
@@ -61,8 +61,9 @@ pnpm dev            # http://localhost:3000
 pnpm lint         # ESLint
 pnpm typecheck    # два прохода: приложение + тесты
 pnpm test         # Vitest (unit + nuxt)
-pnpm check        # всё сразу — это же гоняет CI
+pnpm check        # lint + typecheck + test — основная часть проверок CI
 pnpm generate     # сборка статики → .output/public
+pnpm smoke        # после generate: открыть сборку браузером под боевым CSP (в CI — отдельный шаг)
 ```
 
 Перед пушем прогоняйте `pnpm check`.

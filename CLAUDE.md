@@ -31,8 +31,9 @@ pnpm dev          # дев-сервер
 pnpm lint         # ESLint
 pnpm typecheck    # ДВА прохода: приложение (.nuxt/tsconfig.json) + тесты (tsconfig.node.json)
 pnpm test         # Vitest (оба проекта; быстрый прогон: pnpm test --project unit)
-pnpm check        # lint + typecheck + test — ровно то, что гоняет CI
+pnpm check        # lint + typecheck + test — основная часть проверок CI (ещё generate и smoke)
 pnpm generate     # сборка статики (SSG) → .output/public
+pnpm smoke        # после generate: открыть сборку браузером под боевым CSP; в CI — отдельный шаг
 ```
 
 Страницы приложения вне портала закрыты заглушкой — открывайте с `?preview=1`.
