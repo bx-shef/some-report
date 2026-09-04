@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import {
   DEAL_SELECT,
   LEAD_SELECT,
-  currentMonthPeriod,
   dealListParams,
   dictionaryBatch,
   latestLeadParams,
@@ -99,19 +98,5 @@ describe('dictionaryBatch', () => {
     expect(batch.sources.params.filter.ENTITY_ID).toBe('SOURCE')
     expect(batch.leadStatuses.params.filter.ENTITY_ID).toBe('STATUS')
     expect(batch.dealStages.params.filter.ENTITY_ID).toBe('DEAL_STAGE')
-  })
-})
-
-describe('currentMonthPeriod', () => {
-  it('даёт первое и последнее число текущего месяца', () => {
-    expect(currentMonthPeriod(new Date(2026, 8, 3))).toEqual({ from: '2026-09-01', to: '2026-09-30' })
-  })
-
-  it('знает про 31 день', () => {
-    expect(currentMonthPeriod(new Date(2026, 0, 15)).to).toBe('2026-01-31')
-  })
-
-  it('знает про февраль високосного года', () => {
-    expect(currentMonthPeriod(new Date(2028, 1, 10)).to).toBe('2028-02-29')
   })
 })

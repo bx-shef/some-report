@@ -1,8 +1,18 @@
 import type { ConversionBase, ReportDataset, ReportMetrics, ReportPeriod } from '~/types/report'
-import type { AdapterWarnings, B24CurrencyRow, B24DealRow, B24LeadRow, B24StatusRow } from '~/utils/b24Adapter'
-import { adaptPortalData } from '~/utils/b24Adapter'
-import { currentMonthPeriod, dealListParams, dictionaryBatch, latestLeadParams, leadListParams } from '~/utils/b24Query'
-import { buildReport } from '~/utils/metrics'
+import type { AdapterWarnings, B24CurrencyRow, B24LeadRow, B24StatusRow, B24DealRow } from '~/utils/b24Adapter'
+import { adaptDeals, adaptDealsContext, adaptLeadCounts, baseCurrency, statusIdsBySemantic, statusNames } from '~/utils/b24Adapter'
+import {
+  type BatchCommand,
+  categoryListParams,
+  dealContextBatch,
+  dealStageBatch,
+  dealsFromLeadsParams,
+  dictionaryBatch,
+  latestLeadParams,
+  leadCountBatch
+} from '~/utils/b24Query'
+import { buildReport, buildReportFromAggregate } from '~/utils/metrics'
+import { resolvePreset } from '~/utils/period'
 import { buildMockDataset } from '~/utils/mockReport'
 
 /**
@@ -64,15 +74,31 @@ export function useReportData() {
   /** Данные демонстрационные — интерфейс обязан сказать это вслух, а не подразумевать. */
   const isDemo = computed(() => source.value === 'mock')
 
-  const report = computed<ReportMetrics>(() =>
-    buildReport(dataset.value.leads, dataset.value.deals, {
+  const report = computed<ReportMetrics>(() => {
+    const options = {
       conversionBase: conversionBase.value,
       firstResponseSlaMinutes: firstResponseSlaMinutes.value,
       now: dataset.value.period.to + 'T23:59:59Z'
-    })
-  )
+    }
+    // Живой портал приносит лиды ИТОГАМИ (счётчики), демо-набор — строками. Ядро одно, вход
+    // разный; оба пути обязаны сходиться, и это закреплено тестом на `aggregateLeads`.
+    const { leadAggregate, allDeals } = dataset.value
+    return leadAggregate
+      ? buildReportFromAggregate(leadAggregate, dataset.value.deals, options, allDeals)
+      : buildReport(dataset.value.leads, dataset.value.deals, options)
+  })
 
   const b24 = useB24()
+
+  /**
+   * Номер последней запрошенной выборки.
+   *
+   * ⚠ Период переключают кликами, и ответы приходят не в том порядке, в каком их спросили.
+   * Медленный ответ прошлого периода, придя последним, затёр бы быстрый ответ нового — на экране
+   * оказались бы данные одного периода под подписью другого. Заметить такое можно только сверкой
+   * с CRM вручную.
+   */
+  let seq = 0
 
   /**
    * Выборка всех страниц списочного метода.
@@ -88,6 +114,59 @@ export function useReportData() {
     return (result.getData() ?? []) as T[]
   }
 
+  /**
+   * Пакет команд → результат каждой по её ключу.
+   *
+   * ⚠ Команды режутся по 50: это предел одного пакета у портала, а именованные команды SDK умеет
+   * только в `batch`, не в `batchByChunk`. Число источников у клиента задаёт размер пакета
+   * счётчиков, и 14 источников — это ровно 50 команд; пятнадцатый молча вылетел бы за предел.
+   */
+  async function batchResults<T>(commands: Record<string, BatchCommand>): Promise<Record<string, { data: T | undefined, total: number }>> {
+    const entries = Object.entries(commands)
+    const out: Record<string, { data: T | undefined, total: number }> = {}
+    for (let i = 0; i < entries.length; i += 50) {
+      const chunk = Object.fromEntries(entries.slice(i, i + 50))
+      const result = await b24.getOrThrow().actions.v2.batch.make<T>({
+        calls: chunk,
+        options: { isHaltOnError: false, returnAjaxResult: true }
+      })
+      if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
+      const data = result.getData()
+      if (typeof data !== 'object' || data === null) continue
+      for (const [key, ajax] of Object.entries(data as Record<string, { getData?: () => { result?: T } | undefined, getTotal?: () => number }>)) {
+        out[key] = { data: ajax.getData?.()?.result, total: ajax.getTotal?.() ?? 0 }
+      }
+    }
+    return out
+  }
+
+  /** Только `total` каждой команды — для счётчиков. */
+  async function batchTotals(commands: Record<string, BatchCommand>): Promise<Record<string, number>> {
+    const results = await batchResults<unknown>(commands)
+    return Object.fromEntries(Object.entries(results).map(([key, value]) => [key, value.total]))
+  }
+
+  /** Только строки каждой команды — для справочников. */
+  async function batchRows<T>(commands: Record<string, BatchCommand>): Promise<Record<string, T[]>> {
+    const results = await batchResults<T[]>(commands)
+    return Object.fromEntries(Object.entries(results).map(([key, value]) => [key, Array.isArray(value.data) ? value.data : []]))
+  }
+
+  /** Идентификаторы направлений сделок. Ошибка — пустой список: тогда прочитаем хотя бы направление по умолчанию. */
+  async function fetchCategoryIds(): Promise<number[]> {
+    try {
+      const result = await b24.getOrThrow().actions.v2.call.make<{ categories?: Array<{ id?: unknown }> }>({
+        method: 'crm.category.list',
+        params: categoryListParams()
+      })
+      const categories = result.getData()?.result?.categories
+      if (!Array.isArray(categories)) return []
+      return categories.map(c => Number(c?.id)).filter(id => Number.isFinite(id) && id > 0)
+    } catch {
+      return []
+    }
+  }
+
   /** Дата создания самого свежего лида портала, если он есть. Ошибку глушим: это подсказка. */
   async function fetchLatestLeadDate(): Promise<string | undefined> {
     try {
@@ -95,7 +174,9 @@ export function useReportData() {
         method: 'crm.lead.list',
         params: latestLeadParams()
       })
-      const rows = result.getData()
+      // ⚠ `getData()` отдаёт конверт `{ result, time }`, а не сами строки. Проверка `Array.isArray`
+      // прямо на конверте была всегда ложной — и подсказка о последнем лиде не работала никогда.
+      const rows = result.getData()?.result
       const date = Array.isArray(rows) ? rows[0]?.DATE_CREATE : undefined
       return typeof date === 'string' && date ? date.slice(0, 10) : undefined
     } catch {
@@ -109,58 +190,88 @@ export function useReportData() {
    * Вне фрейма — тихо остаёмся на демонстрационном наборе: это штатный режим страницы,
    * открытой по прямой ссылке, а не ошибка.
    */
-  async function load(period: ReportPeriod = currentMonthPeriod(new Date())): Promise<void> {
+  async function load(period: ReportPeriod = resolvePreset('this-month', new Date())!): Promise<void> {
     await b24.init()
     if (!b24.isInit()) return
 
+    const mine = ++seq
     pending.value = true
     error.value = undefined
     try {
-      // Справочники — одним пакетом: их четыре и они маленькие, отдельными запросами это
-      // четыре круга по сети вместо одного.
-      const dictionaries = await b24.getOrThrow().actions.v2.batch.make<unknown>({
-        calls: dictionaryBatch()
-      })
-      if (!dictionaries.isSuccess) throw new Error(dictionaries.getErrorMessages().join('; '))
-      const books = (dictionaries.getData() ?? {}) as Record<string, unknown>
-      const rows = <T>(key: string): T[] => (Array.isArray(books[key]) ? books[key] as T[] : [])
+      /**
+       * Порядок шагов и почему именно так — см. `docs/PORTAL.md` § «Что делать с объёмами».
+       * Коротко: на боевом портале 3 851 лид и 10 178 сделок в месяц. Строками это 2,5 минуты
+       * ожидания, счётчиками и сделками ТОЛЬКО ИЗ ЛИДОВ — секунд десять.
+       */
 
-      latestLeadDate.value = undefined
-      const [leads, deals] = await Promise.all([
-        fetchAll<B24LeadRow>('crm.lead.list', leadListParams(period)),
-        fetchAll<B24DealRow>('crm.deal.list', dealListParams(period))
+      // 1. Справочники: валюты, источники, стадии лида — одним пакетом.
+      const books = await batchRows<B24StatusRow | B24CurrencyRow>(dictionaryBatch())
+      const currencies = (books.currencies ?? []) as B24CurrencyRow[]
+      const sources = (books.sources ?? []) as B24StatusRow[]
+      const leadStatuses = (books.leadStatuses ?? []) as B24StatusRow[]
+
+      const junkStatusIds = statusIdsBySemantic(leadStatuses, 'F')
+      const sourceIds = sources.map(row => row.STATUS_ID).filter(Boolean)
+
+      // Шаги 2–5 независимы друг от друга — идут параллельно. Последовательно они стоили бы ещё
+      // 4–5 секунд поверх самого долгого шага (строки сделок), ожидая ничего.
+      const [dealStages, leadTotals, dealRows, dealTotals] = await Promise.all([
+        // 2. Стадии сделок ВСЕХ направлений: `DEAL_STAGE` — только направление по умолчанию,
+        //    у заказчика их четыре. Без остальных причина проигрыша приедет кодом вместо названия.
+        fetchCategoryIds().then(ids => batchRows<B24StatusRow>(dealStageBatch(ids))).then(books => Object.values(books).flat()),
+        // 3. Лиды — счётчиками. Что спросить, знает `leadCountBatch`; что с этим делать — `adaptLeadCounts`.
+        batchTotals(leadCountBatch(period, { junkStatusIds, sourceIds })),
+        // 4. Сделки из лидов — строками: ради выручки и причин проигрыша. Их ~10 % от всех.
+        fetchAll<B24DealRow>('crm.deal.list', dealsFromLeadsParams(period)),
+        // 5. Сделки всего портала — три счётчика, чтобы «успешных: 636» не читалось как «всего продаж».
+        batchTotals(dealContextBatch(period))
       ])
 
-      const adapted = adaptPortalData({
-        leads,
-        deals,
-        currencies: rows<B24CurrencyRow>('currencies'),
-        sources: rows<B24StatusRow>('sources'),
-        leadStatuses: rows<B24StatusRow>('leadStatuses'),
-        dealStages: rows<B24StatusRow>('dealStages')
-        // ⚠ `firstResponse` не передаём намеренно: заказчик пока не сказал, что считать
-        // «первым ответом» — любое дело по лиду или только исходящий контакт. Без ответа блок
-        // честно сообщает, что данных не выбирали, вместо того чтобы показать ноль обработанных.
-      })
+      if (mine !== seq) return
+
+      const leadAggregate = adaptLeadCounts({ totals: leadTotals, sourceIds, junkStatusIds })
+      const adaptedDeals = adaptDeals(dealRows, currencies)
+      const currencyId = baseCurrency(currencies)
 
       dataset.value = {
-        leads: adapted.leads,
-        deals: adapted.deals,
-        dictionaries: adapted.dictionaries,
-        currencyId: adapted.currencyId,
+        leads: [],
+        deals: adaptedDeals.deals,
+        leadAggregate,
+        allDeals: adaptDealsContext(dealTotals),
+        dictionaries: {
+          sources: statusNames(sources),
+          junkReasons: statusNames(leadStatuses),
+          lossReasons: statusNames(dealStages)
+        },
+        currencyId,
         period
       }
-      warnings.value = adapted.warnings
+      warnings.value = {
+        unconvertedDeals: adaptedDeals.unconvertedDeals,
+        dealsWithoutLead: adaptedDeals.dealsWithoutLead,
+        duplicateIds: adaptedDeals.duplicateIds,
+        wonWithoutAmount: adaptedDeals.wonWithoutAmount,
+        // Счётчики не видят связи лид → сделка поимённо, поэтому эти две оговорки здесь не считаются.
+        wonStageWithoutDeal: 0,
+        dealsWithMissingLead: 0,
+        // ⚠ Время первого ответа не выбирается намеренно: заказчик пока не сказал, что считать
+        // «первым ответом». Без ответа блок честно молчит, а не показывает ноль обработанных.
+        firstResponseNotFetched: true
+      }
       // Пусто за период — выясняем, есть ли лиды вообще. Один запрос на одну запись, и только
       // когда он действительно нужен.
-      if (adapted.leads.length === 0) latestLeadDate.value = await fetchLatestLeadDate()
-      // ⚠ Признак источника переключаем ПОСЛЕДНИМ и только при успехе: сбой на любом шаге выше
-      // оставляет на экране демонстрационный набор, и он обязан остаться подписанным как демо.
+      if (leadAggregate.total === 0) {
+        const latest = await fetchLatestLeadDate()
+        if (mine !== seq) return
+        latestLeadDate.value = latest
+      }
       source.value = 'portal'
     } catch (e) {
-      error.value = e instanceof Error ? e.message : String(e)
+      if (mine === seq) error.value = e instanceof Error ? e.message : String(e)
     } finally {
-      pending.value = false
+      // ⚠ Гасим индикатор только за СВОЙ запрос: иначе устаревший ответ снял бы «загружается» с
+      // ещё идущей выборки, и экран замер бы со старыми числами без единого признака работы.
+      if (mine === seq) pending.value = false
     }
   }
 

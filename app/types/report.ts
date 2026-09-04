@@ -93,6 +93,57 @@ export interface ReportOptions {
   now?: string
 }
 
+/**
+ * Лиды в АГРЕГИРОВАННОМ виде — то, что ядру нужно на самом деле.
+ *
+ * ⚠ Заведено ради объёмов. На боевом портале заказчика 3 851 лид в месяц — 78 страниц выборки
+ * ≈ 42 секунды ожидания, и всё ради того, чтобы ядро их пересчитало. Портал умеет считать сам:
+ * `crm.lead.list` отдаёт `total` для любого фильтра, и 50 таких вопросов одним пакетом — это
+ * две секунды. Поэтому ядро принимает не строки, а итоги; строки при этом никуда не делись —
+ * демо-набор и тесты сворачивают их в этот же агрегат через `aggregateLeads`.
+ *
+ * Два пути обязаны давать один ответ на одних данных — это закреплено тестом.
+ */
+export interface LeadAggregate {
+  total: number
+  junk: number
+  /** Квалифицированы: по строкам — есть сделка; по счётчикам — стадия с семантикой «успех». */
+  qualified: number
+  /** Ещё в работе. */
+  inWork: number
+  /** Закрыты без сделки и без признака брака — настоящие потери до сделки. */
+  closedWithoutDeal: number
+  /** Код стадии брака → сколько лидов. */
+  junkByReason: Record<string, number>
+  /** Разрез по источникам. Ключ — код источника, пустой источник — `UNSPECIFIED_SOURCE`. */
+  bySource: Record<string, { leads: number, junk: number, qualified: number }>
+  /**
+   * Источник каждого лида по его идентификатору. Есть только когда лиды известны построчно:
+   * по нему сделка находит источник СВОЕГО лида. По счётчикам карты нет — источник берётся у
+   * самой сделки (при конвертации портал копирует его из лида).
+   */
+  leadSourceById?: Record<number, string>
+  /**
+   * Обработка лидов. `undefined` — время первого ответа не выбиралось, и блок обязан сказать
+   * об этом, а не показать «обработано 0 %».
+   */
+  processing?: ProcessingMetrics
+}
+
+/**
+ * Сделки ВСЕГО портала за период — счётчиками, для контекста.
+ *
+ * ⚠ Отчёт про путь ЛИДА, и строками он читает только сделки из лидов (`LEAD_ID` заполнен).
+ * На боевом портале это каждая десятая сделка: остальные — прямой опт и интернет-магазин,
+ * заведённые без лида. Без этих чисел «успешных сделок: 636» читалось бы как «компания продала
+ * 636 раз за месяц», а это ложь в шесть раз.
+ */
+export interface DealsContext {
+  won: number
+  lost: number
+  inWork: number
+}
+
 /** Строка «показатель + доля» — базовый кирпич всех разбивок. */
 export interface CountShare {
   count: number
@@ -116,6 +167,11 @@ export interface SummaryMetrics {
   /** Какой знаменатель применён и чему он равен — чтобы число в отчёте можно было проверить. */
   conversionBase: ConversionBase
   conversionBaseValue: number
+  /**
+   * Сделки всего портала за период. `undefined` — источник их не считал (демо-набор).
+   * Нужно, чтобы «успешных сделок: 636» не читалось как «компания продала 636 раз».
+   */
+  allDeals?: DealsContext
 }
 
 /** Ступень воронки. */
@@ -206,7 +262,8 @@ export interface SourceRow {
 export interface ReportMetrics {
   summary: SummaryMetrics
   funnel: FunnelStage[]
-  processing: ProcessingMetrics
+  /** `undefined` — время первого ответа не выбиралось; блок говорит об этом словами. */
+  processing?: ProcessingMetrics
   junkByReason: JunkReasonRow[]
   preDealLoss: PreDealLossMetrics
   lostDeals: LostDealsMetrics
@@ -232,6 +289,13 @@ export interface ReportPeriod {
 export interface ReportDataset {
   leads: ReportLead[]
   deals: ReportDeal[]
+  /**
+   * Лиды итогами — когда источник считал их счётчиками, а не строками. Тогда `leads` пуст, а
+   * ядро идёт через `buildReportFromAggregate`.
+   */
+  leadAggregate?: LeadAggregate
+  /** Сделки всего портала за период, для контекста сводки. */
+  allDeals?: DealsContext
   dictionaries: ReportDictionaries
   /** Код валюты, к которой приведены все суммы. */
   currencyId: string

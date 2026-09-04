@@ -31,6 +31,7 @@
     "@bitrix24/b24ui-nuxt": "^2.10.0",
     "@fontsource/roboto-mono": "^5.3.0",
     "@fontsource/rubik": "^5.3.0",
+    "@internationalized/date": "^3.12.4",
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {

@@ -1,4 +1,12 @@
-import type { LeadOutcome, ReportDeal, ReportDictionaries, ReportLead } from '~/types/report'
+import type {
+  DealsContext,
+  LeadAggregate,
+  LeadOutcome,
+  ReportDeal,
+  ReportDictionaries,
+  ReportLead
+} from '~/types/report'
+import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
 
 /**
  * Перевод сырых строк REST Битрикс24 в нормализованные лиды и сделки.
@@ -52,6 +60,8 @@ export interface B24StatusRow {
   STATUS_ID: string
   NAME?: string | null
   ENTITY_ID?: string | null
+  /** Семантика стадии: `S` успех, `F` провал, пусто — в работе. Есть у стадий, нет у источников. */
+  SEMANTICS?: string | null
 }
 
 /** Число из REST: приходит строкой, пустотой или null. Нечитаемое значение — это `0`, не `NaN`. */
@@ -199,6 +209,11 @@ export interface AdapterWarnings {
    * и первое клевещет на живых людей.
    */
   firstResponseNotFetched: boolean
+  /**
+   * Успешные сделки с нулевой суммой. Не ошибка отчёта — свойство процесса в CRM: на портале
+   * заказчика деньги оформляются на сделках без лида, а сделка из лида закрывается с нулём.
+   */
+  wonWithoutAmount: number
 }
 
 export interface AdaptedData {
@@ -227,6 +242,76 @@ export interface AdapterInput {
    * показать ноль обработанных.
    */
   firstResponse?: Record<number, string>
+}
+
+/** Одна строка `crm.deal.list` → сделка отчёта. `converted: false` — валюта без курса. */
+function dealFromRow(
+  row: B24DealRow,
+  rates: Record<string, number>,
+  currencyId: string
+): { deal: ReportDeal, converted: boolean } {
+  const id = toNumber(row.ID)
+  const leadId = toNumber(row.LEAD_ID)
+  const dealCurrency = toText(row.CURRENCY_ID) || currencyId
+  const { value, converted } = toBaseAmount(toNumber(row.OPPORTUNITY), dealCurrency, rates)
+  const semantic = toSemantic(row.STAGE_SEMANTIC_ID)
+  return {
+    // Своя валюта портала конвертации не требует — это не «не удалось привести».
+    converted: converted || dealCurrency === currencyId,
+    deal: {
+      id,
+      ...(leadId > 0 ? { leadId } : {}),
+      sourceId: toText(row.SOURCE_ID),
+      assignedById: toNumber(row.ASSIGNED_BY_ID),
+      outcome: semantic === 'S' ? 'won' : semantic === 'F' ? 'lost' : 'in-work',
+      amount: value,
+      // Причина проигрыша — сама стадия провала. Отдельного поля причины в Битрикс24 нет
+      // (docs/PORTAL.md §2), поэтому разбивка наполнится ровно тогда, когда в портале заведут
+      // стадии под причины.
+      ...(semantic === 'F' ? { lossReasonId: toText(row.STAGE_ID) } : {})
+    }
+  }
+}
+
+/**
+ * Только сделки, без лидов — для режима счётчиков, где лиды приходят итогами.
+ *
+ * Сюда попадают сделки ИЗ ЛИДОВ (выборка уже отфильтрована по `LEAD_ID`), поэтому «сделка без
+ * лида» здесь — не оговорка, а признак того, что фильтр запроса поехал; такие считаем и отдаём
+ * наверх, чтобы это было видно.
+ */
+export function adaptDeals(
+  rows: B24DealRow[],
+  currencies: B24CurrencyRow[]
+): { deals: ReportDeal[], unconvertedDeals: number, dealsWithoutLead: number, duplicateIds: number, wonWithoutAmount: number } {
+  const rates = currencyRates(currencies)
+  const currencyId = baseCurrency(currencies)
+  const seen = new Set<number>()
+  let duplicateIds = 0
+  let unconvertedDeals = 0
+  let dealsWithoutLead = 0
+  let wonWithoutAmount = 0
+  const deals: ReportDeal[] = []
+  for (const row of rows) {
+    const id = toNumber(row.ID)
+    if (seen.has(id)) {
+      duplicateIds++
+      continue
+    }
+    seen.add(id)
+    const { deal, converted } = dealFromRow(row, rates, currencyId)
+    if (!converted) unconvertedDeals++
+    if (deal.leadId === undefined) dealsWithoutLead++
+    /**
+     * ⚠ Успешная сделка с нулевой суммой — не мелочь, а свойство процесса. На боевом портале
+     * заказчика ВСЕ 636 успешных сделок из лидов за август имеют `OPPORTUNITY = 0`: деньги там
+     * живут на сделках, заведённых без лида. «Выручка: 0 BYN» без этого счётчика читалась бы как
+     * «отчёт сломан», а это вопрос к тому, как в CRM оформляют продажу.
+     */
+    if (deal.outcome === 'won' && deal.amount === 0) wonWithoutAmount++
+    deals.push(deal)
+  }
+  return { deals, unconvertedDeals, dealsWithoutLead, duplicateIds, wonWithoutAmount }
 }
 
 /**
@@ -272,11 +357,9 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
   let unconvertedDeals = 0
 
   const deals: ReportDeal[] = dealRows.map((row) => {
-    const id = toNumber(row.ID)
-    const leadId = toNumber(row.LEAD_ID)
-    const dealCurrency = toText(row.CURRENCY_ID) || currencyId
-    const { value, converted } = toBaseAmount(toNumber(row.OPPORTUNITY), dealCurrency, rates)
-    if (!converted && dealCurrency !== currencyId) unconvertedDeals++
+    const { deal, converted } = dealFromRow(row, rates, currencyId)
+    const { id, leadId = 0 } = deal
+    if (!converted) unconvertedDeals++
 
     if (leadId <= 0) {
       dealsWithoutLead++
@@ -292,20 +375,7 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
       if (existing) existing.push(id)
       else dealsByLead.set(leadId, [id])
     }
-
-    const semantic = toSemantic(row.STAGE_SEMANTIC_ID)
-    return {
-      id,
-      ...(leadId > 0 ? { leadId } : {}),
-      sourceId: toText(row.SOURCE_ID),
-      assignedById: toNumber(row.ASSIGNED_BY_ID),
-      outcome: semantic === 'S' ? 'won' : semantic === 'F' ? 'lost' : 'in-work',
-      amount: value,
-      // Причина проигрыша — сама стадия провала. Отдельного поля причины в Битрикс24 нет
-      // (docs/PORTAL.md §2), поэтому разбивка наполнится ровно тогда, когда в портале заведут
-      // стадии под причины.
-      ...(semantic === 'F' ? { lossReasonId: toText(row.STAGE_ID) } : {})
-    }
+    return deal
   })
 
   let wonStageWithoutDeal = 0
@@ -346,7 +416,113 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
       dealsWithoutLead,
       dealsWithMissingLead,
       duplicateIds,
-      firstResponseNotFetched: input.firstResponse === undefined
+      firstResponseNotFetched: input.firstResponse === undefined,
+      wonWithoutAmount: deals.filter(d => d.outcome === 'won' && d.amount === 0).length
     }
   }
+}
+
+/** Коды стадий с заданной семантикой — например, все стадии брака лида (`F`). */
+export function statusIdsBySemantic(rows: B24StatusRow[], semantic: B24Semantic): string[] {
+  return rows
+    .filter(row => toSemantic(row.SEMANTICS) === semantic && toText(row.SEMANTICS) !== '')
+    .map(row => toText(row.STATUS_ID))
+    .filter(Boolean)
+}
+
+/**
+ * Ключи счётчиков лидов — ОДИН словарь для того, кто спрашивает, и того, кто разбирает ответ.
+ *
+ * ⚠ Ключи собираются функциями, а не пишутся строками в двух местах: разъехавшийся ключ не даёт
+ * ошибки — он даёт ноль в нужной клетке отчёта, и выглядит это как «в этом источнике лидов не
+ * было».
+ */
+export const leadCountKey = {
+  total: 'total',
+  junk: 'junk',
+  converted: 'converted',
+  inWork: 'inWork',
+  junkReason: (statusId: string) => `junk:${statusId}`,
+  source: (sourceId: string) => `src:${sourceId}`,
+  sourceJunk: (sourceId: string) => `srcJunk:${sourceId}`,
+  sourceConverted: (sourceId: string) => `srcConv:${sourceId}`
+} as const
+
+export interface LeadCountsInput {
+  /** Ключ (см. `leadCountKey`) → `total` из ответа портала. Отсутствующий ключ читается как 0. */
+  totals: Record<string, number>
+  /** Коды источников, по которым спрашивали. */
+  sourceIds: string[]
+  /** Коды стадий брака, по которым спрашивали. */
+  junkStatusIds: string[]
+}
+
+/**
+ * Счётчики портала → агрегат лидов для ядра.
+ *
+ * ⚠ «Источник не указан» НЕ спрашивается у портала отдельно — он вычисляется как остаток:
+ * всего минус сумма по известным источникам. Фильтр по пустому `SOURCE_ID` в REST ведёт себя
+ * по-разному от версии к версии, а остаток — арифметика, которая не зависит ни от чего.
+ *
+ * ⚠ «Квалифицирован» здесь — стадия с семантикой «успех» (`CONVERTED`), а не «есть сделка», как
+ * при построчном разборе: сделки в счётчиках не видны. На портале заказчика это одно и то же по
+ * смыслу — стадия так и называется «Квалифицировано», — но на портале, где лиды конвертируют в
+ * контакт без сделки, эти два числа разойдутся. Об этом сказано в `docs/METRICS.md`.
+ */
+export function adaptLeadCounts(input: LeadCountsInput): LeadAggregate {
+  const get = (key: string): number => Math.max(0, toNumber(input.totals[key]))
+  const total = get(leadCountKey.total)
+  const junk = get(leadCountKey.junk)
+  const qualified = get(leadCountKey.converted)
+  const inWork = get(leadCountKey.inWork)
+
+  const junkByReason: Record<string, number> = Object.create(null)
+  let junkKnown = 0
+  for (const statusId of input.junkStatusIds) {
+    const count = get(leadCountKey.junkReason(statusId))
+    if (count > 0) junkByReason[statusId] = count
+    junkKnown += count
+  }
+  // ⚠ Брак на стадии, которой нет в справочнике (удалена, переименована), в итоге по семантике
+  // ЕСТЬ, а в разбивке по стадиям — нет. Без остатка таблица причин недосчитывала бы этих лидов
+  // молча; со остатком они лежат в «причина не указана» — как и при построчном разборе.
+  if (junk - junkKnown > 0) junkByReason[UNSPECIFIED_REASON] = junk - junkKnown
+
+  const bySource: Record<string, { leads: number, junk: number, qualified: number }> = Object.create(null)
+  let known = { leads: 0, junk: 0, qualified: 0 }
+  for (const sourceId of input.sourceIds) {
+    const row = {
+      leads: get(leadCountKey.source(sourceId)),
+      junk: get(leadCountKey.sourceJunk(sourceId)),
+      qualified: get(leadCountKey.sourceConverted(sourceId))
+    }
+    if (row.leads > 0) bySource[sourceId] = row
+    known = { leads: known.leads + row.leads, junk: known.junk + row.junk, qualified: known.qualified + row.qualified }
+  }
+  const rest = {
+    leads: Math.max(0, total - known.leads),
+    junk: Math.max(0, junk - known.junk),
+    qualified: Math.max(0, qualified - known.qualified)
+  }
+  if (rest.leads > 0) bySource[UNSPECIFIED_SOURCE] = rest
+
+  return {
+    total,
+    junk,
+    qualified,
+    inWork,
+    closedWithoutDeal: Math.max(0, total - junk - qualified - inWork),
+    junkByReason,
+    bySource
+    // `leadSourceById` и `processing` намеренно отсутствуют: строк лидов нет.
+  }
+}
+
+/** Ключи счётчиков сделок всего портала. */
+export const dealCountKey = { won: 'dealsWon', lost: 'dealsLost', inWork: 'dealsInWork' } as const
+
+/** Счётчики сделок всего портала → контекст для сводки. */
+export function adaptDealsContext(totals: Record<string, number>): DealsContext {
+  const get = (key: string): number => Math.max(0, toNumber(totals[key]))
+  return { won: get(dealCountKey.won), lost: get(dealCountKey.lost), inWork: get(dealCountKey.inWork) }
 }

@@ -1,4 +1,5 @@
 import type { ReportPeriod } from '~/types/report'
+import { dealCountKey, leadCountKey } from '~/utils/b24Adapter'
 
 /**
  * Запросы к порталу: что именно спрашиваем у CRM за период отчёта.
@@ -81,19 +82,6 @@ export function dictionaryBatch() {
 }
 
 /**
- * Период по умолчанию — текущий календарный месяц.
- *
- * Отчёт открывают, чтобы посмотреть, как идут дела СЕЙЧАС. Редактируемый период — отдельная
- * задача (#4); до неё показываем месяц, в котором находимся, а не зашитые даты макета.
- */
-export function currentMonthPeriod(now: Date): ReportPeriod {
-  const year = now.getFullYear()
-  const month = now.getMonth()
-  const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-  return { from: iso(new Date(year, month, 1)), to: iso(new Date(year, month + 1, 0)) }
-}
-
-/**
  * Параметры «когда в портале был последний лид».
  *
  * ⚠ Нужны, чтобы пустой отчёт не выглядел сломанным. Открыть отчёт 3-го числа и увидеть нули —
@@ -106,4 +94,94 @@ export function currentMonthPeriod(now: Date): ReportPeriod {
  */
 export function latestLeadParams() {
   return { select: ['ID', 'DATE_CREATE'], order: { DATE_CREATE: 'DESC' }, start: 0 }
+}
+
+/** Одна команда пакета: метод и параметры. */
+export interface BatchCommand {
+  method: string
+  params: Record<string, unknown>
+}
+
+/** Запрос «сколько записей» — только `total`, без единой строки данных. */
+function countCommand(method: string, filter: Record<string, unknown>): BatchCommand {
+  return { method, params: { select: ['ID'], filter, start: 0 } }
+}
+
+/**
+ * Пакет счётчиков лидов за период.
+ *
+ * ⚠ Зачем счётчики вместо строк — объёмы. На боевом портале 3 851 лид в месяц: 78 страниц по
+ * 0,54 с ≈ 42 секунды. Здесь ~50 вопросов «сколько», которые портал считает индексом, — одним
+ * пакетом это две секунды. Ключи команд задаёт `leadCountKey`: тот же словарь читает и
+ * `adaptLeadCounts`, поэтому разъехаться им негде.
+ *
+ * ⚠ «Источник не указан» не спрашивается — вычисляется остатком в адаптере.
+ */
+export function leadCountBatch(
+  period: ReportPeriod,
+  dictionaries: { junkStatusIds: readonly string[], sourceIds: readonly string[] }
+): Record<string, BatchCommand> {
+  const base = periodFilter(period)
+  const method = 'crm.lead.list'
+  const commands: Record<string, BatchCommand> = {
+    [leadCountKey.total]: countCommand(method, base),
+    [leadCountKey.junk]: countCommand(method, { ...base, STATUS_SEMANTIC_ID: 'F' }),
+    [leadCountKey.converted]: countCommand(method, { ...base, STATUS_SEMANTIC_ID: 'S' }),
+    [leadCountKey.inWork]: countCommand(method, { ...base, STATUS_SEMANTIC_ID: 'P' })
+  }
+  for (const statusId of dictionaries.junkStatusIds) {
+    commands[leadCountKey.junkReason(statusId)] = countCommand(method, { ...base, STATUS_ID: statusId })
+  }
+  for (const sourceId of dictionaries.sourceIds) {
+    commands[leadCountKey.source(sourceId)] = countCommand(method, { ...base, SOURCE_ID: sourceId })
+    commands[leadCountKey.sourceJunk(sourceId)] = countCommand(method, { ...base, SOURCE_ID: sourceId, STATUS_SEMANTIC_ID: 'F' })
+    commands[leadCountKey.sourceConverted(sourceId)] = countCommand(method, { ...base, SOURCE_ID: sourceId, STATUS_SEMANTIC_ID: 'S' })
+  }
+  return commands
+}
+
+/** Сделки всего портала за период — три счётчика для контекста сводки. */
+export function dealContextBatch(period: ReportPeriod): Record<string, BatchCommand> {
+  const base = periodFilter(period)
+  const method = 'crm.deal.list'
+  return {
+    [dealCountKey.won]: countCommand(method, { ...base, STAGE_SEMANTIC_ID: 'S' }),
+    [dealCountKey.lost]: countCommand(method, { ...base, STAGE_SEMANTIC_ID: 'F' }),
+    [dealCountKey.inWork]: countCommand(method, { ...base, STAGE_SEMANTIC_ID: 'P' })
+  }
+}
+
+/**
+ * Сделки ИЗ ЛИДОВ за период — строками.
+ *
+ * ⚠ Только они, а не все сделки: на боевом портале сделок 10 178 в месяц (204 страницы, почти
+ * две минуты), а с заполненным `LEAD_ID` — 987 (20 страниц, ~10 секунд). Отчёт про путь лида, и
+ * ровно эти сделки ему нужны построчно — ради выручки и причин проигрыша. Остальные приходят
+ * счётчиками, см. `dealContextBatch`.
+ */
+export function dealsFromLeadsParams(period: ReportPeriod) {
+  return { select: [...DEAL_SELECT], filter: { ...periodFilter(period), '!LEAD_ID': null } }
+}
+
+/** Направления сделок: их справочники стадий лежат отдельно, по одному на направление. */
+export function categoryListParams() {
+  return { entityTypeId: 2 }
+}
+
+/**
+ * Справочники стадий сделок ВСЕХ направлений одним пакетом.
+ *
+ * ⚠ `ENTITY_ID: DEAL_STAGE` — это только направление по умолчанию. У заказчика их четыре, и
+ * стадии остальных лежат в `DEAL_STAGE_<id>`: без них причина проигрыша из второго направления
+ * приедет кодом вместо названия.
+ */
+export function dealStageBatch(categoryIds: readonly number[]): Record<string, BatchCommand> {
+  const commands: Record<string, BatchCommand> = {
+    default: { method: 'crm.status.list', params: { filter: { ENTITY_ID: 'DEAL_STAGE' } } }
+  }
+  for (const id of categoryIds) {
+    if (id <= 0) continue
+    commands[`c${id}`] = { method: 'crm.status.list', params: { filter: { ENTITY_ID: `DEAL_STAGE_${id}` } } }
+  }
+  return commands
 }

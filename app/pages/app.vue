@@ -1,19 +1,53 @@
 <script setup lang="ts">
+import type { ReportPeriod } from '~/types/report'
 import { formatDate } from '~/utils/format'
+import { resolvePreset } from '~/utils/period'
 
 /**
  * Главный экран — сам отчёт. Открывается порталом из пункта CRM-аналитики (`CRM_ANALYTICS_MENU`).
  */
 const { dataset, report, conversionBase, isDemo, pending, error, warnings, latestLeadDate, load } = useReportData()
+
+/**
+ * «Сегодня» фиксируется ОДИН раз на открытие отчёта.
+ *
+ * ⚠ Не `new Date()` в каждом вычислении: пересчёт в полночь молча сдвинул бы подсветку интервала
+ * и границы «последних 7 дней» под руками у человека.
+ */
+const today = new Date()
+
+/** Выбранный период. Умолчание — текущий месяц: отчёт открывают посмотреть, как идут дела сейчас. */
+const period = ref<ReportPeriod>(dataset.value.period)
 const b24 = useB24()
 
 useHead({ title: 'Отчёт' })
 
 onMounted(async () => {
   await b24.init()
-  // Внутри портала берём живые лиды и сделки. Снаружи `load()` тихо ничего не делает и на
-  // экране остаётся демонстрационный набор — брать данные неоткуда.
-  await load()
+  // ⚠ Период подменяем на текущий месяц ТОЛЬКО внутри портала. Снаружи на экране остаётся
+  // демонстрационный набор со своим периодом, и подпись обязана совпадать с данными: шапка
+  // «сентябрь» над августовскими числами — это ровно то враньё, из-за которого заказчик уже
+  // однажды принял чужие цифры за свои.
+  if (b24.isInit()) period.value = resolvePreset('this-month', today)!
+  // Внутри портала берём живые лиды и сделки. Снаружи `load()` тихо ничего не делает.
+  await load(period.value)
+  booted = true
+  await fit()
+})
+
+/**
+ * Первая загрузка идёт из `onMounted`, а НЕ из наблюдателя за периодом.
+ *
+ * ⚠ Наблюдатель регистрируется в setup, и присвоение `period.value` в `onMounted` запускало бы
+ * его тоже — две выборки одного периода на каждое открытие. Гонку данных `seq` в композабле
+ * снял бы, но портал получал бы вдвое больше запросов, а именно запросы здесь и дороги.
+ */
+let booted = false
+
+// Смена периода человеком — новая выборка. Гонку ответов сторожит сам композабл.
+watch(period, async (next) => {
+  if (!booted) return
+  await load(next)
   await fit()
 })
 
@@ -43,6 +77,9 @@ const dataNotes = computed(() => {
   if (w.duplicateIds > 0) {
     notes.push(`Повторов по идентификатору отброшено: ${w.duplicateIds}.`)
   }
+  if (w.wonWithoutAmount > 0) {
+    notes.push(`Успешных сделок из лидов с нулевой суммой: ${w.wonWithoutAmount}. Выручка по лидам считается по сумме сделки, а она в CRM не заполнена — деньги, судя по всему, оформляются на других сделках.`)
+  }
   if (w.firstResponseNotFetched) {
     notes.push('Время первого ответа не выбиралось — блок «Обработка лидов» считать не по чему.')
   }
@@ -61,7 +98,7 @@ const emptyPeriodNote = computed(() => {
   if (!latestLeadDate.value) {
     return 'В портале не нашлось ни одного лида — ни за этот период, ни раньше. Проверьте, что у приложения есть доступ к CRM.'
   }
-  return `За этот период в портале нет ни одного лида. Последний лид создан ${formatDate(latestLeadDate.value)} — отчёт пока считает только текущий месяц, редактируемый период делается отдельно.`
+  return `За этот период в портале нет ни одного лида. Последний лид создан ${formatDate(latestLeadDate.value)} — выберите период, в который он попадает.`
 })
 
 /**
@@ -86,7 +123,9 @@ watch(conversionBase, fit)
     <main class="mx-auto max-w-[90rem] space-y-4 p-4 lg:p-6">
       <ReportToolbar
         v-model:conversion-base="conversionBase"
-        :period="dataset.period"
+        v-model:period="period"
+        :applied-period="dataset.period"
+        :today="today"
         :is-demo="isDemo"
       />
 
@@ -94,7 +133,7 @@ watch(conversionBase, fit)
         v-if="pending"
         class="text-sm opacity-70"
       >
-        Читаем лиды и сделки портала…
+        Читаем лиды и сделки портала… Месяц занимает около 15 секунд, год — до минуты.
       </p>
 
       <!-- ⚠ Демо-плашку заказчик однажды не заметил и принял числа макета за свои. Поэтому

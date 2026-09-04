@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ReportDeal, ReportLead, ReportOptions } from '~/types/report'
 import {
   UNSPECIFIED_REASON,
+  aggregateLeads,
   UNSPECIFIED_SOURCE,
   buildReport,
   conversionBaseValue,
@@ -39,6 +40,11 @@ function deal(patch: Partial<ReportDeal> & { id: number }): ReportDeal {
     amount: 0,
     ...patch
   }
+}
+
+/** Строки → агрегат: все формулы ядра теперь принимают итоги, а не лиды поимённо. */
+function agg(leads: ReportLead[], options: ReportOptions = QUALITY) {
+  return aggregateLeads(leads, options)
 }
 
 describe('share', () => {
@@ -85,7 +91,7 @@ describe('summaryMetrics', () => {
   ]
 
   it('считает базу конверсий по ТЗ', () => {
-    const s = summaryMetrics(leads, deals, QUALITY)
+    const s = summaryMetrics(agg(leads, QUALITY), deals, QUALITY)
     expect(s).toMatchObject({ totalLeads: 4, junk: 1, qualified: 2, wonDeals: 1, revenue: 1000 })
     expect(s.conversionBaseValue).toBe(3)
     expect(s.qualifiedShare).toBeCloseTo(2 / 3, 10)
@@ -93,7 +99,7 @@ describe('summaryMetrics', () => {
   })
 
   it('та же выборка при базе «все лиды» даёт другие конверсии', () => {
-    const s = summaryMetrics(leads, deals, ALL)
+    const s = summaryMetrics(agg(leads, ALL), deals, ALL)
     expect(s.conversionBaseValue).toBe(4)
     expect(s.qualifiedShare).toBe(0.5)
     expect(s.wonShare).toBe(0.25)
@@ -101,16 +107,16 @@ describe('summaryMetrics', () => {
 
   // Доля брака — единственная, что НЕ зависит от базы: брак делится на весь поток всегда.
   it('доля брака не зависит от выбранной базы', () => {
-    expect(summaryMetrics(leads, deals, QUALITY).junkShare).toBe(0.25)
-    expect(summaryMetrics(leads, deals, ALL).junkShare).toBe(0.25)
+    expect(summaryMetrics(agg(leads, QUALITY), deals, QUALITY).junkShare).toBe(0.25)
+    expect(summaryMetrics(agg(leads, ALL), deals, ALL).junkShare).toBe(0.25)
   })
 
   it('выручка складывает только успешные сделки', () => {
-    expect(summaryMetrics(leads, deals, QUALITY).revenue).toBe(1000)
+    expect(summaryMetrics(agg(leads, QUALITY), deals, QUALITY).revenue).toBe(1000)
   })
 
   it('пустая выборка не роняет расчёт', () => {
-    const s = summaryMetrics([], [], QUALITY)
+    const s = summaryMetrics(agg([], QUALITY), [], QUALITY)
     expect(s).toMatchObject({ totalLeads: 0, junk: 0, qualified: 0, revenue: 0 })
     expect(s.qualifiedShare).toBe(0)
   })
@@ -130,22 +136,22 @@ describe('лид, помеченный браком после создания 
 
   it('квалифицированным не считается — приоритет у брака', () => {
     expect(isQualified(leads[0]!)).toBe(false)
-    expect(summaryMetrics(leads, deals, QUALITY).qualified).toBe(1)
+    expect(summaryMetrics(agg(leads, QUALITY), deals, QUALITY).qualified).toBe(1)
   })
 
   it('конверсия не уезжает выше 100 %', () => {
-    const summary = summaryMetrics(leads, deals, QUALITY)
+    const summary = summaryMetrics(agg(leads, QUALITY), deals, QUALITY)
     expect(summary.conversionBaseValue).toBe(1)
     expect(summary.qualifiedShare).toBeLessThanOrEqual(1)
   })
 
   it('потери до сделки не вычитают его дважды', () => {
-    expect(preDealLoss(leads, summaryMetrics(leads, deals, QUALITY)).count).toBe(0)
+    expect(preDealLoss(agg(leads), summaryMetrics(agg(leads, QUALITY), deals, QUALITY)).count).toBe(0)
   })
 
   // Деньги реальны: сделка остаётся в выручке, даже если лид задним числом признали браком.
   it('его сделка остаётся в выручке', () => {
-    expect(summaryMetrics(leads, deals, QUALITY).revenue).toBe(1000)
+    expect(summaryMetrics(agg(leads, QUALITY), deals, QUALITY).revenue).toBe(1000)
   })
 })
 
@@ -164,23 +170,23 @@ describe('funnelStages', () => {
   // начиналась со 125 % — на макете это было видно сразу, в формуле незаметно.
   it('вход воронки — всегда 100 %, при любой базе', () => {
     for (const options of [QUALITY, ALL]) {
-      const stages = funnelStages(summaryMetrics(leads, deals, options))
+      const stages = funnelStages(summaryMetrics(agg(leads, options), deals, options))
       expect(stages[0]!.share).toBe(1)
     }
   })
 
   it('следующие ступени считаются от выбранного знаменателя', () => {
-    const byTz = funnelStages(summaryMetrics(leads, deals, QUALITY))
+    const byTz = funnelStages(summaryMetrics(agg(leads, QUALITY), deals, QUALITY))
     expect(byTz[1]!.share).toBe(1)
     expect(byTz[2]!.share).toBe(0.5)
 
-    const byAll = funnelStages(summaryMetrics(leads, deals, ALL))
+    const byAll = funnelStages(summaryMetrics(agg(leads, ALL), deals, ALL))
     expect(byAll[1]!.share).toBeCloseTo(2 / 3, 10)
     expect(byAll[2]!.share).toBeCloseTo(1 / 3, 10)
   })
 
   it('пустая выборка не даёт NaN ни на одной ступени', () => {
-    for (const stage of funnelStages(summaryMetrics([], [], QUALITY))) {
+    for (const stage of funnelStages(summaryMetrics(agg([], QUALITY), [], QUALITY))) {
       expect(Number.isFinite(stage.share)).toBe(true)
     }
   })
@@ -194,7 +200,7 @@ describe('junkByReason', () => {
       lead({ id: 3, outcome: 'junk', junkReasonId: 'DUPLICATE' }),
       lead({ id: 4, outcome: 'converted', dealIds: [1] })
     ]
-    const rows = junkByReason(leads)
+    const rows = junkByReason(agg(leads))
     expect(rows.map(r => r.reasonId)).toEqual(['DUPLICATE', 'SPAM'])
     expect(rows[0]).toMatchObject({ count: 2, shareOfLeads: 0.5 })
     expect(rows[0]!.shareOfJunk).toBeCloseTo(2 / 3, 10)
@@ -203,7 +209,7 @@ describe('junkByReason', () => {
   // Незаполненная причина — самая частая находка на живом портале; выбросить её значит
   // показать «брак 250», а в разбивке 180 и никаких объяснений, куда делись 70.
   it('незаполненную причину сводит в отдельный код, а не выбрасывает', () => {
-    const rows = junkByReason([lead({ id: 1, outcome: 'junk' }), lead({ id: 2, outcome: 'junk', junkReasonId: '  ' })])
+    const rows = junkByReason(agg([lead({ id: 1, outcome: 'junk' }), lead({ id: 2, outcome: 'junk', junkReasonId: '  ' })]))
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ reasonId: UNSPECIFIED_REASON, count: 2, shareOfJunk: 1 })
   })
@@ -217,8 +223,8 @@ describe('preDealLoss', () => {
       lead({ id: 3, outcome: 'in-work' }),
       lead({ id: 4, outcome: 'lost' })
     ]
-    const summary = summaryMetrics(leads, [deal({ id: 1, leadId: 2, outcome: 'won', amount: 1 })], QUALITY)
-    expect(preDealLoss(leads, summary)).toMatchObject({
+    const summary = summaryMetrics(agg(leads), [deal({ id: 1, leadId: 2, outcome: 'won', amount: 1 })], QUALITY)
+    expect(preDealLoss(agg(leads), summary)).toMatchObject({
       count: 2,
       stillInWork: 1,
       closedWithoutDeal: 1
@@ -233,13 +239,13 @@ describe('lostDeals', () => {
       deal({ id: 1, leadId: 1, outcome: 'lost', amount: 300, lossReasonId: 'PRICE' }),
       deal({ id: 2, leadId: 2, outcome: 'lost', amount: 100, lossReasonId: 'TIME' })
     ]
-    const result = lostDeals(deals, summaryMetrics(leads, deals, QUALITY))
+    const result = lostDeals(deals, summaryMetrics(agg(leads, QUALITY), deals, QUALITY))
     expect(result).toMatchObject({ count: 2, lostRevenue: 400, shareOfQualified: 1 })
     expect(result.byReason[0]).toMatchObject({ reasonId: 'PRICE', lostRevenue: 300, shareOfLostRevenue: 0.75 })
   })
 
   it('портал без проигранных сделок не даёт NaN', () => {
-    const result = lostDeals([], summaryMetrics([], [], QUALITY))
+    const result = lostDeals([], summaryMetrics(agg([], QUALITY), [], QUALITY))
     expect(result).toMatchObject({ count: 0, lostRevenue: 0, shareOfQualified: 0, byReason: [] })
   })
 })
@@ -256,7 +262,7 @@ describe('sourceRows', () => {
   ]
 
   it('считает по источнику лида и сортирует по убыванию лидов', () => {
-    const rows = sourceRows(leads, deals, QUALITY)
+    const rows = sourceRows(agg(leads, QUALITY), deals, QUALITY)
     expect(rows.map(r => r.sourceId)).toEqual(['CALL', 'EMAIL'])
     expect(rows[0]).toMatchObject({ leads: 2, junk: 1, qualified: 1, won: 1, revenue: 900, junkShare: 0.5, crToDeal: 1 })
     expect(rows[1]).toMatchObject({ leads: 1, won: 0, revenue: 0 })
@@ -265,7 +271,7 @@ describe('sourceRows', () => {
   // Источник берём У ЛИДА: у сделки он может быть свой, и тогда одна продажа попала бы в две строки.
   it('источник сделки на строку источника не влияет', () => {
     const rows = sourceRows(
-      [lead({ id: 1, sourceId: 'CALL', outcome: 'converted', dealIds: [1] })],
+      agg([lead({ id: 1, sourceId: 'CALL', outcome: 'converted', dealIds: [1] })]),
       [deal({ id: 1, leadId: 1, sourceId: 'OTHER_SOURCE', outcome: 'won', amount: 500 })],
       QUALITY
     )
@@ -275,12 +281,12 @@ describe('sourceRows', () => {
 
   // Сделка без лида-родителя (заведена руками) не имеет известного источника — выдумывать нельзя.
   it('сделки без лида в разрез источников не попадают', () => {
-    const rows = sourceRows(leads, [...deals, deal({ id: 3, outcome: 'won', amount: 10_000 })], QUALITY)
+    const rows = sourceRows(agg(leads), [...deals, deal({ id: 3, outcome: 'won', amount: 10_000 })], QUALITY)
     expect(rows.reduce((sum, r) => sum + r.revenue, 0)).toBe(900)
   })
 
   it('пустой источник сводится в «другие»', () => {
-    const rows = sourceRows([lead({ id: 1, sourceId: '' })], [], QUALITY)
+    const rows = sourceRows(agg([lead({ id: 1, sourceId: '' })]), [], QUALITY)
     expect(rows[0]!.sourceId).toBe(UNSPECIFIED_SOURCE)
   })
 })
@@ -325,7 +331,7 @@ describe('processingMetrics', () => {
 
 describe('topSources', () => {
   const rows = sourceRows(
-    Array.from({ length: 7 }, (_, i) => lead({ id: i + 1, sourceId: `S${i}` })),
+    agg(Array.from({ length: 7 }, (_, i) => lead({ id: i + 1, sourceId: `S${i}` }))),
     [],
     QUALITY
   )
@@ -356,8 +362,8 @@ describe('sourceRows: расхождение со сводкой', () => {
   ]
 
   it('сводка считает сделку без лида, таблица источников — нет', () => {
-    const summary = summaryMetrics(leads, deals, QUALITY)
-    const bySourceRevenue = sourceRows(leads, deals, QUALITY).reduce((sum, r) => sum + r.revenue, 0)
+    const summary = summaryMetrics(agg(leads, QUALITY), deals, QUALITY)
+    const bySourceRevenue = sourceRows(agg(leads, QUALITY), deals, QUALITY).reduce((sum, r) => sum + r.revenue, 0)
     expect(summary.revenue).toBe(10_900)
     expect(bySourceRevenue).toBe(900)
     expect(summary.revenue).toBeGreaterThan(bySourceRevenue)
@@ -365,7 +371,7 @@ describe('sourceRows: расхождение со сводкой', () => {
 
   it('лид с двумя сделками складывает обе', () => {
     const rows = sourceRows(
-      [lead({ id: 1, sourceId: 'CALL', outcome: 'converted', dealIds: [1, 2] })],
+      agg([lead({ id: 1, sourceId: 'CALL', outcome: 'converted', dealIds: [1, 2] })]),
       [
         deal({ id: 1, leadId: 1, outcome: 'won', amount: 100 }),
         deal({ id: 2, leadId: 1, outcome: 'won', amount: 250 })
@@ -442,5 +448,55 @@ describe('buildReport', () => {
       ['bySource', 'funnel', 'junkByReason', 'lostDeals', 'preDealLoss', 'processing', 'summary', 'topSources']
     )
     expect(report.funnel.map(s => s.key)).toEqual(['leads', 'qualified', 'won'])
+  })
+})
+
+describe('aggregateLeads', () => {
+  // ⚠ Главный тест режима счётчиков. Живой портал приносит лиды ИТОГАМИ, демо-набор — строками;
+  // если два пути дают разные числа на одних данных, отчёт врёт в одном из режимов, и заметить
+  // это можно только сверкой с CRM вручную.
+  it('агрегат из строк даёт тот же отчёт, что и строки', () => {
+    const leads = [
+      lead({ id: 1, outcome: 'junk', junkReasonId: 'SPAM', sourceId: 'CALL' }),
+      lead({ id: 2, outcome: 'converted', dealIds: [10], sourceId: 'CALL' }),
+      lead({ id: 3, outcome: 'in-work', sourceId: 'WEB' }),
+      lead({ id: 4, outcome: 'lost', sourceId: '' })
+    ]
+    const deals = [deal({ id: 10, leadId: 2, outcome: 'won', amount: 500, sourceId: 'CALL' })]
+    const byRows = buildReport(leads, deals, ALL)
+    const agg = aggregateLeads(leads, ALL)
+    expect(agg).toMatchObject({ total: 4, junk: 1, qualified: 1, inWork: 1, closedWithoutDeal: 1 })
+    expect(agg.junkByReason).toEqual({ SPAM: 1 })
+    expect(agg.bySource.CALL).toEqual({ leads: 2, junk: 1, qualified: 1 })
+    expect(agg.bySource[UNSPECIFIED_SOURCE]).toEqual({ leads: 1, junk: 0, qualified: 0 })
+    expect(byRows.summary).toMatchObject({ totalLeads: 4, junk: 1, qualified: 1, wonDeals: 1, revenue: 500 })
+    expect(byRows.bySource.find(r => r.sourceId === 'CALL')).toMatchObject({ won: 1, revenue: 500 })
+  })
+
+  // Счётчики не знают лидов поимённо — источник сделки берётся у самой сделки. При конвертации
+  // портал копирует источник из лида, так что для сделки ИЗ ЛИДА это тот же источник.
+  it('без карты лидов источник сделки берётся у сделки', () => {
+    const agg = aggregateLeads([lead({ id: 2, outcome: 'converted', dealIds: [10], sourceId: 'CALL' })], ALL)
+    delete agg.leadSourceById
+    const rows = sourceRows(agg, [deal({ id: 10, leadId: 2, outcome: 'won', amount: 7, sourceId: 'CALL' })], ALL)
+    expect(rows.find(r => r.sourceId === 'CALL')).toMatchObject({ won: 1, revenue: 7 })
+  })
+
+  // ⚠ Без карты лидов сделка по лиду ПРОШЛОГО месяца несёт источник, у которого за период нет
+  // ни одного лида. Строка «лидов 0, успешных 1» с конверсией 300 % при трёх таких сделках —
+  // ровно то, чего в отчёте быть не должно; оба режима её не рисуют.
+  it('без карты лидов сделка источника без лидов строки не создаёт', () => {
+    const agg = aggregateLeads([lead({ id: 2, outcome: 'converted', dealIds: [10], sourceId: 'CALL' })], ALL)
+    delete agg.leadSourceById
+    const rows = sourceRows(agg, [deal({ id: 11, leadId: 99, outcome: 'won', amount: 7, sourceId: 'WEB' })], ALL)
+    expect(rows.find(r => r.sourceId === 'WEB')).toBeUndefined()
+  })
+
+  // Сделка, чей лид известен по карте, но в выборке отсутствует, в разрез не входит: иначе выручка
+  // легла бы на источник, которого в таблице лидов нет, и итоги разошлись бы со сводкой.
+  it('с картой лидов сделка чужого лида в разрез не входит', () => {
+    const agg = aggregateLeads([lead({ id: 2, outcome: 'converted', dealIds: [10], sourceId: 'CALL' })], ALL)
+    const rows = sourceRows(agg, [deal({ id: 11, leadId: 99, outcome: 'won', amount: 7, sourceId: 'WEB' })], ALL)
+    expect(rows.find(r => r.sourceId === 'WEB')).toBeUndefined()
   })
 })

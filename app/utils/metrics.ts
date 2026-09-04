@@ -1,6 +1,8 @@
 import type {
   ConversionBase,
+  DealsContext,
   FunnelStage,
+  LeadAggregate,
   JunkReasonRow,
   LossReasonRow,
   LostDealsMetrics,
@@ -83,29 +85,75 @@ function sourceKey(id: string | undefined): string {
   return id && id.trim() ? id : UNSPECIFIED_SOURCE
 }
 
-/** Сводка (KPI). */
-export function summaryMetrics(
-  leads: ReportLead[],
-  deals: ReportDeal[],
-  options: ReportOptions
-): SummaryMetrics {
-  const totalLeads = leads.length
-  const junk = leads.filter(isJunk).length
-  const qualified = leads.filter(isQualified).length
-  const won = deals.filter(d => d.outcome === 'won')
-  const baseValue = conversionBaseValue(totalLeads, junk, options.conversionBase)
+/**
+ * Свернуть строки лидов в агрегат.
+ *
+ * Это ЕДИНСТВЕННОЕ место, где ядро смотрит на отдельные лиды. Все формулы ниже принимают
+ * агрегат, потому что на боевом портале строк 3 851 в месяц и выбирать их 42 секунды, а портал
+ * умеет считать сам — см. `LeadAggregate`. Демо-набор и тесты идут через эту функцию, живой
+ * портал приносит агрегат напрямую; оба пути обязаны сходиться, и это закреплено тестом.
+ */
+export function aggregateLeads(leads: ReportLead[], options: ReportOptions): LeadAggregate {
+  const junkByReason: Record<string, number> = Object.create(null)
+  const bySource: Record<string, { leads: number, junk: number, qualified: number }> = Object.create(null)
+  const leadSourceById: Record<number, string> = Object.create(null)
+  let junk = 0
+  let qualified = 0
+  let inWork = 0
+
+  for (const lead of leads) {
+    const source = sourceKey(lead.sourceId)
+    const row = bySource[source] ?? (bySource[source] = { leads: 0, junk: 0, qualified: 0 })
+    row.leads += 1
+    leadSourceById[lead.id] = source
+    if (isJunk(lead)) {
+      junk += 1
+      row.junk += 1
+      const reason = reasonKey(lead.junkReasonId)
+      junkByReason[reason] = (junkByReason[reason] ?? 0) + 1
+    } else if (isQualified(lead)) {
+      qualified += 1
+      row.qualified += 1
+    } else if (lead.outcome === 'in-work') {
+      inWork += 1
+    }
+  }
 
   return {
-    totalLeads,
+    total: leads.length,
     junk,
-    junkShare: share(junk, totalLeads),
     qualified,
-    qualifiedShare: share(qualified, baseValue),
+    inWork,
+    closedWithoutDeal: Math.max(0, leads.length - junk - qualified - inWork),
+    junkByReason,
+    bySource,
+    leadSourceById,
+    processing: processingMetrics(leads, options)
+  }
+}
+
+/** Сводка (KPI). */
+export function summaryMetrics(
+  leads: LeadAggregate,
+  deals: ReportDeal[],
+  options: ReportOptions,
+  allDeals?: DealsContext
+): SummaryMetrics {
+  const won = deals.filter(d => d.outcome === 'won')
+  const baseValue = conversionBaseValue(leads.total, leads.junk, options.conversionBase)
+
+  return {
+    totalLeads: leads.total,
+    junk: leads.junk,
+    junkShare: share(leads.junk, leads.total),
+    qualified: leads.qualified,
+    qualifiedShare: share(leads.qualified, baseValue),
     wonDeals: won.length,
     wonShare: share(won.length, baseValue),
     revenue: won.reduce((sum, d) => sum + d.amount, 0),
     conversionBase: options.conversionBase,
-    conversionBaseValue: baseValue
+    conversionBaseValue: baseValue,
+    allDeals
   }
 }
 
@@ -210,19 +258,13 @@ export function processingMetrics(leads: ReportLead[], options: ReportOptions): 
 }
 
 /** Разбивка брака по причинам. Сортировка — по убыванию количества (крупное первым). */
-export function junkByReason(leads: ReportLead[]): JunkReasonRow[] {
-  const junk = leads.filter(isJunk)
-  const counts = new Map<string, number>()
-  for (const lead of junk) {
-    const key = reasonKey(lead.junkReasonId)
-    counts.set(key, (counts.get(key) ?? 0) + 1)
-  }
-  return [...counts.entries()]
+export function junkByReason(leads: LeadAggregate): JunkReasonRow[] {
+  return Object.entries(leads.junkByReason)
     .map(([reasonId, count]) => ({
       reasonId,
       count,
-      shareOfLeads: share(count, leads.length),
-      shareOfJunk: share(count, junk.length)
+      shareOfLeads: share(count, leads.total),
+      shareOfJunk: share(count, leads.junk)
     }))
     .sort((a, b) => b.count - a.count || a.reasonId.localeCompare(b.reasonId))
 }
@@ -234,9 +276,9 @@ export function junkByReason(leads: ReportLead[]): JunkReasonRow[] {
  * работе. Считаем ровно по ТЗ, но раскладываем на «ещё в работе» и «закрыт без сделки», чтобы
  * завышение было видно, а не подразумевалось.
  */
-export function preDealLoss(leads: ReportLead[], summary: SummaryMetrics): PreDealLossMetrics {
+export function preDealLoss(leads: LeadAggregate, summary: SummaryMetrics): PreDealLossMetrics {
   const count = Math.max(0, summary.totalLeads - summary.junk - summary.qualified)
-  const stillInWork = leads.filter(l => !isJunk(l) && !isQualified(l) && l.outcome === 'in-work').length
+  const stillInWork = Math.min(count, leads.inWork)
   return {
     count,
     share: share(count, summary.conversionBaseValue),
@@ -285,27 +327,36 @@ export function lostDeals(deals: ReportDeal[], summary: SummaryMetrics): LostDea
  * лида-родителя в этот блок не входят вовсе — их источник неизвестен, а выдумывать его нельзя.
  */
 export function sourceRows(
-  leads: ReportLead[],
+  leads: LeadAggregate,
   deals: ReportDeal[],
   options: ReportOptions
 ): SourceRow[] {
-  const dealById = new Map(deals.map(d => [d.id, d]))
   const acc = new Map<string, { leads: number, junk: number, qualified: number, won: number, revenue: number }>()
+  for (const [sourceId, row] of Object.entries(leads.bySource)) {
+    acc.set(sourceId, { ...row, won: 0, revenue: 0 })
+  }
 
-  for (const lead of leads) {
-    const key = sourceKey(lead.sourceId)
-    const row = acc.get(key) ?? { leads: 0, junk: 0, qualified: 0, won: 0, revenue: 0 }
-    row.leads += 1
-    if (isJunk(lead)) row.junk += 1
-    if (isQualified(lead)) row.qualified += 1
-    for (const dealId of lead.dealIds) {
-      const deal = dealById.get(dealId)
-      if (deal?.outcome === 'won') {
-        row.won += 1
-        row.revenue += deal.amount
-      }
-    }
-    acc.set(key, row)
+  for (const deal of deals) {
+    if (deal.outcome !== 'won' || deal.leadId === undefined) continue
+    /**
+     * Источник сделки: у ЛИДА, когда лиды известны построчно; иначе — у самой сделки.
+     *
+     * ⚠ Второе — не компромисс наугад: при конвертации лида Битрикс24 копирует `SOURCE_ID` в
+     * сделку, так что для сделки ИЗ ЛИДА это тот же источник. А вот сделка, чей лид известен,
+     * но в выборку не попал (создан до периода, удалён), в разрез не входит — иначе выручка
+     * легла бы на источник, которого в таблице лидов нет, и итоги разошлись бы со сводкой.
+     */
+    const sourceId = leads.leadSourceById
+      ? leads.leadSourceById[deal.leadId]
+      : sourceKey(deal.sourceId)
+    if (sourceId === undefined) continue
+    // ⚠ Источник без единого лида за период строки не получает — ни в одном из режимов. Иначе
+    // сделка по лиду прошлого месяца рисовала бы строку «лидов 0, успешных 1, конверсия 0 %», а
+    // при одном лиде и трёх таких сделках — конверсию 300 %.
+    const row = acc.get(sourceId)
+    if (!row) continue
+    row.won += 1
+    row.revenue += deal.amount
   }
 
   return [...acc.entries()]
@@ -331,22 +382,38 @@ export function topSources(rows: SourceRow[], limit = 5): SourceRow[] {
   return rows.slice(0, limit)
 }
 
-/** Полный расчёт отчёта из нормализованных лидов и сделок. */
-export function buildReport(
-  leads: ReportLead[],
+/**
+ * Полный расчёт отчёта из агрегата лидов и строк сделок.
+ *
+ * Строки сделок — только те, что ИЗ ЛИДОВ: отчёт про путь лида, и сделки без лида-родителя в
+ * воронку не входят. Их число за период приходит отдельно, в `allDeals`, — чтобы «успешных
+ * сделок: 636» не читалось как «компания продала 636 раз».
+ */
+export function buildReportFromAggregate(
+  leads: LeadAggregate,
   deals: ReportDeal[],
-  options: ReportOptions
+  options: ReportOptions,
+  allDeals?: DealsContext
 ): ReportMetrics {
-  const summary = summaryMetrics(leads, deals, options)
+  const summary = summaryMetrics(leads, deals, options, allDeals)
   const bySource = sourceRows(leads, deals, options)
   return {
     summary,
     funnel: funnelStages(summary),
-    processing: processingMetrics(leads, options),
+    processing: leads.processing,
     junkByReason: junkByReason(leads),
     preDealLoss: preDealLoss(leads, summary),
     lostDeals: lostDeals(deals, summary),
     bySource,
     topSources: topSources(bySource)
   }
+}
+
+/** Полный расчёт отчёта из нормализованных лидов и сделок — демо-набор и тесты. */
+export function buildReport(
+  leads: ReportLead[],
+  deals: ReportDeal[],
+  options: ReportOptions
+): ReportMetrics {
+  return buildReportFromAggregate(aggregateLeads(leads, options), deals, options)
 }

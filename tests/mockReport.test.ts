@@ -95,9 +95,9 @@ describe('демо-набор воспроизводит согласованн�
       firstResponseSlaMinutes: 60,
       now: '2026-08-31T23:59:59Z'
     })
-    expect(withSla.processing.processedShare).toBeGreaterThan(0.9)
-    expect(withSla.processing.overdueShare!).toBeLessThan(0.25)
-    expect(withSla.processing.avgFirstResponseMinutes!).toBeLessThan(60)
+    expect(withSla.processing!.processedShare).toBeGreaterThan(0.9)
+    expect(withSla.processing!.overdueShare!).toBeLessThan(0.25)
+    expect(withSla.processing!.avgFirstResponseMinutes!).toBeLessThan(60)
   })
 
   it('справочники покрывают все встреченные коды', () => {
