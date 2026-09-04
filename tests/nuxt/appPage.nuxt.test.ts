@@ -83,6 +83,8 @@ describe('страница отчёта в портале', () => {
     const before = wrapper.text()
     expect(before).toContain('Загрузка')
     expect(before).not.toContain('Сводка')
+    // Панель фильтров — тоже после первой выборки: смена фильтра до неё слала бы второй запрос.
+    expect(before).not.toContain('Фильтры:')
     expect(before).not.toContain('Демо-данные')
     expect(before).not.toContain('Это НЕ данные вашего портала')
     // Период демо-набора (август) на панели не показывается — только выбранный.
@@ -92,6 +94,7 @@ describe('страница отчёта в портале', () => {
     await vi.waitFor(() => expect(wrapper.text()).not.toContain('Загрузка…'))
     const after = wrapper.text()
     expect(after).toContain('1. Сводка')
+    expect(after).toContain('Фильтры:')
     expect(after).not.toContain('Демо-данные')
     // Справка блока 7 ещё считается — и говорит об этом сама, не задерживая отчёт.
     expect(after).toContain('Считаем успешные сделки без лида')

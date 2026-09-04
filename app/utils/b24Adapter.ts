@@ -656,3 +656,27 @@ export function adaptDealsContext(totals: Record<string, number>): DealsContext 
   const get = (key: string): number => Math.max(0, toNumber(totals[key]))
   return { won: get(dealCountKey.won), lost: get(dealCountKey.lost), inWork: get(dealCountKey.inWork) }
 }
+
+/** Строка `user.get` — только то, что нужно фильтру по менеджеру. */
+export interface B24UserRow {
+  ID: string | number
+  NAME?: string | null
+  LAST_NAME?: string | null
+}
+
+/**
+ * Сотрудники → словарь для фильтра по менеджеру: «Фамилия Имя».
+ *
+ * Без имени и фамилии (техническая учётка, обезличенный профиль) — «Сотрудник #id»: пустая
+ * строка в выпадающем списке неотличима от пробела, а выбрать её всё равно можно.
+ */
+export function adaptUsers(rows: readonly B24UserRow[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const row of rows) {
+    const id = Number(row.ID)
+    if (!Number.isFinite(id) || id <= 0) continue
+    const name = [row.LAST_NAME, row.NAME].map(part => (part ?? '').trim()).filter(Boolean).join(' ')
+    out[String(id)] = name || `Сотрудник #${id}`
+  }
+  return out
+}

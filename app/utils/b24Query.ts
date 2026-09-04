@@ -129,9 +129,11 @@ export function leadCountBatch(
      * обработано» (счётчик `NEW`) и разбивка открытых лидов по стадиям для блока 6.
      */
     openStatusIds?: readonly string[]
-  }
+  },
+  /** Фрагмент фильтра лидов (`leadRestFilter`): источник, менеджер, стадия — во ВСЕ счётчики. */
+  leadFilter: Record<string, string | number> = {}
 ): Record<string, BatchCommand> {
-  const base = periodFilter(period)
+  const base = { ...periodFilter(period), ...leadFilter }
   const method = 'crm.lead.list'
   const commands: Record<string, BatchCommand> = {
     [leadCountKey.total]: countCommand(method, base),
@@ -173,8 +175,23 @@ export function dealContextBatch(period: ReportPeriod): Record<string, BatchComm
 export const LEAD_HISTORY_LEAD_SELECT = ['ID', 'DATE_CREATE', 'SOURCE_ID', 'STATUS_ID', 'ASSIGNED_BY_ID'] as const
 
 /** Лиды периода — строками, только для расчёта времени первого ответа (см. `leadHistoryParams`). */
-export function leadHistoryLeadParams(period: ReportPeriod) {
-  return { select: [...LEAD_HISTORY_LEAD_SELECT], filter: periodFilter(period) }
+export function leadHistoryLeadParams(period: ReportPeriod, leadFilter: Record<string, string | number> = {}) {
+  return { select: [...LEAD_HISTORY_LEAD_SELECT], filter: { ...periodFilter(period), ...leadFilter } }
+}
+
+/** Только идентификаторы лидов периода под фильтром — чтобы применить фильтр лида к сделкам через `LEAD_ID`. */
+export function leadIdsParams(period: ReportPeriod, leadFilter: Record<string, string | number>) {
+  return { select: ['ID'], filter: { ...periodFilter(period), ...leadFilter } }
+}
+
+/**
+ * Сотрудники портала для фильтра по менеджеру — постранично через `start`.
+ *
+ * `user.get` — не список CRM: у него свои `sort`/`order` и `FILTER`, курсор по `>ID` через
+ * `filter` не подходит. Сотрудников сотни, не тысячи, — десяток страниц по 50.
+ */
+export function userListParams(start = 0) {
+  return { sort: 'ID', order: 'ASC', FILTER: { ACTIVE: true, USER_TYPE: 'employee' }, start }
 }
 
 /** Поля записи истории: чей лид, куда перешёл и когда. Создание (`TYPE_ID = 1`) не берём — см. фильтр. */
@@ -253,8 +270,19 @@ export function unlinkedWonDealsParams(period: ReportPeriod) {
  * ровно эти сделки ему нужны построчно — ради выручки и причин проигрыша. Остальные приходят
  * счётчиками, см. `dealContextBatch`.
  */
-export function dealsFromLeadsParams(period: ReportPeriod) {
-  return { select: [...DEAL_SELECT], filter: { ...periodFilter(period), '!LEAD_ID': null } }
+export function dealsFromLeadsParams(
+  period: ReportPeriod,
+  /** Фрагмент фильтра сделок (`dealRestFilter`): источник, стадии проигрыша. */
+  dealFilter: Record<string, string | string[]> = {},
+  /** Лиды под фильтром менеджера/стадии — сделки только по ним (`LEAD_ID in (...)`). */
+  leadIds?: readonly number[]
+) {
+  // ⚠ Пустой список — ошибка вызывающего, а не «ничего не найдено»: `LEAD_ID: [0]` на боевом
+  // портале отдаёт сделки БЕЗ лида (замер 2026-09-04), а что портал выведет из пустого массива,
+  // проверять незачем — любой ответ, кроме ошибки, подменил бы «сделок нет» на чужие сделки.
+  if (leadIds && !leadIds.length) throw new Error('dealsFromLeadsParams: пустой список лидов — сделок по нему не спрашивают')
+  const byLead = leadIds ? { LEAD_ID: [...leadIds] } : { '!LEAD_ID': null }
+  return { select: [...DEAL_SELECT], filter: { ...periodFilter(period), ...byLead, ...dealFilter } }
 }
 
 /** Направления сделок: их справочники стадий лежат отдельно, по одному на направление. */

@@ -24,7 +24,7 @@ const august: UnlinkedDeals = {
   ]
 }
 
-function render(props: Partial<{ unlinked: UnlinkedDeals, pending: boolean, deferred: boolean, error: string, estimateMinutes: number }> = {}) {
+function render(props: Partial<{ unlinked: UnlinkedDeals, pending: boolean, deferred: boolean, error: string, estimateMinutes: number, filtered: boolean }> = {}) {
   return mountSuspended(ReportUnlinkedDeals, {
     props: { unlinked: august, pending: false, deferred: false, estimateMinutes: 1, dictionaries, currencyId: 'BYN', ...props }
   })
@@ -35,6 +35,13 @@ describe('ReportUnlinkedDeals', () => {
     const text = (await render()).text()
     expect(text).toContain('по дате закрытия')
     expect(text).toContain('в воронку и выручку по лидам не входят')
+  })
+
+  // Решение владельца: фильтры отчёта на блок не действуют. Без подписи отфильтрованная воронка
+  // над полным блоком читалась бы как ошибка.
+  it('под фильтрами отчёта говорит, что здесь они не действуют', async () => {
+    expect((await render({ filtered: true })).text()).toContain('Фильтры отчёта здесь не действуют')
+    expect((await render()).text()).not.toContain('Фильтры отчёта здесь не действуют')
   })
 
   it('оранжевая плашка про интернет-магазин есть всегда — и пока считаем, и когда посчитали', async () => {

@@ -1,11 +1,12 @@
 import { mergeReasons } from '~/utils/reasonMerge'
-import type { ConversionBase, ReportDataset, ReportMetrics, ReportPeriod } from '~/types/report'
-import type { AdapterWarnings, B24CurrencyRow, B24LeadRow, B24StatusRow, B24DealRow } from '~/utils/b24Adapter'
+import type { ConversionBase, ReportDataset, ReportFilters, ReportMetrics, ReportPeriod } from '~/types/report'
+import type { AdapterWarnings, B24CurrencyRow, B24LeadRow, B24StatusRow, B24DealRow, B24UserRow } from '~/utils/b24Adapter'
 import {
   adaptDeals,
   adaptDealsContext,
   adaptLeadCounts,
   adaptUnlinkedWonDeals,
+  adaptUsers,
   openLeadStatusIds,
   baseCurrency,
   lossStages,
@@ -24,12 +25,15 @@ import {
   leadCreatedInStageParams,
   leadHistoryLeadParams,
   leadHistoryParams,
-  unlinkedWonDealsParams
+  leadIdsParams,
+  unlinkedWonDealsParams,
+  userListParams
 } from '~/utils/b24Query'
 import { buildReport, buildReportFromAggregate, mergeProcessing, processingMetrics } from '~/utils/metrics'
 import { leadsFromHistory, type B24LeadHistoryRow, type B24StageHistoryRow } from '~/utils/leadHistory'
 import { periodLengthDays, resolvePreset } from '~/utils/period'
 import { buildMockDataset } from '~/utils/mockReport'
+import { EMPTY_FILTERS, applyFilters, chunkIds, codesByReason, dealRestFilter, hasFilters, leadRestFilter, needsLeadIds } from '~/utils/filters'
 
 /**
  * Источник данных отчёта — единственное место, которое знает, ОТКУДА берутся лиды и сделки.
@@ -85,6 +89,12 @@ export function useReportData() {
   const source = ref<'mock' | 'portal'>('mock')
 
   const dataset = ref<ReportDataset>(buildMockDataset())
+  /**
+   * Фильтры, под которыми посчитан отчёт (ТЗ от 2026-09-04). В портале они уходят в запросы —
+   * счётчики и строки приходят уже отфильтрованными; демо-набор фильтруется здесь, по строкам,
+   * теми же правилами (`applyFilters`), чтобы предпросмотр вёл себя как живой отчёт.
+   */
+  const filters = ref<ReportFilters>(EMPTY_FILTERS)
   const pending = ref(false)
   const error = ref<string | undefined>(undefined)
   /**
@@ -159,9 +169,9 @@ export function useReportData() {
     // Живой портал приносит лиды ИТОГАМИ (счётчики), демо-набор — строками. Ядро одно, вход
     // разный; оба пути обязаны сходиться, и это закреплено тестом на `aggregateLeads`.
     const { leadAggregate, allDeals } = dataset.value
-    return leadAggregate
-      ? buildReportFromAggregate(leadAggregate, dataset.value.deals, options, allDeals)
-      : buildReport(dataset.value.leads, dataset.value.deals, options)
+    if (leadAggregate) return buildReportFromAggregate(leadAggregate, dataset.value.deals, options, allDeals)
+    const rows = applyFilters(dataset.value.leads, dataset.value.deals, filters.value)
+    return buildReport(rows.leads, rows.deals, options)
   })
 
   const b24 = useB24()
@@ -297,13 +307,67 @@ export function useReportData() {
     }
   }
 
+  /** Сотрудники портала — читаются один раз на открытие отчёта, см. `fetchUsers`. */
+  let usersCache: Promise<Record<string, string>> | undefined
+
+  /**
+   * Список сотрудников для фильтра по менеджеру — страницами `user.get` (право `user_brief`).
+   *
+   * ⚠ Ошибка здесь — не ошибка отчёта: числа от списка не зависят, без него закрыт только выбор
+   * менеджера, и панель говорит об этом. Поэтому глушим и отдаём то, что успели прочитать.
+   * Повторно за открытие отчёта не спрашиваем — сотрудники за минуту не меняются.
+   */
+  function fetchUsers(): Promise<Record<string, string>> {
+    usersCache ??= (async () => {
+      const rows: B24UserRow[] = []
+      try {
+        // Страницы по 50: сотрудников сотни, не тысячи. Предел страниц — от бесконечного `next`.
+        for (let start = 0, pages = 0; pages < 100; pages++) {
+          const result = await b24.getOrThrow().actions.v2.call.make<B24UserRow[]>({ method: 'user.get', params: userListParams(start) })
+          if (!result.isSuccess) break
+          const data = result.getData() as { result?: unknown, next?: unknown } | undefined
+          if (!Array.isArray(data?.result)) break
+          rows.push(...(data.result as B24UserRow[]))
+          if (typeof data.next !== 'number' || data.result.length === 0) break
+          start = data.next
+        }
+      } catch {
+        // См. выше: список — удобство фильтра, а не данные отчёта.
+      }
+      return adaptUsers(rows)
+    })()
+    return usersCache
+  }
+
+  /**
+   * Сделки из лидов периода под фильтрами.
+   *
+   * Источник и причина проигрыша у сделки — свои поля, они уходят в фильтр напрямую. Менеджер и
+   * стадия — поля ЛИДА: сначала идентификаторы лидов под фильтром, потом сделки по ним кусками
+   * по 500 (`LEAD_ID in (...)`), друг за другом — параллельные потоки к порталу дороже времени.
+   * Лидов под фильтром нет — сделок нет, и портал об этом не спрашивают (см. `dealsFromLeadsParams`).
+   */
+  async function fetchDealsFromLeads(period: ReportPeriod, current: ReportFilters, keyByCode: Record<string, string>): Promise<B24DealRow[]> {
+    const dealFilter = dealRestFilter(current, codesByReason(keyByCode))
+    if (!needsLeadIds(current)) return fetchAll<B24DealRow>('crm.deal.list', dealsFromLeadsParams(period, dealFilter))
+    const idRows = await fetchAll<{ ID?: string | number }>('crm.lead.list', leadIdsParams(period, leadRestFilter(current)))
+    const leadIds = idRows.map(row => Number(row.ID)).filter(id => Number.isFinite(id) && id > 0)
+    const rows: B24DealRow[] = []
+    for (const chunk of chunkIds(leadIds)) {
+      rows.push(...await fetchAll<B24DealRow>('crm.deal.list', dealsFromLeadsParams(period, dealFilter, chunk)))
+    }
+    return rows
+  }
+
   /**
    * Забрать данные портала за период и пересчитать отчёт.
    *
    * Вне фрейма — тихо остаёмся на демонстрационном наборе: это штатный режим страницы,
    * открытой по прямой ссылке, а не ошибка.
    */
-  async function load(period: ReportPeriod = resolvePreset('this-month', new Date())!): Promise<void> {
+  async function load(period: ReportPeriod = resolvePreset('this-month', new Date())!, next: ReportFilters = EMPTY_FILTERS): Promise<void> {
+    // Фильтры запоминаем ДО проверки портала: вне его демо-набор фильтруется вычислением.
+    filters.value = next
     await b24.init()
     if (!b24.isInit()) return
 
@@ -321,8 +385,12 @@ export function useReportData() {
        * ожидания, счётчиками и сделками ТОЛЬКО ИЗ ЛИДОВ — секунд десять.
        */
 
-      // 1. Справочники: валюты, источники, стадии лида — одним пакетом.
-      const books = await batchRows<B24StatusRow | B24CurrencyRow>(dictionaryBatch())
+      const leadFilter = leadRestFilter(next)
+      const filtered = hasFilters(next)
+
+      // 1. Справочники: валюты, источники, стадии лида — одним пакетом; сотрудники — рядом,
+      //    один раз на открытие.
+      const [books, users] = await Promise.all([batchRows<B24StatusRow | B24CurrencyRow>(dictionaryBatch()), fetchUsers()])
       const currencies = (books.currencies ?? []) as B24CurrencyRow[]
       const sources = (books.sources ?? []) as B24StatusRow[]
       const leadStatuses = (books.leadStatuses ?? []) as B24StatusRow[]
@@ -334,28 +402,37 @@ export function useReportData() {
 
       // Шаги 2–5 независимы друг от друга — идут параллельно. Последовательно они стоили бы ещё
       // 4–5 секунд поверх самого долгого шага (строки сделок), ожидая ничего.
-      const [dealStages, leadTotals, dealRows, dealTotals] = await Promise.all([
-        // 2. Стадии сделок ВСЕХ направлений: `DEAL_STAGE` — только направление по умолчанию,
-        //    у заказчика их четыре. Без остальных причина проигрыша приедет кодом вместо названия.
-        fetchCategoryIds().then(ids => batchRows<B24StatusRow>(dealStageBatch(ids))).then(books => Object.values(books).flat()),
-        // 3. Лиды — счётчиками. Что спросить, знает `leadCountBatch`; что с этим делать — `adaptLeadCounts`.
-        batchTotals(leadCountBatch(period, { junkStatusIds, sourceIds, openStatusIds })),
+      // 2. Стадии сделок ВСЕХ направлений: `DEAL_STAGE` — только направление по умолчанию,
+      //    у заказчика их четыре. Без остальных причина проигрыша приедет кодом вместо названия.
+      //    Одно сведение на прогон: из него и карта ключей для сделок, и словарь имён. Сводим
+      //    ТОЛЬКО стадии провала — «Новая» и «Успех» тоже продублированы по направлениям, и
+      //    счётчик свёрнутых стадий с ними внутри не сходился бы ни с чем.
+      const reasonsPromise = fetchCategoryIds()
+        .then(ids => batchRows<B24StatusRow>(dealStageBatch(ids)))
+        .then(books => mergeReasons(lossStages(Object.values(books).flat())))
+
+      const [reasons, leadTotals, dealRows, dealTotals] = await Promise.all([
+        reasonsPromise,
+        // 3. Лиды — счётчиками, под фильтром. Что спросить, знает `leadCountBatch`; что с этим
+        //    делать — `adaptLeadCounts`.
+        batchTotals(leadCountBatch(period, { junkStatusIds, sourceIds, openStatusIds }, leadFilter)),
         // 4. Сделки из лидов — строками: ради выручки и причин проигрыша. Их ~10 % от всех.
-        fetchAll<B24DealRow>('crm.deal.list', dealsFromLeadsParams(period)),
-        // 5. Сделки всего портала — три счётчика, чтобы «успешных: 636» не читалось как «всего продаж».
-        batchTotals(dealContextBatch(period))
+        //    Причина проигрыша — стадии, чьи коды известны только после справочника (шаг 2);
+        //    без этого фильтра сделки его не ждут.
+        next.lossReasonKey
+          ? reasonsPromise.then(r => fetchDealsFromLeads(period, next, r.keyByCode))
+          : fetchDealsFromLeads(period, next, {}),
+        // 5. Сделки всего портала — три счётчика, чтобы «успешных: 636» не читалось как «всего
+        //    продаж». Под фильтром их нет: «успешных из всех» сравнивало бы отфильтрованное с полным.
+        filtered ? Promise.resolve(undefined) : batchTotals(dealContextBatch(period))
       ])
 
       if (mine !== seq) return
 
       const leadAggregate = adaptLeadCounts({ totals: leadTotals, sourceIds, junkStatusIds, openStatusIds })
-      // Одно сведение на прогон: из него и карта ключей для сделок, и словарь имён. Сводим
-      // ТОЛЬКО стадии провала — «Новая» и «Успех» тоже продублированы по направлениям, и
-      // счётчик свёрнутых стадий с ними внутри не сходился бы ни с чем.
-      const reasons = mergeReasons(lossStages(dealStages))
       const adaptedDeals = adaptDeals(dealRows, currencies, reasons.keyByCode)
       const currencyId = baseCurrency(currencies)
-      const dealsContext = adaptDealsContext(dealTotals)
+      const dealsContext = dealTotals ? adaptDealsContext(dealTotals) : undefined
 
       dataset.value = {
         leads: [],
@@ -364,9 +441,12 @@ export function useReportData() {
         allDeals: dealsContext,
         dictionaries: {
           sources: statusNames(sources),
-          junkReasons: statusNames(leadStatuses),
+          // Причины брака — только стадии провала: фильтр «причина закрытия лида» строится по
+          // этому словарю, и «В работе» в нём была бы ложным выбором.
+          junkReasons: statusNames(leadStatuses.filter(row => junkStatusIds.includes(row.STATUS_ID))),
           leadStages: statusNames(leadStatuses),
-          lossReasons: reasons.names
+          lossReasons: reasons.names,
+          users
         },
         currencyId,
         period
@@ -386,7 +466,8 @@ export function useReportData() {
       }
       // Пусто за период — выясняем, есть ли лиды вообще. Один запрос на одну запись, и только
       // когда он действительно нужен.
-      if (leadAggregate.total === 0) {
+      // Под фильтром пустота объяснима самим фильтром — последний лид портала здесь ни при чём.
+      if (leadAggregate.total === 0 && !filtered) {
         const latest = await fetchLatestLeadDate()
         if (mine !== seq) return
         latestLeadDate.value = latest
@@ -397,7 +478,7 @@ export function useReportData() {
       //    портале это 90 % сделок) и история стадий лидов — время первого ответа для блока 6.
       const auto = periodLengthDays(period) <= BACKGROUND_AUTO_MAX_DAYS
       unlinked.schedule({ period, currencies, sourceIds }, mine, auto)
-      processing.schedule({ period, junkStatusIds, convertedStatusIds }, mine, auto)
+      processing.schedule({ period, junkStatusIds, convertedStatusIds, leadFilter }, mine, auto)
     } catch (e) {
       if (mine === seq) error.value = e instanceof Error ? e.message : String(e)
     } finally {
@@ -427,14 +508,15 @@ export function useReportData() {
    * где никто не ответил, среднее тоже пусто, и блок вечно говорил бы «ждёт историю».
    */
   const processingTimed = ref(false)
-  const processing = backgroundJob<{ period: ReportPeriod, junkStatusIds: string[], convertedStatusIds: string[] }>(async ({ period, junkStatusIds, convertedStatusIds }, mine) => {
+  const processing = backgroundJob<{ period: ReportPeriod, junkStatusIds: string[], convertedStatusIds: string[], leadFilter: Record<string, string | number> }>(async ({ period, junkStatusIds, convertedStatusIds, leadFilter }, mine) => {
     const stale = () => mine !== seq
     // Три выборки независимы и идут параллельно: строки лидов и история — по несколько тысяч
     // строк в месяц каждая, друг за другом они ждали бы вдвое дольше. Два запроса истории —
     // переходы и закрытия (основная масса) и создания сразу в стадии не-NEW (обычно единицы),
     // см. `leadHistoryParams`.
     const [leadRows, history, createdInStage] = await Promise.all([
-      fetchAllUntil<B24LeadHistoryRow>('crm.lead.list', leadHistoryLeadParams(period), stale),
+      // Фильтр ложится на строки лидов: история приходит по всем, а лиды берутся из строк.
+      fetchAllUntil<B24LeadHistoryRow>('crm.lead.list', leadHistoryLeadParams(period, leadFilter), stale),
       fetchAllUntil<B24StageHistoryRow>('crm.stagehistory.list', leadHistoryParams(period), stale),
       fetchAllUntil<B24StageHistoryRow>('crm.stagehistory.list', leadCreatedInStageParams(period), stale)
     ])
@@ -462,6 +544,7 @@ export function useReportData() {
   return {
     dataset,
     report,
+    filters,
     firstResponseSlaMinutes,
     pending,
     error,

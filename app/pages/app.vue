@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { ReportPeriod } from '~/types/report'
+import type { ReportFilters, ReportPeriod } from '~/types/report'
+import { hasFilters } from '~/utils/filters'
 import { formatDate } from '~/utils/format'
 import { periodLengthDays, resolvePreset } from '~/utils/period'
 import { PROCESSING_MINUTES_PER_MONTH, UNLINKED_MINUTES_PER_MONTH } from '~/composables/useReportData'
@@ -8,7 +9,7 @@ import { PROCESSING_MINUTES_PER_MONTH, UNLINKED_MINUTES_PER_MONTH } from '~/comp
  * Главный экран — сам отчёт. Открывается порталом из пункта CRM-аналитики (`CRM_ANALYTICS_MENU`).
  */
 const {
-  dataset, report, isDemo, pending, error, warnings, latestLeadDate, load,
+  dataset, report, isDemo, pending, error, warnings, latestLeadDate, load, filters: appliedFilters,
   unlinkedPending, unlinkedError, unlinkedDeferred, startUnlinked,
   processingPending, processingError, processingDeferred, processingTimed, startProcessing
 } = useReportData()
@@ -23,6 +24,8 @@ const today = new Date()
 
 /** Выбранный период. Умолчание — текущий месяц: отчёт открывают посмотреть, как идут дела сейчас. */
 const period = ref<ReportPeriod>(dataset.value.period)
+/** Выбранные фильтры (ТЗ от 2026-09-04). Панель появляется после первой выборки — см. `booting`. */
+const filters = ref<ReportFilters>({})
 const b24 = useB24()
 
 useHead({ title: 'Отчёт' })
@@ -45,7 +48,7 @@ onMounted(async () => {
   if (b24.isInit()) period.value = resolvePreset('this-month', today)!
   // Внутри портала берём живые лиды и сделки. Снаружи `load()` тихо ничего не делает.
   const requested = period.value
-  await load(requested)
+  await load(requested, filters.value)
   booting.value = false
   // ⚠ Пока шла первая выборка, кнопки периода были живые, а наблюдатель ниже молчал. Если
   // человек успел нажать «Прошлый месяц», выбранный период уже не тот, что запрошен, — иначе
@@ -53,7 +56,7 @@ onMounted(async () => {
   // Сравниваем с ЗАПРОШЕННЫМ периодом, а не с `dataset.period`: при ошибке портала набор
   // остаётся демонстрационным со своим периодом, и сравнение с ним слало бы второй запрос
   // в упавший портал без участия человека.
-  if (b24.isInit() && !samePeriod(period.value, requested)) await load(period.value)
+  if (b24.isInit() && !samePeriod(period.value, requested)) await load(period.value, filters.value)
   await fit()
 })
 
@@ -82,9 +85,9 @@ watch([unlinkedPending, unlinkedDeferred, processingPending, processingDeferred]
  * снял бы, но портал получал бы вдвое больше запросов, а именно запросы здесь и дороги.
  * Смена периода человеком после загрузки — новая выборка; гонку ответов сторожит композабл.
  */
-watch(period, async (next) => {
+watch([period, filters], async () => {
   if (booting.value) return
-  await load(next)
+  await load(period.value, filters.value)
   await fit()
 })
 
@@ -134,7 +137,12 @@ const dataNotes = computed(() => {
  * Поэтому здесь либо «в портале вообще нет лидов», либо «в этом периоде нет, последний был тогда-то».
  */
 const emptyPeriodNote = computed(() => {
-  if (isDemo.value || pending.value || report.value.summary.totalLeads > 0) return undefined
+  if (pending.value || report.value.summary.totalLeads > 0) return undefined
+  // Под фильтром пустота — свойство фильтра, а не портала: подсказка про последний лид врала бы.
+  if (hasFilters(appliedFilters.value)) {
+    return 'Под выбранными фильтрами за этот период лидов нет. Снимите часть фильтров или выберите другой период.'
+  }
+  if (isDemo.value) return undefined
   if (!latestLeadDate.value) {
     return 'В портале не нашлось ни одного лида — ни за этот период, ни раньше. Проверьте, что у приложения есть доступ к CRM.'
   }
@@ -177,6 +185,13 @@ async function fit() {
       </B24Card>
 
       <template v-else>
+        <!-- Фильтры действуют на всё, кроме блока 7, — и он сам об этом говорит. -->
+        <ReportFilters
+          v-model="filters"
+          :dictionaries="dataset.dictionaries"
+          :disabled="pending"
+        />
+
         <p
           v-if="pending"
           class="text-sm opacity-70"
@@ -274,6 +289,7 @@ async function fit() {
           :error="unlinkedError"
           :dictionaries="dataset.dictionaries"
           :currency-id="dataset.currencyId"
+          :filtered="hasFilters(appliedFilters)"
           @start="startUnlinked"
         />
       </template>
