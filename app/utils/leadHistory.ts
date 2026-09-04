@@ -57,6 +57,8 @@ export function leadsFromHistory(
   const firstResponse = new Map<number, string>()
   for (const row of history) {
     const status = (row.STATUS_ID ?? '').trim()
+    // Запись создания сразу в стадии не-NEW — тоже ответ, в момент создания: лид никогда не был
+    // «не обработан», и счётчик `NEW` его обработанным считает. Запись создания в `NEW` — нет.
     if (!status || status === initialStatus) continue
     const owner = toId(row.OWNER_ID)
     const at = row.CREATED_TIME

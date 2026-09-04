@@ -1,6 +1,7 @@
 import type { ReportPeriod } from '~/types/report'
 import { dealCountKey, leadCountKey } from '~/utils/b24Adapter'
 import { INITIAL_LEAD_STATUS } from '~/utils/leadHistory'
+import { fromIsoDate, toIsoDate } from '~/utils/period'
 
 /**
  * Запросы к порталу: что именно спрашиваем у CRM за период отчёта.
@@ -144,7 +145,9 @@ export function leadCountBatch(
   for (const statusId of dictionaries.junkStatusIds) {
     commands[leadCountKey.junkReason(statusId)] = countCommand(method, { ...base, STATUS_ID: statusId })
   }
+  // `NEW` уже спрошен как «не обработано» — второй раз тот же счётчик не шлём.
   for (const statusId of dictionaries.openStatusIds ?? []) {
+    if (statusId === INITIAL_LEAD_STATUS) continue
     commands[leadCountKey.stage(statusId)] = countCommand(method, { ...base, STATUS_ID: statusId })
   }
   for (const sourceId of dictionaries.sourceIds) {
@@ -191,14 +194,31 @@ export const LEAD_HISTORY_SELECT = ['ID', 'TYPE_ID', 'OWNER_ID', 'CREATED_TIME',
  * Объём: ≈ 5 900 записей в месяц на боевом портале плюс ≈ 3 850 строк лидов — около двух минут.
  */
 export function leadHistoryParams(period: ReportPeriod, graceDays = 3) {
-  const [year, month, day] = period.to.split('-').map(Number)
-  const end = new Date(year!, month! - 1, day! + graceDays)
-  const endIso = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`
   return {
     entityTypeId: 1,
     select: [...LEAD_HISTORY_SELECT],
-    filter: { ...periodFilter({ from: period.from, to: endIso }, 'CREATED_TIME'), TYPE_ID: [2, 3] }
+    filter: { ...periodFilter(withGrace(period, graceDays), 'CREATED_TIME'), TYPE_ID: [2, 3] }
   }
+}
+
+/**
+ * Лиды, СОЗДАННЫЕ сразу в стадии не-`NEW` (импорт, ручное создание «в работу»): у них нет перехода,
+ * только запись создания с этой стадией. Без этого запроса такой лид числился бы без ответа и
+ * просроченным, хотя счётчик `NEW` его обработанным считает. Строк обычно единицы — одна страница.
+ */
+export function leadCreatedInStageParams(period: ReportPeriod) {
+  return {
+    entityTypeId: 1,
+    select: [...LEAD_HISTORY_SELECT],
+    filter: { ...periodFilter(period, 'CREATED_TIME'), 'TYPE_ID': 1, '!STATUS_ID': INITIAL_LEAD_STATUS }
+  }
+}
+
+/** Период с запасом дней после конца — по календарю, той же арифметикой, что и пресеты. */
+function withGrace(period: ReportPeriod, graceDays: number): ReportPeriod {
+  const to = fromIsoDate(period.to)
+  if (!to) throw new Error(`Период не распознан: ${period.to}`)
+  return { from: period.from, to: toIsoDate(new Date(to.getFullYear(), to.getMonth(), to.getDate() + graceDays)) }
 }
 
 /**

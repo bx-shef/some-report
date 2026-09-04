@@ -43,17 +43,19 @@ mockNuxtImport('useB24', () => () => ({
             // Справка блока 7 — своим курсором по ID (отменяемая выборка), страница за страницей.
             // Курсорные выборки (`start: -1`): справка блока 7, строки лидов и история стадий блока 6.
             const cursor = (params as { start?: number }).start === -1
+            const history = method === 'crm.stagehistory.list'
             const key = method === 'crm.deal.list'
               ? `closed:${params.filter?.['>=CLOSEDATE'] ?? '?'}`
-              : method === 'crm.stagehistory.list'
-                ? `history:${params.filter?.['>=CREATED_TIME'] ?? '?'}`
+              : history
+                ? `${(params.filter as { TYPE_ID?: unknown })?.TYPE_ID === 1 ? 'created' : 'history'}:${params.filter?.['>=CREATED_TIME'] ?? '?'}`
                 : cursor && method === 'crm.lead.list' ? `leads:${params.filter?.['>=DATE_CREATE'] ?? '?'}` : undefined
             if (key) {
               portal.calls.push(key)
               return new Promise((resolve) => {
                 portal.pending[key] = rows => resolve(rows instanceof Error
                   ? { isSuccess: false, getData: () => undefined, getErrorMessages: () => [rows.message] }
-                  : { isSuccess: true, getData: () => ({ result: rows }), getErrorMessages: () => [] })
+                  // ⚠ Как живой портал: история отдаёт `result.items`, списки CRM — `result: [...]`.
+                  : { isSuccess: true, getData: () => ({ result: history ? { items: rows } : rows }), getErrorMessages: () => [] })
               })
             }
             return Promise.resolve({
@@ -201,6 +203,7 @@ describe('load', () => {
     expect(data.report.value.processing).toMatchObject({ processed: 5, unprocessed: 2 })
     expect(data.report.value.processing?.avgFirstResponseMinutes).toBeUndefined()
     expect(data.processingPending.value).toBe(true)
+    expect(data.processingTimed.value).toBe(false)
 
     await vi.waitFor(() => expect(portal.pending[`leads:${AUGUST.from}`]).toBeDefined())
     portal.pending[`leads:${AUGUST.from}`]!([
@@ -211,7 +214,11 @@ describe('load', () => {
     portal.pending[`history:${AUGUST.from}`]!([
       { ID: '9', TYPE_ID: 2, OWNER_ID: '1', CREATED_TIME: '2026-08-10T10:30:00+03:00', STATUS_ID: '1' }
     ])
+    // Второй запрос истории — создания сразу в стадии не-NEW; здесь их нет.
+    await vi.waitFor(() => expect(portal.pending[`created:${AUGUST.from}`]).toBeDefined())
+    portal.pending[`created:${AUGUST.from}`]!([])
     await vi.waitFor(() => expect(data.processingPending.value).toBe(false))
+    expect(data.processingTimed.value).toBe(true)
     const processing = data.report.value.processing!
     // Числа — от счётчиков, время — из истории: 30 минут по единственному ответу.
     expect(processing.processed).toBe(5)

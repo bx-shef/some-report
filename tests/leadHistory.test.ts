@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { INITIAL_LEAD_STATUS, leadsFromHistory } from '~/utils/leadHistory'
-import { leadHistoryLeadParams, leadHistoryParams } from '~/utils/b24Query'
-import { mergeProcessing, processingFromCounts, processingMetrics } from '~/utils/metrics'
+import { leadCreatedInStageParams, leadHistoryLeadParams, leadHistoryParams } from '~/utils/b24Query'
+import { openLeadStatusIds } from '~/utils/b24Adapter'
+import { leadStageLabel } from '~/utils/labels'
+import { mergeProcessing, preDealLoss, processingFromCounts, processingMetrics, summaryMetrics } from '~/utils/metrics'
 
 /**
  * Первый ответ по лиду — первый уход со стадии «Не обработан» (решение владельца от 2026-09-04).
@@ -21,6 +23,15 @@ describe('leadHistoryParams', () => {
   // Запас через границу года: 31 декабря + 3 дня = 3 января, верхняя граница строгая — 4 января.
   it('запас после конца периода считается по календарю, через границу года тоже', () => {
     expect(leadHistoryParams({ from: '2026-12-01', to: '2026-12-31' }, 3).filter).toMatchObject({ '<CREATED_TIME': '2027-01-04' })
+  })
+
+  it('созданные сразу в стадии не-NEW — отдельным запросом за сам период', () => {
+    const params = leadCreatedInStageParams(AUGUST)
+    expect(params.filter).toEqual({ '>=CREATED_TIME': '2026-08-01', '<CREATED_TIME': '2026-09-01', 'TYPE_ID': 1, '!STATUS_ID': 'NEW' })
+  })
+
+  it('нераспознанный период — ошибка, а не фильтр NaN-NaN-NaN', () => {
+    expect(() => leadHistoryParams({ from: '2026-08-01', to: '' })).toThrow('не распознан')
   })
 
   it('строки лидов для истории — по периоду создания, с источником и стадией', () => {
@@ -60,6 +71,14 @@ describe('leadsFromHistory', () => {
     expect(result[0]!.sourceId).toBe('CALL')
   })
 
+  // Лид, созданный сразу «в работу»: перехода нет, есть запись создания со стадией — ответ в
+  // момент создания, ноль минут. Иначе он был бы просрочен по истории и обработан по счётчику.
+  it('создание сразу в стадии не-NEW — ответ в момент создания', () => {
+    const created = [{ ID: '20', TYPE_ID: 1, OWNER_ID: '7', CREATED_TIME: '2026-08-11T09:00:00+03:00', STATUS_ID: '1' }]
+    const rows = leadsFromHistory([{ ID: '7', DATE_CREATE: '2026-08-11T09:00:00+03:00', SOURCE_ID: 'WEB', STATUS_ID: '1' }], created)
+    expect(rows[0]!.firstResponseAt).toBe('2026-08-11T09:00:00+03:00')
+  })
+
   it('ядро считает по этим строкам обработанных, среднее и просрочку как по демо-набору', () => {
     const rows = leadsFromHistory(leads, history, ['JUNK'])
     const metrics = processingMetrics(rows, { conversionBase: 'quality-leads', firstResponseSlaMinutes: 120, now: '2026-08-10T15:00:00+03:00' })
@@ -92,12 +111,44 @@ describe('processingFromCounts и mergeProcessing', () => {
   // Иначе два разных «обработано» под одной подписью с интервалом в минуту.
   it('совмещение: числа от счётчиков, время, просрочка и источники — из истории', () => {
     const counts = processingFromCounts(100, 10)
-    const timed = { ...processingFromCounts(98, 9), overdue: 7, overdueShare: 0.07, avgFirstResponseMinutes: 42, bySource: [{ sourceId: 'CALL', processed: 50, avgFirstResponseMinutes: 40 }] }
+    const timed = { ...processingFromCounts(98, 9), overdue: 7, overdueShare: 7 / 98, avgFirstResponseMinutes: 42, bySource: [{ sourceId: 'CALL', processed: 50, avgFirstResponseMinutes: 40 }] }
     const merged = mergeProcessing(counts, timed)
     expect(merged.processed).toBe(90)
     expect(merged.unprocessed).toBe(10)
     expect(merged.overdue).toBe(7)
+    // Доля просроченных — от «всего» счётчиков (100), а не от строк истории (98).
+    expect(merged.overdueShare).toBeCloseTo(0.07, 6)
     expect(merged.avgFirstResponseMinutes).toBe(42)
     expect(merged.bySource).toHaveLength(1)
+  })
+})
+
+describe('открытые стадии лида', () => {
+  const rows = [
+    { STATUS_ID: 'NEW', NAME: 'Новая заявка', SEMANTICS: null },
+    { STATUS_ID: '1', NAME: 'Взято в работу', SEMANTICS: '' },
+    { STATUS_ID: 'CONVERTED', NAME: 'Квалифицировано', SEMANTICS: 'S' },
+    { STATUS_ID: 'JUNK', NAME: 'Брак', SEMANTICS: 'F' }
+  ]
+
+  it('открытые — без семантики успеха и провала, включая NEW', () => {
+    expect(openLeadStatusIds(rows)).toEqual(['NEW', '1'])
+  })
+
+  it('подпись стадии — из справочника, неизвестный код — как есть', () => {
+    const dictionaries = { sources: {}, junkReasons: {}, lossReasons: {}, leadStages: { 1: 'Взято в работу' } }
+    expect(leadStageLabel(dictionaries, '1')).toBe('Взято в работу')
+    expect(leadStageLabel(dictionaries, 'UC_X')).toBe('UC_X')
+    expect(leadStageLabel({ sources: {}, junkReasons: {}, lossReasons: {} }, '1')).toBe('1')
+  })
+
+  it('потери до сделки: открытые лиды по стадиям — по убыванию, потом по коду; без счётчиков поля нет', () => {
+    const aggregate = {
+      total: 10, junk: 2, qualified: 3, inWork: 5, closedWithoutDeal: 0,
+      junkByReason: {}, bySource: {}, byOpenStage: { NEW: 1, 1: 3, B: 1 }
+    }
+    const summary = summaryMetrics(aggregate, [], { conversionBase: 'quality-leads' })
+    expect(preDealLoss(aggregate, summary).byStage).toEqual([{ stageId: '1', count: 3 }, { stageId: 'B', count: 1 }, { stageId: 'NEW', count: 1 }])
+    expect(preDealLoss({ ...aggregate, byOpenStage: undefined }, summary).byStage).toBeUndefined()
   })
 })

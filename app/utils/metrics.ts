@@ -285,9 +285,12 @@ export function processingFromCounts(total: number, unprocessed: number): Proces
  * под одной подписью с интервалом в минуту — ровно то, чего этот отчёт избегает.
  */
 export function mergeProcessing(counts: ProcessingMetrics, timed: ProcessingMetrics): ProcessingMetrics {
+  // Доля просроченных — от того же «всего», что и доли обработанных: история видит строки, взятые
+  // минутой позже счётчиков, и её знаменатель на пару лидов другой.
+  const total = counts.processed + counts.unprocessed
   return {
     ...counts,
-    ...(timed.overdue === undefined ? {} : { overdue: timed.overdue, overdueShare: timed.overdueShare }),
+    ...(timed.overdue === undefined ? {} : { overdue: timed.overdue, overdueShare: share(timed.overdue, total) }),
     ...(timed.avgFirstResponseMinutes === undefined ? {} : { avgFirstResponseMinutes: timed.avgFirstResponseMinutes }),
     bySource: timed.bySource
   }

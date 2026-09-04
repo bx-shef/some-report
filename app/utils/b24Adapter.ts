@@ -1,5 +1,6 @@
 import { UNSPECIFIED_SOURCE, share, UNSPECIFIED_REASON, processingFromCounts } from '~/utils/metrics'
 import { mergeReasons } from '~/utils/reasonMerge'
+import { INITIAL_LEAD_STATUS } from '~/utils/leadHistory'
 import type {
   DealsContext,
   UnlinkedDeals,
@@ -565,15 +566,16 @@ export function adaptLeadCounts(input: LeadCountsInput): LeadAggregate {
   if (rest.leads > 0) bySource[UNSPECIFIED_SOURCE] = rest
 
   // Открытые лиды по стадиям — только если стадии передали; счётчик, которого не спрашивали, — ноль.
+  const unprocessed = leadCountKey.unprocessed in input.totals ? Math.min(total, get(leadCountKey.unprocessed)) : undefined
   let byOpenStage: Record<string, number> | undefined
   if (input.openStatusIds) {
     byOpenStage = Object.create(null) as Record<string, number>
     for (const statusId of input.openStatusIds) {
-      const count = get(leadCountKey.stage(statusId))
+      // `NEW` в пакете не спрашивали второй раз — его число и есть «не обработано».
+      const count = statusId === INITIAL_LEAD_STATUS ? (unprocessed ?? 0) : get(leadCountKey.stage(statusId))
       if (count > 0) byOpenStage[statusId] = count
     }
   }
-  const unprocessed = leadCountKey.unprocessed in input.totals ? Math.min(total, get(leadCountKey.unprocessed)) : undefined
 
   return {
     total,

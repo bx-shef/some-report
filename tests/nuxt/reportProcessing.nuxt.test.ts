@@ -22,8 +22,8 @@ const counted: ReportMetrics = {
 }
 const dictionaries = { ...dataset.dictionaries, leadStages: { NEW: 'Новая заявка', 1: 'Взято в работу' } }
 
-function render(props: Partial<{ report: ReportMetrics, pending: boolean, deferred: boolean, error: string, estimateMinutes: number }> = {}) {
-  return mountSuspended(ReportProcessing, { props: { report: counted, dictionaries, ...props } })
+function render(props: Partial<{ report: ReportMetrics, pending: boolean, deferred: boolean, timed: boolean, error: string, estimateMinutes: number }> = {}) {
+  return mountSuspended(ReportProcessing, { props: { report: counted, dictionaries, timed: false, ...props } })
 }
 
 describe('ReportProcessing', () => {
@@ -59,8 +59,15 @@ describe('ReportProcessing', () => {
     expect(rows[0]!.text()).toContain('30')
   })
 
+  // ⚠ По данным «никто не ответил» и «история не пришла» неотличимы — поэтому флаг явный.
+  it('история пришла, но ответов нет — «обработанных лидов нет», а не «ждёт историю»', async () => {
+    const text = (await render({ timed: true })).text()
+    expect(text).not.toContain('ждёт историю стадий')
+    expect(text).toContain('Обработанных лидов нет')
+  })
+
   it('демо-набор: время посчитано по строкам, таблицы стадий нет', async () => {
-    const wrapper = await render({ report: full })
+    const wrapper = await render({ report: full, timed: undefined })
     expect(wrapper.text()).not.toContain('ждёт историю стадий')
     expect(wrapper.text()).not.toContain('Открытые лиды по стадии')
   })

@@ -10,7 +10,7 @@ import { PROCESSING_MINUTES_PER_MONTH, UNLINKED_MINUTES_PER_MONTH } from '~/comp
 const {
   dataset, report, isDemo, pending, error, warnings, latestLeadDate, load,
   unlinkedPending, unlinkedError, unlinkedDeferred, startUnlinked,
-  processingPending, processingError, processingDeferred, startProcessing
+  processingPending, processingError, processingDeferred, processingTimed, startProcessing
 } = useReportData()
 
 /**
@@ -257,6 +257,7 @@ async function fit() {
           :dictionaries="dataset.dictionaries"
           :pending="processingPending"
           :deferred="processingDeferred"
+          :timed="isDemo ? undefined : processingTimed"
           :estimate-minutes="processingEstimateMinutes"
           :error="processingError"
           @start="startProcessing"

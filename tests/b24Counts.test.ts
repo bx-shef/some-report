@@ -50,7 +50,8 @@ describe('leadCountBatch', () => {
     expect(batch[leadCountKey.stage('1')]).toBeUndefined()
     const withStages = leadCountBatch(PERIOD, { junkStatusIds: [], sourceIds: [], openStatusIds: ['NEW', '1'] })
     expect(withStages[leadCountKey.stage('1')]?.params.filter).toMatchObject({ STATUS_ID: '1' })
-    expect(withStages[leadCountKey.stage('NEW')]?.params.filter).toMatchObject({ STATUS_ID: 'NEW' })
+    // NEW уже спрошен как «не обработано» — тот же счётчик второй раз не шлём.
+    expect(withStages[leadCountKey.stage('NEW')]).toBeUndefined()
   })
 
   it('каждая команда просит только ID и первую страницу', () => {
@@ -114,7 +115,7 @@ describe('adaptLeadCounts', () => {
     expect(without.byOpenStage).toBeUndefined()
 
     const withCounts = adaptLeadCounts({
-      totals: { total: 10, unprocessed: 3, [leadCountKey.stage('NEW')]: 3, [leadCountKey.stage('1')]: 4, [leadCountKey.stage('X')]: 0 },
+      totals: { total: 10, unprocessed: 3, [leadCountKey.stage('1')]: 4, [leadCountKey.stage('X')]: 0 },
       sourceIds: [],
       junkStatusIds: [],
       openStatusIds: ['NEW', '1', 'X']

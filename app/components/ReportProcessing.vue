@@ -19,10 +19,16 @@ const props = withDefaults(defineProps<{
   pending?: boolean
   /** Период длинный — история ждёт кнопки. */
   deferred?: boolean
+  /**
+   * История пришла и время посчитано. Явно, а не по данным: у периода, где никто не ответил,
+   * среднее тоже пусто — и без флага блок вечно говорил бы «ждёт историю стадий».
+   * `undefined` — данные построчные (демо), времени ждать не нужно.
+   */
+  timed?: boolean
   /** Сколько минут ждать историю — считает страница по длине периода. */
   estimateMinutes?: number
   error?: string
-}>(), { pending: false, deferred: false, estimateMinutes: 2, error: undefined })
+}>(), { pending: false, deferred: false, timed: undefined, estimateMinutes: 2, error: undefined })
 
 const emit = defineEmits<{ start: [] }>()
 
@@ -34,8 +40,8 @@ const emit = defineEmits<{ start: [] }>()
  */
 const processing = computed(() => props.report.processing)
 
-/** Время ответа ещё не посчитано: истории нет (идёт, отложена или упала). */
-const timingMissing = computed(() => processing.value !== undefined && processing.value.avgFirstResponseMinutes === undefined && processing.value.bySource.length === 0)
+/** Время ответа ещё не посчитано: история идёт, отложена или упала. */
+const timingMissing = computed(() => processing.value !== undefined && props.timed === false)
 </script>
 
 <template>

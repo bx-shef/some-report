@@ -21,6 +21,7 @@ import {
   latestLeadParams,
   leadCountBatch,
   type BatchCommand,
+  leadCreatedInStageParams,
   leadHistoryLeadParams,
   leadHistoryParams,
   unlinkedWonDealsParams
@@ -70,10 +71,9 @@ export function useReportData() {
    *
    * ✅ 120 минут — норматив ЗАКАЗЧИКА (2026-09-03).
    *
-   * ⚠ «Ответ» — перевод лида в стадию «взят в работу» (заказчик, 2026-09-04). Моменты переходов
-   * живут в истории стадий, которую отчёт пока не выбирает (#26). До этого блок честно сообщает,
-   * что данных о первом действии нет (`AdapterWarnings.firstResponseNotFetched`), а не показывает
-   * ноль обработанных.
+   * ⚠ «Ответ» — первый уход лида со стадии «Не обработан» (решение владельца от 2026-09-04 по
+   * ответу заказчика «стадия „взят в работу“ — это и есть действие»). Моменты переходов живут в
+   * истории стадий и приходят фоном (job `processing`); до этого блок 6 сам говорит, что ждёт.
    */
   const firstResponseSlaMinutes = ref<number | undefined>(120)
 
@@ -205,12 +205,16 @@ export function useReportData() {
     const rows: T[] = []
     let lastId = 0
     while (!stale()) {
-      const result = await b24.getOrThrow().actions.v2.call.make<T[]>({
+      const result = await b24.getOrThrow().actions.v2.call.make<T[] | { items?: T[] }>({
         method,
         params: { ...params, order: { ID: 'ASC' }, filter: { ...params.filter, '>ID': lastId }, start: -1 }
       })
       if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
-      const page = result.getData()?.result
+      // ⚠ Конверт разный: списки CRM отдают `result: [...]`, а `crm.stagehistory.list` —
+      // `result: { items: [...] }`. Без этой ветки история приходила бы ПУСТОЙ, каждый лид
+      // считался бы без ответа, и блок показал бы «просрочено 100 %» под вечным «ждёт историю».
+      const raw = result.getData()?.result as T[] | { items?: T[] } | undefined
+      const page = Array.isArray(raw) ? raw : raw?.items
       if (!Array.isArray(page) || page.length === 0) break
       rows.push(...page)
       const last = Number(page[page.length - 1]?.ID)
@@ -306,6 +310,7 @@ export function useReportData() {
     // Фоновые выборки прошлого периода больше не наши — заново.
     unlinked.reset()
     processing.reset()
+    processingTimed.value = false
     try {
       /**
        * Порядок шагов и почему именно так — см. `docs/PORTAL.md` § «Что делать с объёмами».
@@ -413,13 +418,22 @@ export function useReportData() {
    * них — те же строки лидов, что у демо-набора, и то же ядро `processingMetrics`. Числа
    * «обработано / не обработано» при этом остаются от счётчиков — см. `mergeProcessing`.
    */
+  /**
+   * История стадий ПРИШЛА и время посчитано. Нужен явно: по данным это не отличить — у периода,
+   * где никто не ответил, среднее тоже пусто, и блок вечно говорил бы «ждёт историю».
+   */
+  const processingTimed = ref(false)
   const processing = backgroundJob<{ period: ReportPeriod, junkStatusIds: string[], convertedStatusIds: string[] }>(async ({ period, junkStatusIds, convertedStatusIds }, mine) => {
     const stale = () => mine !== seq
     const leadRows = await fetchAllUntil<B24LeadHistoryRow>('crm.lead.list', leadHistoryLeadParams(period), stale)
     if (stale()) return
+    // Два запроса истории: переходы и закрытия (основная масса) и создания сразу в стадии
+    // не-NEW (обычно единицы) — см. `leadHistoryParams`.
     const history = await fetchAllUntil<B24StageHistoryRow>('crm.stagehistory.list', leadHistoryParams(period), stale)
     if (stale()) return
-    const leads = leadsFromHistory(leadRows, history, junkStatusIds, convertedStatusIds)
+    const createdInStage = await fetchAllUntil<B24StageHistoryRow>('crm.stagehistory.list', leadCreatedInStageParams(period), stale)
+    if (stale()) return
+    const leads = leadsFromHistory(leadRows, [...history, ...createdInStage], junkStatusIds, convertedStatusIds)
     // «Сейчас» для просрочки — конец периода, но не позже настоящего «сейчас»: в текущем месяце
     // лид, созданный час назад, ещё не просрочен, хотя до конца месяца далеко.
     const periodEnd = Date.parse(`${period.to}T23:59:59`)
@@ -428,6 +442,7 @@ export function useReportData() {
     const aggregate = dataset.value.leadAggregate
     if (!aggregate?.processing) return
     dataset.value = { ...dataset.value, leadAggregate: { ...aggregate, processing: mergeProcessing(aggregate.processing, timed) } }
+    processingTimed.value = true
   })
 
   return {
@@ -443,6 +458,7 @@ export function useReportData() {
     processingPending: processing.pending,
     processingError: processing.error,
     processingDeferred: processing.deferred,
+    processingTimed,
     startProcessing: processing.start,
     source,
     isDemo,
