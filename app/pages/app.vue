@@ -1,14 +1,67 @@
 <script setup lang="ts">
+import { formatDate } from '~/utils/format'
+
 /**
  * Главный экран — сам отчёт. Открывается порталом из пункта CRM-аналитики (`CRM_ANALYTICS_MENU`).
  */
-const { dataset, report, conversionBase, isDemo } = useReportData()
+const { dataset, report, conversionBase, isDemo, pending, error, warnings, latestLeadDate, load } = useReportData()
 const b24 = useB24()
 
 useHead({ title: 'Отчёт' })
 
 onMounted(async () => {
   await b24.init()
+  // Внутри портала берём живые лиды и сделки. Снаружи `load()` тихо ничего не делает и на
+  // экране остаётся демонстрационный набор — брать данные неоткуда.
+  await load()
+  await fit()
+})
+
+/**
+ * Оговорки к качеству данных портала.
+ *
+ * ⚠ Молчать о них нельзя. «Сделок, не связанных с лидом: 340» — это объяснение, почему воронка
+ * показывает ноль квалифицированных; без него руководитель читает ноль как факт о работе отдела
+ * продаж. Каждая строка здесь — не про наш код, а про то, что нужно поправить в CRM.
+ */
+const dataNotes = computed(() => {
+  const w = warnings.value
+  if (!w) return []
+  const notes: string[] = []
+  if (w.dealsWithoutLead > 0) {
+    notes.push(`Сделок без связи с лидом: ${w.dealsWithoutLead}. Пока связь не настроена, воронка «лид → сделка» не собирается.`)
+  }
+  if (w.dealsWithMissingLead > 0) {
+    notes.push(`Сделок со ссылкой на лид вне периода: ${w.dealsWithMissingLead}.`)
+  }
+  if (w.wonStageWithoutDeal > 0) {
+    notes.push(`Лидов на стадии «успех», у которых нет сделки: ${w.wonStageWithoutDeal}.`)
+  }
+  if (w.unconvertedDeals > 0) {
+    notes.push(`Сделок в валюте без курса — суммы взяты как есть: ${w.unconvertedDeals}.`)
+  }
+  if (w.duplicateIds > 0) {
+    notes.push(`Повторов по идентификатору отброшено: ${w.duplicateIds}.`)
+  }
+  if (w.firstResponseNotFetched) {
+    notes.push('Время первого ответа не выбиралось — блок «Обработка лидов» считать не по чему.')
+  }
+  return notes
+})
+
+/**
+ * Пустой период — не поломка, но и не «просто нули».
+ *
+ * ⚠ Отчёт, открытый 3-го числа, показывает нули за текущий месяц совершенно законно. Человек же
+ * читает нули как «приложение сломалось» — и он прав в том, что экран ему ничего не объяснил.
+ * Поэтому здесь либо «в портале вообще нет лидов», либо «в этом периоде нет, последний был тогда-то».
+ */
+const emptyPeriodNote = computed(() => {
+  if (isDemo.value || pending.value || report.value.summary.totalLeads > 0) return undefined
+  if (!latestLeadDate.value) {
+    return 'В портале не нашлось ни одного лида — ни за этот период, ни раньше. Проверьте, что у приложения есть доступ к CRM.'
+  }
+  return `За этот период в портале нет ни одного лида. Последний лид создан ${formatDate(latestLeadDate.value)} — отчёт пока считает только текущий месяц, редактируемый период делается отдельно.`
 })
 
 /**
@@ -37,11 +90,42 @@ watch(conversionBase, fit)
         :is-demo="isDemo"
       />
 
+      <p
+        v-if="pending"
+        class="text-sm opacity-70"
+      >
+        Читаем лиды и сделки портала…
+      </p>
+
+      <!-- ⚠ Демо-плашку заказчик однажды не заметил и принял числа макета за свои. Поэтому
+           формулировка теперь не «данные демонстрационные», а «это НЕ ваш портал». -->
       <B24Alert
         v-if="isDemo"
         color="air-primary-warning"
-        title="Показаны демонстрационные данные"
-        description="Отчёт пока считает по набору с согласованного макета, а не по вашему порталу. Живая выборка подключается следующим шагом — формулы и разметка уже те же самые."
+        title="Это НЕ данные вашего портала"
+        description="На экране демонстрационный набор с согласованного макета: 1 250 лидов, 250 брака, 485 000 выручки. Ваши лиды здесь не считаются. Отчёт берёт живые данные, только когда открыт внутри Битрикс24 — из раздела CRM-аналитики или по плитке приложения."
+      />
+
+      <B24Alert
+        v-if="error"
+        color="air-primary-alert"
+        title="Не удалось прочитать данные портала"
+        :description="`${error} Показан демонстрационный набор, а не ваши данные.`"
+      />
+
+      <B24Alert
+        v-if="emptyPeriodNote"
+        color="air-primary-warning"
+        title="За этот период данных нет"
+        :description="emptyPeriodNote"
+      />
+
+      <!-- Оговорки к данным САМОГО портала: не ошибки отчёта, а то, что стоит поправить в CRM. -->
+      <B24Alert
+        v-if="dataNotes.length"
+        color="air-primary-warning"
+        title="Что нужно знать про эти числа"
+        :description="dataNotes.join(' ')"
       />
 
       <ReportSummary
