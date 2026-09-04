@@ -124,6 +124,7 @@ const outsideSources = computed(() => ({
             <td class="py-2 pr-3 text-right tabular-nums">
               <DrillNumber
                 :request="drill.bySource(row.sourceId, 'leads', sourceLabel(dictionaries, row.sourceId))"
+                :total="row.leads"
                 @drill="emit('drill', $event)"
               >
                 {{ formatCount(row.leads) }}
@@ -132,6 +133,7 @@ const outsideSources = computed(() => ({
             <td class="py-2 pr-3 text-right tabular-nums text-red-600 dark:text-red-400">
               <DrillNumber
                 :request="drill.bySource(row.sourceId, 'junk', sourceLabel(dictionaries, row.sourceId))"
+                :total="row.junk"
                 @drill="emit('drill', $event)"
               >
                 {{ formatCount(row.junk) }}
@@ -140,6 +142,7 @@ const outsideSources = computed(() => ({
             <td class="py-2 pr-3 text-right tabular-nums">
               <DrillNumber
                 :request="drill.bySource(row.sourceId, 'qualified', sourceLabel(dictionaries, row.sourceId))"
+                :total="row.qualified"
                 @drill="emit('drill', $event)"
               >
                 {{ formatCount(row.qualified) }}
@@ -158,6 +161,7 @@ const outsideSources = computed(() => ({
             <td class="py-2 pr-3 text-right tabular-nums">
               <DrillNumber
                 :request="drill.bySource(row.sourceId, 'won', sourceLabel(dictionaries, row.sourceId))"
+                :total="row.won"
                 @drill="emit('drill', $event)"
               >
                 {{ formatCount(row.won) }}

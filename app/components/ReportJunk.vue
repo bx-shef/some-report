@@ -43,6 +43,7 @@ const items = computed(() =>
         <div class="mt-1 text-2xl font-semibold leading-none">
           <DrillNumber
             :request="drill.junk()"
+            :total="report.summary.junk"
             @drill="emit('drill', $event)"
           >
             {{ formatCount(report.summary.junk) }}
@@ -110,6 +111,7 @@ const items = computed(() =>
             <td class="py-2 pr-3 text-right tabular-nums">
               <DrillNumber
                 :request="drill.junkReason(row.reasonId, junkReasonLabel(dictionaries, row.reasonId), knownJunkIds)"
+                :total="row.count"
                 @drill="emit('drill', $event)"
               >
                 {{ formatCount(row.count) }}

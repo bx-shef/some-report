@@ -1,8 +1,8 @@
 // @vitest-environment nuxt
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import ReportDrilldown from '~/components/ReportDrilldown.vue'
-import type { DrillRow } from '~/utils/drilldown'
+import type { DrillRequest, DrillRow } from '~/utils/drilldown'
 import { drill } from '~/utils/drilldown'
 
 /**
@@ -16,7 +16,7 @@ const rows: DrillRow[] = [
 
 let current: Awaited<ReturnType<typeof mountSuspended>> | undefined
 
-async function render(props: Partial<{ rows: DrillRow[], pending: boolean, error: string, done: boolean, isDemo: boolean }> = {}) {
+async function render(props: Partial<{ rows: DrillRow[], pending: boolean, error: string, done: boolean, isDemo: boolean, request: DrillRequest }> = {}) {
   current = await mountSuspended(ReportDrilldown, {
     props: { open: true, request: drill.junk(), rows, pending: false, done: true, isDemo: false, ...props },
     attachTo: document.body
@@ -57,6 +57,42 @@ describe('ReportDrilldown', () => {
     more.click()
     await wrapper.vm.$nextTick()
     expect(wrapper.emitted('more')).toHaveLength(1)
+  })
+
+  it('«показано M из N», пока список не дочитан и число известно; «Читаем…» недоступна', async () => {
+    const wrapper = await render({ done: false, pending: true, request: { ...drill.junk(), total: 90 } } as never)
+    expect(bodyText()).toContain('показано 2 из 90 лидов')
+    const button = buttons().find(b => b.textContent?.includes('Читаем…'))!
+    expect(button.disabled).toBe(true)
+    wrapper.unmount()
+  })
+
+  // happy-dom объявляет IntersectionObserver, но не вызывает колбэк — подменяем, чтобы проверить
+  // само правило: конец списка на экране → просим ещё, но не во время чтения и не после конца.
+  it('конец списка показался — просит ещё; во время чтения — нет', async () => {
+    let callback: IntersectionObserverCallback | undefined
+    const original = window.IntersectionObserver
+    window.IntersectionObserver = class {
+      constructor(cb: IntersectionObserverCallback) { callback = cb }
+      observe() {}
+      disconnect() {}
+      unobserve() {}
+      takeRecords() { return [] }
+      root = null
+      rootMargin = ''
+      thresholds = []
+    } as unknown as typeof IntersectionObserver
+    try {
+      const wrapper = await render({ done: false })
+      await vi.waitFor(() => expect(callback).toBeDefined())
+      callback!([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
+      expect(wrapper.emitted('more')).toHaveLength(1)
+      await wrapper.setProps({ pending: true })
+      callback!([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver)
+      expect(wrapper.emitted('more')).toHaveLength(1)
+    } finally {
+      window.IntersectionObserver = original
+    }
   })
 
   it('пусто и дочитано — «Записей нет»; ошибка — плашка; демо — подпись про вымышленные записи', async () => {

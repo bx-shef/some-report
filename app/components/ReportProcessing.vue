@@ -71,6 +71,7 @@ const timingMissing = computed(() => processing.value !== undefined && props.tim
         <div class="mt-1 text-xl font-semibold leading-none">
           <DrillNumber
             :request="drill.processed()"
+            :total="processing.processed"
             @drill="emit('drill', $event)"
           >
             {{ formatCount(processing.processed) }}
@@ -87,6 +88,7 @@ const timingMissing = computed(() => processing.value !== undefined && props.tim
         <div class="mt-1 text-xl font-semibold leading-none">
           <DrillNumber
             :request="drill.unprocessed()"
+            :total="processing.unprocessed"
             @drill="emit('drill', $event)"
           >
             {{ formatCount(processing.unprocessed) }}
@@ -265,6 +267,7 @@ const timingMissing = computed(() => processing.value !== undefined && props.tim
               <td class="py-2 text-right tabular-nums">
                 <DrillNumber
                   :request="drill.openStage(row.stageId, leadStageLabel(dictionaries, row.stageId))"
+                  :total="row.count"
                   @drill="emit('drill', $event)"
                 >
                   {{ formatCount(row.count) }}

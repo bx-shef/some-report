@@ -25,7 +25,7 @@ describe('drill: что за числом', () => {
 
   it('сделки — причина проигрыша всеми кодами; удалённая — заведомо пусто; блок 7 — без лида', () => {
     expect(drill.lossReason('дорого', 'Дорого', dictionaries.lossReasonCodes).extra).toEqual({ STAGE_ID: ['LOSE', 'C2:LOSE'] })
-    expect(drill.lossReason('нет', 'Нет', dictionaries.lossReasonCodes).extra).toEqual({ STAGE_ID: ['__no_such_stage__'] })
+    expect(drill.lossReason('C3:LOSE', 'C3:LOSE', dictionaries.lossReasonCodes).extra).toEqual({ STAGE_ID: ['C3:LOSE'] })
     expect(drill.lossReason(UNSPECIFIED_REASON, 'Не указана', dictionaries.lossReasonCodes).extra).toEqual({ 'STAGE_SEMANTIC_ID': 'F', '!STAGE_ID': ['LOSE', 'C2:LOSE'] })
     expect(drill.unlinked()).toMatchObject({ entity: 'deal', dealScope: 'unlinked' })
     expect(drill.unlinkedSource(UNSPECIFIED_SOURCE, 'Не указан')).toBeUndefined()
@@ -48,6 +48,22 @@ describe('drillListParams', () => {
     const byLead = drillListParams(drill.wonDeals(), AUGUST, { assignedById: 562 }, {})
     expect(byLead.filter).not.toHaveProperty('!LEAD_ID')
     expect(byLead.byLeadIds).toBe(true)
+  })
+
+  // ⚠ Фильтр и число пишут в одно поле: спред условия числа поверх фильтра молча заменил бы
+  // условие, и под нулём «Не обработано» открывались бы все NEW за период.
+  it('условие числа спорит с фильтром по одному полю — список пуст без запроса; совпадение — не спор', () => {
+    expect(drillListParams(drill.unprocessed(), AUGUST, { junkReasonId: 'JUNK' }, {}).empty).toBe(true)
+    expect(drillListParams(drill.unprocessed(), AUGUST, { leadStatusId: 'NEW' }, {}).empty).toBe(false)
+    expect(drillListParams(drill.junkReason('SPAM', 'Спам', []), AUGUST, { junkReasonId: 'DUP' }, {}).empty).toBe(true)
+    expect(drillListParams(drill.junkReason('DUP', 'Дубль', []), AUGUST, { junkReasonId: 'DUP' }, {}).empty).toBe(false)
+    expect(drillListParams(drill.bySource('EMAIL', 'leads', 'Почта')!, AUGUST, { sourceId: 'CALL' }, {}).empty).toBe(true)
+    expect(drillListParams(drill.bySource('CALL', 'won', 'Звонок')!, AUGUST, { sourceId: 'CALL' }, {}).empty).toBe(false)
+    const codes = { 'дорого': ['LOSE'], 'не отвечает': ['APOLOGY'] }
+    expect(drillListParams(drill.lossReason('не отвечает', 'x', codes), AUGUST, { lossReasonKey: 'дорого' }, codes).empty).toBe(true)
+    expect(drillListParams(drill.lossReason('дорого', 'x', codes), AUGUST, { lossReasonKey: 'дорого' }, codes).empty).toBe(false)
+    // «Обработано» под фильтром по стадии — другое поле (`!STATUS_ID`), оба условия складываются.
+    expect(drillListParams(drill.processed(), AUGUST, { junkReasonId: 'JUNK' }, {})).toMatchObject({ empty: false, filter: { 'STATUS_ID': 'JUNK', '!STATUS_ID': 'NEW' } })
   })
 
   it('блок 7: по дате закрытия, без лида, только успешные, фильтры отчёта не действуют', () => {

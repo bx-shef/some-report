@@ -117,6 +117,34 @@ describe('useDrilldown', () => {
     expect(portal.calls).toHaveLength(2)
   })
 
+  // Кусок дал короткую страницу — следующий кусок в том же вызове, иначе «Показать ещё» отдавало
+  // бы пустоту по клику на кусок, а наблюдатель за концом списка молчал бы.
+  it('короткая страница куска — следующий кусок сразу, пока не наберётся страница или куски не кончатся', async () => {
+    const leadIds = Array.from({ length: 1200 }, (_, i) => i + 1)
+    const d = live({ filteredLeadIds: leadIds }, { assignedById: 562 })
+    d.show(drill.wonDeals())
+    await vi.waitFor(() => expect(portal.calls).toHaveLength(1))
+    portal.pending[0]!([{ ID: '1', TITLE: 'a', STAGE_ID: 'WON' }])
+    await vi.waitFor(() => expect(portal.calls).toHaveLength(2))
+    expect(portal.calls[1]!.filter.LEAD_ID).toEqual(leadIds.slice(500, 1000))
+    expect(d.pending.value).toBe(true)
+    portal.pending[1]!([])
+    await vi.waitFor(() => expect(portal.calls).toHaveLength(3))
+    portal.pending[2]!([{ ID: '7', TITLE: 'b', STAGE_ID: 'WON' }])
+    await vi.waitFor(() => expect(d.done.value).toBe(true))
+    expect(d.rows.value.map(r => r.id)).toEqual([1, 7])
+    expect(d.pending.value).toBe(false)
+  })
+
+  it('условие числа спорит с фильтром — список пуст без запроса', async () => {
+    const d = live({}, { junkReasonId: 'JUNK' })
+    d.show(drill.unprocessed())
+    await Promise.resolve()
+    expect(d.done.value).toBe(true)
+    expect(d.rows.value).toEqual([])
+    expect(portal.calls).toEqual([])
+  })
+
   it('закрыли или открыли другое число — опоздавшая страница выбрасывается', async () => {
     const d = live()
     d.show(drill.leads())
@@ -139,7 +167,7 @@ describe('useDrilldown', () => {
     expect(d.request.value?.title).toBe('Квалифицировано в сделку')
   })
 
-  it('ошибка страницы — своя, список остаётся тем, что уже прочитан', async () => {
+  it('ошибка страницы — своя, список остаётся тем, что уже прочитан; повтор — с чистой плашкой', async () => {
     const d = live()
     d.show(drill.leads())
     await vi.waitFor(() => expect(portal.calls).toHaveLength(1))
@@ -147,6 +175,34 @@ describe('useDrilldown', () => {
     await vi.waitFor(() => expect(d.error.value).toContain('нет доступа'))
     expect(d.pending.value).toBe(false)
     expect(d.done.value).toBe(false)
+    void d.loadMore()
+    await vi.waitFor(() => expect(portal.calls).toHaveLength(2))
+    expect(d.error.value).toBeUndefined()
+    portal.pending[1]!(leadRows(1, 3))
+    await vi.waitFor(() => expect(d.done.value).toBe(true))
+    expect(d.rows.value).toHaveLength(3)
+  })
+
+  // Закрытие посреди страницы оставляло бы «читаем…» навсегда — новый список не стартовал бы.
+  it('повторный show сбрасывает «читаем…» от отброшенной страницы; закрытие очищает строки', async () => {
+    const d = live()
+    d.show(drill.leads())
+    await vi.waitFor(() => expect(portal.calls).toHaveLength(1))
+    portal.pending[0]!(leadRows(1, 50))
+    await vi.waitFor(() => expect(d.rows.value).toHaveLength(50))
+    d.open.value = false
+    await nextTick()
+    expect(d.rows.value).toEqual([])
+    d.show(drill.junk())
+    expect(d.pending.value).toBe(true)
+    await vi.waitFor(() => expect(portal.calls).toHaveLength(2))
+  })
+
+  it('отказ портала открыть карточку — плашка в слайдере', async () => {
+    const d = live()
+    expect(await d.openRow({ id: 1, title: 'x', path: '/crm/lead/details/1/' })).toBe(true)
+    expect(d.error.value).toBeUndefined()
+    expect(await d.openRow({ id: 2, title: 'y', path: '' })).toBe(false)
   })
 
   it('демо-набор: список из строк, целиком, без запросов; карточек нет', async () => {

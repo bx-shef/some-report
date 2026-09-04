@@ -11,7 +11,8 @@ import {
   leadRestFilter,
   leadStatusFilter,
   lockedFilterValue,
-  needsLeadIds
+  needsLeadIds,
+  stageCodesFor
 } from '~/utils/filters'
 import { buildMockDataset } from '~/utils/mockReport'
 import { buildReport } from '~/utils/metrics'
@@ -52,7 +53,10 @@ describe('фрагменты REST-фильтра', () => {
     const codes = codesByReason({ 'LOSE': 'дорого', 'C2:LOSE': 'дорого', 'C2:APOLOGY': 'не отвечает' })
     expect(codes).toEqual({ 'дорого': ['LOSE', 'C2:LOSE'], 'не отвечает': ['C2:APOLOGY'] })
     expect(dealRestFilter({ sourceId: 'CALL', lossReasonKey: 'дорого' }, codes)).toEqual({ SOURCE_ID: 'CALL', STAGE_ID: ['LOSE', 'C2:LOSE'] })
-    expect(dealRestFilter({ lossReasonKey: 'нет такой' }, codes)).toEqual({ STAGE_ID: ['__no_such_stage__'] })
+    // Ключ без кодов — сам код: стадия вне справочников помечена сырым кодом; название удалённой
+    // причины стадией не является, и портал ответит пусто, а не «все сделки».
+    expect(dealRestFilter({ lossReasonKey: 'нет такой' }, codes)).toEqual({ STAGE_ID: ['нет такой'] })
+    expect(stageCodesFor('C3:LOSE', codes)).toEqual(['C3:LOSE'])
   })
 
   it('список ID режется кусками по 500', () => {
@@ -199,6 +203,12 @@ describe('applyFilters (демо-набор)', () => {
     const rows = applyFilters([lead], [], { leadStatusId: 'CONVERTED' })
     expect(rows.leads.map(l => l.id)).toEqual([999_999])
     expect(applyFilters([lead], [], { leadStatusId: 'NEW' }).leads).toEqual([])
+  })
+
+  // Фильтр «Не обработан» и число «не обработано» блока 6 считают одно и то же множество.
+  it('фильтр «стадия = Не обработан» сходится с числом «не обработано» блока 6', () => {
+    const report = buildReport(dataset.leads, dataset.deals, { conversionBase: 'quality-leads', firstResponseSlaMinutes: 120 })
+    expect(applyFilters(dataset.leads, dataset.deals, { leadStatusId: 'NEW' }).leads).toHaveLength(report.processing!.unprocessed)
   })
 
   it('стадия лида и причина брака вместе — побеждает причина', () => {

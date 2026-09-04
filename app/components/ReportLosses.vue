@@ -24,6 +24,7 @@ const emit = defineEmits<{ drill: [DrillRequest] }>()
         <div class="mt-1 text-2xl font-semibold leading-none">
           <DrillNumber
             :request="drill.lostDeals()"
+            :total="report.lostDeals.count"
             @drill="emit('drill', $event)"
           >
             {{ formatCount(report.lostDeals.count) }}
@@ -79,6 +80,7 @@ const emit = defineEmits<{ drill: [DrillRequest] }>()
             <td class="py-2 pr-3 text-right tabular-nums">
               <DrillNumber
                 :request="drill.lossReason(row.reasonId, lossReasonLabel(dictionaries, row.reasonId), dictionaries.lossReasonCodes ?? {})"
+                :total="row.count"
                 @drill="emit('drill', $event)"
               >
                 {{ formatCount(row.count) }}

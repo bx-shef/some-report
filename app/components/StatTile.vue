@@ -17,10 +17,13 @@ withDefaults(defineProps<{
   tone?: 'muted' | 'accent' | 'alert'
   /** Список записей за числом — число становится кнопкой. Нет — просто число. */
   drill?: DrillRequest
+  /** Само число для подписи «показано M из N» в слайдере. */
+  drillTotal?: number
 }>(), {
   hint: undefined,
   tone: 'muted',
-  drill: undefined
+  drill: undefined,
+  drillTotal: undefined
 })
 const emit = defineEmits<{ drill: [DrillRequest] }>()
 </script>
@@ -32,6 +35,7 @@ const emit = defineEmits<{ drill: [DrillRequest] }>()
     <DrillNumber
       class="mt-2 text-2xl font-semibold leading-none"
       :request="drill"
+      :total="drillTotal"
       @drill="emit('drill', $event)"
     >
       {{ value }}

@@ -31,6 +31,7 @@ const baseLabel = computed(() =>
         hint="100 %"
         tone="accent"
         :drill="drill.leads()"
+        :drill-total="summary.totalLeads"
         @drill="emit('drill', $event)"
       />
       <StatTile
@@ -39,6 +40,7 @@ const baseLabel = computed(() =>
         :hint="`${formatPercent(summary.junkShare)} от лидов`"
         tone="alert"
         :drill="drill.junk()"
+        :drill-total="summary.junk"
         @drill="emit('drill', $event)"
       />
       <StatTile
@@ -47,6 +49,7 @@ const baseLabel = computed(() =>
         :hint="`${formatPercent(summary.qualifiedShare)} ${baseLabel}`"
         tone="accent"
         :drill="drill.qualified()"
+        :drill-total="summary.qualified"
         @drill="emit('drill', $event)"
       />
       <!-- ⚠ Контекст обязателен: на боевом портале сделок из лидов — каждая десятая. Без
@@ -59,6 +62,7 @@ const baseLabel = computed(() =>
           : `${formatPercent(summary.wonShare)} ${baseLabel}`"
         tone="accent"
         :drill="drill.wonDeals()"
+        :drill-total="summary.wonDeals"
         @drill="emit('drill', $event)"
       />
       <!-- ТЗ просит ОБЕ конверсии отдельными показателями. «Лид → продажа» стоит подписью

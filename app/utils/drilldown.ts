@@ -1,6 +1,6 @@
 import type { ReportDataset, ReportDeal, ReportDictionaries, ReportFilters, ReportPeriod } from '~/types/report'
 import { periodFilter, unlinkedWonDealsParams } from '~/utils/b24Query'
-import { applyFilters, dealRestFilter, demoLeadHasStatus, demoLeadStatus, leadRestFilter, needsLeadIds } from '~/utils/filters'
+import { applyFilters, dealRestFilter, demoLeadHasStatus, demoLeadStatus, leadRestFilter, needsLeadIds, stageCodesFor } from '~/utils/filters'
 import { INITIAL_LEAD_STATUS } from '~/utils/leadHistory'
 import { leadStageLabel, lossReasonLabel, sourceLabel } from '~/utils/labels'
 import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
@@ -29,6 +29,8 @@ export interface DrillRequest {
    * без лида (блок 7: по дате закрытия, `LEAD_ID` пуст, только успешные, фильтры не действуют).
    */
   dealScope?: 'from-leads' | 'unlinked'
+  /** Число, по которому нажали, — чтобы слайдер говорил «показано M из N», не долистывая до конца. */
+  total?: number
 }
 
 /** Строка списка — уже с подписями из справочников; `path` — путь карточки в CRM портала. */
@@ -72,9 +74,6 @@ export interface B24DrillDealRow {
   CURRENCY_ID?: string | null
 }
 
-/** Заведомо несуществующий код стадии — пустой список вместо «все записи» (см. `dealRestFilter`). */
-const NO_SUCH_STAGE = '__no_such_stage__'
-
 const lead = (title: string, extra: DrillRequest['extra'] = {}): DrillRequest => ({ entity: 'lead', title, extra })
 const dealFromLeads = (title: string, extra: DrillRequest['extra'] = {}): DrillRequest => ({ entity: 'deal', title, extra, dealScope: 'from-leads' })
 const unlinkedDeal = (title: string, extra: DrillRequest['extra'] = {}): DrillRequest => ({ entity: 'deal', title, extra, dealScope: 'unlinked' })
@@ -112,14 +111,14 @@ export const drill = {
   lostDeals: () => dealFromLeads('Проигранные сделки', { STAGE_SEMANTIC_ID: 'F' }),
   /**
    * Причина проигрыша — все коды стадий провала под одним названием (`reasonMerge`). «Причина
-   * не указана» — провал на стадии вне известных кодов; удалённая причина — заведомо пусто.
+   * не указана» — провал на стадии вне известных кодов; ключ без кодов — см. `stageCodesFor`.
    */
   lossReason: (reasonKey: string, label: string, codesByKey: Record<string, string[]>): DrillRequest => {
     if (reasonKey === UNSPECIFIED_REASON) {
       const known = Object.values(codesByKey).flat()
       return dealFromLeads(`Проигранные сделки: ${label}`, known.length ? { 'STAGE_SEMANTIC_ID': 'F', '!STAGE_ID': known } : { STAGE_SEMANTIC_ID: 'F' })
     }
-    return dealFromLeads(`Проигранные сделки: ${label}`, { STAGE_ID: codesByKey[reasonKey] ?? [NO_SUCH_STAGE] })
+    return dealFromLeads(`Проигранные сделки: ${label}`, { STAGE_ID: stageCodesFor(reasonKey, codesByKey) })
   },
   unlinked: () => unlinkedDeal('Успешные сделки без связи с лидом'),
   unlinkedSource: (sourceId: string, label: string): DrillRequest | undefined =>
@@ -136,26 +135,41 @@ export interface DrillListParams {
    * как и в самом отчёте; список у композабла, здесь только признак.
    */
   byLeadIds: boolean
+  /**
+   * Список пуст по построению, портал не спрашивают: условие числа спорит с фильтром отчёта по
+   * одному полю (фильтр «стадия = брак», клик по «Не обработано» = `NEW`). Число под таким
+   * фильтром — ноль (`leadCountBatch` такие счётчики не шлёт), и список обязан быть пустым, а
+   * не «все NEW за период»: спред условия числа поверх фильтра молча заменил бы условие.
+   */
+  empty: boolean
+}
+
+/** Условие числа и фильтр отчёта пишут в одно поле разные значения — такого множества нет. */
+function conflicts(base: Record<string, unknown>, extra: DrillRequest['extra']): boolean {
+  return Object.entries(extra).some(([key, value]) => key in base && JSON.stringify(base[key]) !== JSON.stringify(value))
 }
 
 /**
- * Что спросить у портала. Порядок условий: период → фильтры отчёта → условие числа. Условие
- * числа последнее и побеждает: под фильтром по стадии кликабельна только строка той же стадии,
- * так что спор невозможен, а под фильтром по источнику клик по строке источника — тот же код.
+ * Что спросить у портала. Порядок условий: период → фильтры отчёта → условие числа. Одно поле у
+ * фильтра и у числа — либо то же значение (клик по строке своего источника под фильтром по нему),
+ * либо спор — и тогда список пуст без запроса (`empty`), см. `conflicts`.
  */
 export function drillListParams(request: DrillRequest, period: ReportPeriod, filters: ReportFilters, codesByReason: Record<string, string[]>): DrillListParams {
   if (request.entity === 'lead') {
-    return { method: 'crm.lead.list', select: [...DRILL_LEAD_SELECT], filter: { ...periodFilter(period), ...leadRestFilter(filters), ...request.extra }, byLeadIds: false }
+    const base = { ...periodFilter(period), ...leadRestFilter(filters) }
+    return { method: 'crm.lead.list', select: [...DRILL_LEAD_SELECT], filter: { ...base, ...request.extra }, byLeadIds: false, empty: conflicts(base, request.extra) }
   }
   if (request.dealScope === 'unlinked') {
-    return { method: 'crm.deal.list', select: [...DRILL_DEAL_SELECT], filter: { ...unlinkedWonDealsParams(period).filter, ...request.extra }, byLeadIds: false }
+    return { method: 'crm.deal.list', select: [...DRILL_DEAL_SELECT], filter: { ...unlinkedWonDealsParams(period).filter, ...request.extra }, byLeadIds: false, empty: false }
   }
   const byLeadIds = needsLeadIds(filters)
+  const base = { ...periodFilter(period), ...(byLeadIds ? {} : { '!LEAD_ID': null }), ...dealRestFilter(filters, codesByReason) }
   return {
     method: 'crm.deal.list',
     select: [...DRILL_DEAL_SELECT],
-    filter: { ...periodFilter(period), ...(byLeadIds ? {} : { '!LEAD_ID': null }), ...dealRestFilter(filters, codesByReason), ...request.extra },
-    byLeadIds
+    filter: { ...base, ...request.extra },
+    byLeadIds,
+    empty: conflicts(base, request.extra)
   }
 }
 
@@ -183,13 +197,14 @@ export function leadDrillRow(row: B24DrillLeadRow, dictionaries: ReportDictionar
   const id = toId(row.ID)
   const status = toText(row.STATUS_ID)
   const source = toText(row.SOURCE_ID)
+  const manager = managerLabel(dictionaries, toId(row.ASSIGNED_BY_ID))
   return {
     id,
     title: toText(row.TITLE) || `Лид #${id}`,
     ...(toText(row.DATE_CREATE) ? { when: toText(row.DATE_CREATE) } : {}),
     ...(status ? { stage: leadStageLabel(dictionaries, status) } : {}),
     ...(source ? { source: sourceLabel(dictionaries, source) } : {}),
-    ...(managerLabel(dictionaries, toId(row.ASSIGNED_BY_ID)) ? { manager: managerLabel(dictionaries, toId(row.ASSIGNED_BY_ID)) } : {}),
+    ...(manager ? { manager } : {}),
     path: crmPath('lead', id)
   }
 }
@@ -237,7 +252,9 @@ export function demoDrillRows(request: DrillRequest, dataset: ReportDataset, fil
   if (request.entity === 'lead') {
     return rows.leads
       .filter((item) => {
-        const semantic = item.outcome === 'junk' ? 'F' : item.outcome === 'converted' || item.outcome === 'lost' ? 'S' : 'P'
+        // «Успех» в демо — сконвертированный (со сделкой), как `isQualified` в ядре: «потерян» —
+        // стадия успеха без сделки, в «квалифицировано» он не входит, и список не должен.
+        const semantic = item.outcome === 'junk' ? 'F' : item.outcome === 'converted' ? 'S' : 'P'
         const wanted = extra.STATUS_ID === undefined ? [] : [extra.STATUS_ID].flat()
         const unwanted = extra['!STATUS_ID'] === undefined ? [] : [extra['!STATUS_ID']].flat()
         return matchesCondition(semantic, extra.STATUS_SEMANTIC_ID)
@@ -245,15 +262,18 @@ export function demoDrillRows(request: DrillRequest, dataset: ReportDataset, fil
           && !unwanted.some(code => demoLeadHasStatus(item, code))
           && matchesCondition(item.sourceId, extra.SOURCE_ID)
       })
-      .map(item => ({
-        id: item.id,
-        title: `Лид #${item.id}`,
-        when: item.createdAt,
-        stage: leadStageLabel(dataset.dictionaries, demoLeadStatus(item)),
-        source: sourceLabel(dataset.dictionaries, item.sourceId),
-        ...(managerLabel(dataset.dictionaries, item.assignedById) ? { manager: managerLabel(dataset.dictionaries, item.assignedById) } : {}),
-        path: ''
-      }))
+      .map((item) => {
+        const manager = managerLabel(dataset.dictionaries, item.assignedById)
+        return {
+          id: item.id,
+          title: `Лид #${item.id}`,
+          when: item.createdAt,
+          stage: leadStageLabel(dataset.dictionaries, demoLeadStatus(item)),
+          source: sourceLabel(dataset.dictionaries, item.sourceId),
+          ...(manager ? { manager } : {}),
+          path: ''
+        }
+      })
   }
   if (request.dealScope === 'unlinked') return []
   return rows.deals
@@ -265,14 +285,17 @@ export function demoDrillRows(request: DrillRequest, dataset: ReportDataset, fil
         && matchesCondition(stage, extra['!STAGE_ID'], true)
         && matchesCondition(item.sourceId, extra.SOURCE_ID)
     })
-    .map(item => ({
-      id: item.id,
-      title: `Сделка #${item.id}`,
-      stage: item.outcome === 'won' ? 'Успешная' : item.outcome === 'lost' ? lossReasonLabel(dataset.dictionaries, item.lossReasonId ?? UNSPECIFIED_REASON) : 'В работе',
-      source: sourceLabel(dataset.dictionaries, item.sourceId),
-      ...(managerLabel(dataset.dictionaries, item.assignedById) ? { manager: managerLabel(dataset.dictionaries, item.assignedById) } : {}),
-      amount: item.amount,
-      currencyId: dataset.currencyId,
-      path: ''
-    }))
+    .map((item) => {
+      const manager = managerLabel(dataset.dictionaries, item.assignedById)
+      return {
+        id: item.id,
+        title: `Сделка #${item.id}`,
+        stage: item.outcome === 'won' ? 'Успешная' : item.outcome === 'lost' ? lossReasonLabel(dataset.dictionaries, item.lossReasonId ?? UNSPECIFIED_REASON) : 'В работе',
+        source: sourceLabel(dataset.dictionaries, item.sourceId),
+        ...(manager ? { manager } : {}),
+        amount: item.amount,
+        currencyId: dataset.currencyId,
+        path: ''
+      }
+    })
 }

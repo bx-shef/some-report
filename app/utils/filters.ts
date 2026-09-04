@@ -66,15 +66,26 @@ export function needsLeadIds(filters: ReportFilters): boolean {
 }
 
 /**
+ * Коды стадий провала под ключом причины проигрыша.
+ *
+ * Ключ без кодов — сам код стадии: сделку на стадии вне справочников направлений адаптер
+ * помечает её сырым кодом, и такая строка блока 4 обязана открываться списком. Название
+ * удалённой причины кодом стадии не является — портал ответит пусто, а не «все сделки».
+ */
+export function stageCodesFor(reasonKey: string, codesByReasonKey: Record<string, string[]>): string[] {
+  return codesByReasonKey[reasonKey] ?? [reasonKey]
+}
+
+/**
  * Фрагмент REST-фильтра для СДЕЛОК ИЗ ЛИДОВ. Источник у сделки свой (портал копирует его из лида
  * при конвертации) — фильтруем прямо. Причина проигрыша — стадии провала под каноничным ключом
  * (`reasonMerge`): одна причина в четырёх направлениях — несколько кодов, поэтому `STAGE_ID` —
- * массив. Причина, у которой кодов нет (удалена), даёт заведомо пустую выборку, а не все сделки.
+ * массив (см. `stageCodesFor`).
  */
 export function dealRestFilter(filters: ReportFilters, codesByReasonKey: Record<string, string[]>): Record<string, string | string[]> {
   const out: Record<string, string | string[]> = {}
   if (filters.sourceId) out.SOURCE_ID = filters.sourceId
-  if (filters.lossReasonKey) out.STAGE_ID = codesByReasonKey[filters.lossReasonKey] ?? ['__no_such_stage__']
+  if (filters.lossReasonKey) out.STAGE_ID = stageCodesFor(filters.lossReasonKey, codesByReasonKey)
   return out
 }
 

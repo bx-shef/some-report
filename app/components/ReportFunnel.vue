@@ -46,6 +46,7 @@ const STAGE_COLORS: Record<string, string> = {
         <div class="mt-0.5 text-xl font-semibold leading-none">
           <DrillNumber
             :request="STAGE_DRILL[stage.key]?.()"
+            :total="stage.count"
             @drill="emit('drill', $event)"
           >
             {{ formatCount(stage.count) }}

@@ -72,8 +72,9 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
     chunks = params.byLeadIds ? chunkIds(dataset.value.filteredLeadIds ?? []) : []
     chunkIndex = 0
     afterId = 0
-    // Лидов под фильтром нет — сделок нет, и портал об этом не спрашивают (`LEAD_ID: [0]` отдал бы чужие).
-    if (params.byLeadIds && !chunks.length) {
+    // Условие числа спорит с фильтром — список пуст по построению; лидов под фильтром нет —
+    // сделок нет. Ни то, ни другое портал не спрашивают (`LEAD_ID: [0]` отдал бы чужие).
+    if (params.empty || (params.byLeadIds && !chunks.length)) {
       done.value = true
       return
     }
@@ -84,37 +85,51 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
   async function loadMore(mine = seq): Promise<void> {
     if (!params || !request.value || pending.value || done.value || mine !== seq) return
     pending.value = true
+    // Повторная попытка после ошибки — с чистой плашкой: иначе она висела бы над свежими строками.
+    error.value = undefined
     const current = request.value
     try {
-      const filter = {
-        ...params.filter,
-        ...(params.byLeadIds ? { LEAD_ID: chunks[chunkIndex] } : {}),
-        '>ID': afterId
-      }
-      const result = await b24.getOrThrow().actions.v2.call.make<unknown[]>({
-        method: params.method,
-        params: { select: params.select, filter, order: { ID: 'ASC' }, start: -1 }
-      })
-      if (mine !== seq) return
-      if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
-      const data = result.getData()?.result
-      const page = (Array.isArray(data) ? data : []) as Array<B24DrillLeadRow | B24DrillDealRow>
       const dictionaries = input.dataset.value.dictionaries
-      rows.value = [
-        ...rows.value,
-        ...page.map(row => current.entity === 'lead'
-          ? leadDrillRow(row as B24DrillLeadRow, dictionaries)
-          : dealDrillRow(row as B24DrillDealRow, dictionaries, keyByCode(), current.dealScope))
-      ]
-      const last = Number(page.at(-1)?.ID)
-      const exhausted = page.length < DRILL_PAGE_SIZE || !Number.isFinite(last) || last <= afterId
-      if (!exhausted) {
-        afterId = last
-      } else if (params.byLeadIds && chunkIndex < chunks.length - 1) {
-        chunkIndex++
-        afterId = 0
-      } else {
+      const codes = keyByCode()
+      let added = 0
+      // Кусок ID лидов может дать короткую или пустую страницу — тогда сразу следующий кусок,
+      // пока не наберётся страница или куски не кончатся: иначе наблюдатель за концом списка
+      // молчал бы, а «Показать ещё» отдавало бы пустоту по клику на кусок.
+      while (true) {
+        const filter = {
+          ...params.filter,
+          ...(params.byLeadIds ? { LEAD_ID: chunks[chunkIndex] } : {}),
+          '>ID': afterId
+        }
+        const result = await b24.getOrThrow().actions.v2.call.make<unknown[]>({
+          method: params.method,
+          params: { select: params.select, filter, order: { ID: 'ASC' }, start: -1 }
+        })
+        if (mine !== seq) return
+        if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
+        const data = result.getData()?.result
+        const page = (Array.isArray(data) ? data : []) as Array<B24DrillLeadRow | B24DrillDealRow>
+        rows.value = [
+          ...rows.value,
+          ...page.map(row => current.entity === 'lead'
+            ? leadDrillRow(row as B24DrillLeadRow, dictionaries)
+            : dealDrillRow(row as B24DrillDealRow, dictionaries, codes, current.dealScope))
+        ]
+        added += page.length
+        const last = Number(page.at(-1)?.ID)
+        const exhausted = page.length < DRILL_PAGE_SIZE || !Number.isFinite(last) || last <= afterId
+        if (!exhausted) {
+          afterId = last
+          break
+        }
+        if (params.byLeadIds && chunkIndex < chunks.length - 1) {
+          chunkIndex++
+          afterId = 0
+          if (added >= DRILL_PAGE_SIZE) break
+          continue
+        }
         done.value = true
+        break
       }
     } catch (e) {
       if (mine === seq) error.value = e instanceof Error ? e.message : String(e)
@@ -123,14 +138,24 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
     }
   }
 
-  // Закрыли — идущая страница больше никому не нужна, а следующая не должна стартовать.
+  // Закрыли — идущая страница больше никому не нужна, следующая не должна стартовать, а
+  // прочитанные строки (названия, ответственные, суммы) незачем держать в памяти.
   watch(open, (value) => {
-    if (!value) seq++
+    if (value) return
+    seq++
+    rows.value = []
   })
 
-  /** Открыть карточку записи в слайдере портала. Вне портала (демо) карточек нет. */
+  /**
+   * Открыть карточку записи в слайдере портала. Вне портала (демо) карточек нет. Отказ портала
+   * (мобильное приложение, заблокированное окно) — той же плашкой, что ошибка страницы: клик,
+   * после которого ничего не произошло, читается как поломка отчёта.
+   */
   async function openRow(row: DrillRow): Promise<boolean> {
-    return b24.openPath(row.path)
+    if (!row.path) return false
+    const opened = await b24.openPath(row.path)
+    if (!opened) error.value = 'Портал не открыл карточку — попробуйте ещё раз или откройте её из CRM.'
+    return opened
   }
 
   return { open, request, rows, pending, error, done, show, loadMore: () => loadMore(), openRow }

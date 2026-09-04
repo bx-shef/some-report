@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { DrillRequest, DrillRow } from '~/utils/drilldown'
+import { DRILL_PAGE_SIZE } from '~/composables/useDrilldown'
 import { formatCount, formatDate, formatMoney } from '~/utils/format'
 
 /**
@@ -26,10 +27,17 @@ const open = defineModel<boolean>('open', { default: false })
 const emit = defineEmits<{ more: [], openRow: [DrillRow] }>()
 
 const isDeal = computed(() => props.request?.entity === 'deal')
+/**
+ * «Показано M из N»: N — то число, по которому нажали, известно без единого запроса. Без него на
+ * квартале список «Лиды» — две сотни страниц, и масштаб виден только тому, кто долистал.
+ */
 const description = computed(() => {
   if (!props.request) return undefined
   const what = isDeal.value ? 'сделок' : 'лидов'
-  return props.done ? `${what}: ${formatCount(props.rows.length)}` : `показано ${what}: ${formatCount(props.rows.length)}, есть ещё`
+  const shown = formatCount(props.rows.length)
+  if (props.done) return `${what}: ${shown}`
+  const total = props.request.total
+  return total === undefined ? `показано ${what}: ${shown}, есть ещё` : `показано ${shown} из ${formatCount(total)} ${what}`
 })
 
 const sentinel = useTemplateRef<HTMLElement>('sentinel')
@@ -168,7 +176,7 @@ onBeforeUnmount(() => observer?.disconnect())
           :disabled="pending"
           @click="emit('more')"
         />
-        <span class="text-xs opacity-60">по {{ 50 }} записей за раз</span>
+        <span class="text-xs opacity-60">по {{ DRILL_PAGE_SIZE }} записей за раз</span>
       </div>
     </template>
   </B24Slideover>

@@ -106,6 +106,7 @@ const emit = defineEmits<{ start: [], drill: [DrillRequest] }>()
           <div class="text-lg font-semibold tabular-nums">
             <DrillNumber
               :request="drill.unlinked()"
+              :total="unlinked.total"
               @drill="emit('drill', $event)"
             >
               {{ formatCount(unlinked.total) }}
@@ -172,6 +173,7 @@ const emit = defineEmits<{ start: [], drill: [DrillRequest] }>()
               <td class="py-2 pr-3 text-right tabular-nums">
                 <DrillNumber
                   :request="drill.unlinkedSource(row.sourceId, unlinkedSourceLabel(dictionaries, row.sourceId))"
+                  :total="row.count"
                   @drill="emit('drill', $event)"
                 >
                   {{ formatCount(row.count) }}
