@@ -6,6 +6,7 @@ import {
   adaptDealsContext,
   adaptLeadCounts,
   adaptUnlinkedWonDeals,
+  openLeadStatusIds,
   baseCurrency,
   lossStages,
   statusIdsBySemantic,
@@ -20,9 +21,13 @@ import {
   latestLeadParams,
   leadCountBatch,
   type BatchCommand,
+  leadCreatedInStageParams,
+  leadHistoryLeadParams,
+  leadHistoryParams,
   unlinkedWonDealsParams
 } from '~/utils/b24Query'
-import { buildReport, buildReportFromAggregate } from '~/utils/metrics'
+import { buildReport, buildReportFromAggregate, mergeProcessing, processingMetrics } from '~/utils/metrics'
+import { leadsFromHistory, type B24LeadHistoryRow, type B24StageHistoryRow } from '~/utils/leadHistory'
 import { periodLengthDays, resolvePreset } from '~/utils/period'
 import { buildMockDataset } from '~/utils/mockReport'
 
@@ -38,12 +43,16 @@ import { buildMockDataset } from '~/utils/mockReport'
  * данные клиента, хуже отсутствующего отчёта.
  */
 /**
- * До скольких дней справка блока 7 стартует сама. 92 дня — квартал: ≈ 16 500 строк, минуты три.
- * Дальше — только по кнопке: год стоил бы минут двенадцать, и запускать это от случайного клика
- * по «Текущий год» нельзя. Порог — решение разработчика от 2026-09-04 (владельца не спрашивали),
- * менять — одну константу.
+ * До скольких дней фоновые выборки (блок 7 — сделки без лида, блок 6 — история стадий) стартуют
+ * сами. 92 дня — квартал: ≈ 3 минуты на блок 7 и ≈ 6 на блок 6. Дальше — только по кнопке: год
+ * стоил бы 12 и 24 минуты, и запускать это от случайного клика по «Текущий год» нельзя.
+ * Порог — решение разработчика от 2026-09-04 (владельца не спрашивали), менять — одну константу.
  */
-export const UNLINKED_AUTO_MAX_DAYS = 92
+export const BACKGROUND_AUTO_MAX_DAYS = 92
+
+/** Минут на 30 дней периода: справка блока 7 (≈ 5 500 строк) и история стадий (≈ 9 700 строк). */
+export const UNLINKED_MINUTES_PER_MONTH = 1
+export const PROCESSING_MINUTES_PER_MONTH = 2
 
 export function useReportData() {
   /**
@@ -62,10 +71,9 @@ export function useReportData() {
    *
    * ✅ 120 минут — норматив ЗАКАЗЧИКА (2026-09-03).
    *
-   * ⚠ «Ответ» — перевод лида в стадию «взят в работу» (заказчик, 2026-09-04). Моменты переходов
-   * живут в истории стадий, которую отчёт пока не выбирает (#26). До этого блок честно сообщает,
-   * что данных о первом действии нет (`AdapterWarnings.firstResponseNotFetched`), а не показывает
-   * ноль обработанных.
+   * ⚠ «Ответ» — первый уход лида со стадии «Не обработан» (решение владельца от 2026-09-04 по
+   * ответу заказчика «стадия „взят в работу“ — это и есть действие»). Моменты переходов живут в
+   * истории стадий и приходят фоном (job `processing`); до этого блок 6 сам говорит, что ждёт.
    */
   const firstResponseSlaMinutes = ref<number | undefined>(120)
 
@@ -80,20 +88,55 @@ export function useReportData() {
   const pending = ref(false)
   const error = ref<string | undefined>(undefined)
   /**
-   * Блок 7 «Успешные сделки без лида» грузится ФОНОМ после основного отчёта: это ≈ 5 500 строк в
-   * месяц (около минуты), и заставлять руководителя ждать справку вместе с воронкой нельзя.
-   * У блока свой индикатор и своя ошибка — основной отчёт от них не зависит.
+   * Фоновая выборка: стартует после основного отчёта, у неё свой индикатор, своя ошибка и
+   * кнопка на длинном периоде. Заставлять руководителя ждать справку вместе с воронкой нельзя,
+   * и основной отчёт от неё не зависит. Таких выборок две — блок 7 и история стадий блока 6, —
+   * и правила у них одни: результат выборки, пережившей смену периода, выбрасывается; новая
+   * основная выборка сбрасывает индикатор (иначе «Считаем…» от осиротевшей висело бы вечно).
    */
-  const unlinkedPending = ref(false)
-  const unlinkedError = ref<string | undefined>(undefined)
-  /**
-   * Справка отложена: период длиннее `UNLINKED_AUTO_MAX_DAYS`, и выборка стартует только по
-   * кнопке. Год — это ≈ 1 300 страниц и минут двенадцать; запускать такое от случайного клика
-   * по «Текущий год» нельзя, а от осознанного — можно.
-   */
-  const unlinkedDeferred = ref(false)
-  /** Что нужно, чтобы запустить справку позже по кнопке: тот же период и справочники, что у отчёта. */
-  let unlinkedContext: { period: ReportPeriod, mine: number, currencies: B24CurrencyRow[], sourceIds: string[] } | undefined
+  function backgroundJob<Ctx>(run: (ctx: Ctx, mine: number) => Promise<void>) {
+    const pending = ref(false)
+    const error = ref<string | undefined>(undefined)
+    const deferred = ref(false)
+    let context: { ctx: Ctx, mine: number } | undefined
+    async function go(): Promise<void> {
+      if (!context || context.mine !== seq) return
+      // Второе нажатие «Посчитать», пока считается первое, запустило бы выборку ещё раз: тот же
+      // курсор, те же страницы, вдвое больше запросов к порталу — и запись результата дважды.
+      if (pending.value) return
+      const { ctx, mine } = context
+      deferred.value = false
+      pending.value = true
+      error.value = undefined
+      try {
+        await run(ctx, mine)
+      } catch (e) {
+        if (mine === seq) error.value = e instanceof Error ? e.message : String(e)
+      } finally {
+        if (mine === seq) pending.value = false
+      }
+    }
+    return {
+      pending,
+      error,
+      deferred,
+      reset(): void {
+        pending.value = false
+        error.value = undefined
+        deferred.value = false
+        context = undefined
+      },
+      /** Запомнить, что считать; на коротком периоде — сразу, на длинном — ждать кнопки. */
+      schedule(ctx: Ctx, mine: number, auto: boolean): void {
+        context = { ctx, mine }
+        if (auto) void go()
+        else deferred.value = true
+      },
+      start(): void {
+        void go()
+      }
+    }
+  }
   /** Оговорки адаптера к качеству данных портала. Пока источник демонстрационный — их нет. */
   const warnings = ref<AdapterWarnings | undefined>(undefined)
   /**
@@ -159,18 +202,22 @@ export function useReportData() {
    */
   async function fetchAllUntil<T extends { ID?: string | number }>(
     method: string,
-    params: { select: string[], filter: Record<string, unknown> },
+    params: { select: string[], filter: Record<string, unknown>, [extra: string]: unknown },
     stale: () => boolean
   ): Promise<T[]> {
     const rows: T[] = []
     let lastId = 0
     while (!stale()) {
-      const result = await b24.getOrThrow().actions.v2.call.make<T[]>({
+      const result = await b24.getOrThrow().actions.v2.call.make<T[] | { items?: T[] }>({
         method,
         params: { ...params, order: { ID: 'ASC' }, filter: { ...params.filter, '>ID': lastId }, start: -1 }
       })
       if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
-      const page = result.getData()?.result
+      // ⚠ Конверт разный: списки CRM отдают `result: [...]`, а `crm.stagehistory.list` —
+      // `result: { items: [...] }`. Без этой ветки история приходила бы ПУСТОЙ, каждый лид
+      // считался бы без ответа, и блок показал бы «просрочено 100 %» под вечным «ждёт историю».
+      const raw = result.getData()?.result as T[] | { items?: T[] } | undefined
+      const page = Array.isArray(raw) ? raw : raw?.items
       if (!Array.isArray(page) || page.length === 0) break
       rows.push(...page)
       const last = Number(page[page.length - 1]?.ID)
@@ -263,12 +310,10 @@ export function useReportData() {
     const mine = ++seq
     pending.value = true
     error.value = undefined
-    // Справка прошлого периода больше не наша: индикатор и ошибка — заново. Иначе, если новая
-    // выборка упадёт, «Считаем…» от осиротевшей висело бы бесконечно.
-    unlinkedPending.value = false
-    unlinkedError.value = undefined
-    unlinkedDeferred.value = false
-    unlinkedContext = undefined
+    // Фоновые выборки прошлого периода больше не наши — заново.
+    unlinked.reset()
+    processing.reset()
+    processingTimed.value = false
     try {
       /**
        * Порядок шагов и почему именно так — см. `docs/PORTAL.md` § «Что делать с объёмами».
@@ -283,6 +328,8 @@ export function useReportData() {
       const leadStatuses = (books.leadStatuses ?? []) as B24StatusRow[]
 
       const junkStatusIds = statusIdsBySemantic(leadStatuses, 'F')
+      const convertedStatusIds = statusIdsBySemantic(leadStatuses, 'S')
+      const openStatusIds = openLeadStatusIds(leadStatuses)
       const sourceIds = sources.map(row => row.STATUS_ID).filter(Boolean)
 
       // Шаги 2–5 независимы друг от друга — идут параллельно. Последовательно они стоили бы ещё
@@ -292,7 +339,7 @@ export function useReportData() {
         //    у заказчика их четыре. Без остальных причина проигрыша приедет кодом вместо названия.
         fetchCategoryIds().then(ids => batchRows<B24StatusRow>(dealStageBatch(ids))).then(books => Object.values(books).flat()),
         // 3. Лиды — счётчиками. Что спросить, знает `leadCountBatch`; что с этим делать — `adaptLeadCounts`.
-        batchTotals(leadCountBatch(period, { junkStatusIds, sourceIds })),
+        batchTotals(leadCountBatch(period, { junkStatusIds, sourceIds, openStatusIds })),
         // 4. Сделки из лидов — строками: ради выручки и причин проигрыша. Их ~10 % от всех.
         fetchAll<B24DealRow>('crm.deal.list', dealsFromLeadsParams(period)),
         // 5. Сделки всего портала — три счётчика, чтобы «успешных: 636» не читалось как «всего продаж».
@@ -301,7 +348,7 @@ export function useReportData() {
 
       if (mine !== seq) return
 
-      const leadAggregate = adaptLeadCounts({ totals: leadTotals, sourceIds, junkStatusIds })
+      const leadAggregate = adaptLeadCounts({ totals: leadTotals, sourceIds, junkStatusIds, openStatusIds })
       // Одно сведение на прогон: из него и карта ключей для сделок, и словарь имён. Сводим
       // ТОЛЬКО стадии провала — «Новая» и «Успех» тоже продублированы по направлениям, и
       // счётчик свёрнутых стадий с ними внутри не сходился бы ни с чем.
@@ -318,6 +365,7 @@ export function useReportData() {
         dictionaries: {
           sources: statusNames(sources),
           junkReasons: statusNames(leadStatuses),
+          leadStages: statusNames(leadStatuses),
           lossReasons: reasons.names
         },
         currencyId,
@@ -332,9 +380,9 @@ export function useReportData() {
         // Счётчики не видят связи лид → сделка поимённо, поэтому эти две оговорки здесь не считаются.
         wonStageWithoutDeal: 0,
         dealsWithMissingLead: 0,
-        // ⚠ Время первого ответа не выбирается: история стадий ещё не читается (#26). Пока её нет,
-        // блок честно молчит, а не показывает ноль обработанных.
-        firstResponseNotFetched: true
+        // Время первого ответа приходит фоном из истории стадий; пока идёт — блок 6 говорит об
+        // этом сам, общая оговорка не нужна.
+        firstResponseNotFetched: false
       }
       // Пусто за период — выясняем, есть ли лиды вообще. Один запрос на одну запись, и только
       // когда он действительно нужен.
@@ -344,12 +392,12 @@ export function useReportData() {
         latestLeadDate.value = latest
       }
       source.value = 'portal'
-      // 6. Успешные сделки БЕЗ лида — строками, фоном: основной отчёт уже на экране. Факт о
-      //    процессе, который отчёт обязан показать, а не спрятать: на боевом портале это 90 % сделок.
-      //    На длинном периоде — только по кнопке (см. `unlinkedDeferred`).
-      unlinkedContext = { period, mine, currencies, sourceIds }
-      if (periodLengthDays(period) <= UNLINKED_AUTO_MAX_DAYS) void loadUnlinked(period, mine, currencies, sourceIds)
-      else unlinkedDeferred.value = true
+      // 6. Фоном, когда основной отчёт уже на экране; на длинном периоде — только по кнопке:
+      //    успешные сделки БЕЗ лида (факт о процессе, который отчёт обязан показать: на боевом
+      //    портале это 90 % сделок) и история стадий лидов — время первого ответа для блока 6.
+      const auto = periodLengthDays(period) <= BACKGROUND_AUTO_MAX_DAYS
+      unlinked.schedule({ period, currencies, sourceIds }, mine, auto)
+      processing.schedule({ period, junkStatusIds, convertedStatusIds }, mine, auto)
     } catch (e) {
       if (mine === seq) error.value = e instanceof Error ? e.message : String(e)
     } finally {
@@ -359,32 +407,77 @@ export function useReportData() {
     }
   }
 
+  /** Блок 7: успешные сделки без лида — строками, отменяемо. */
+  const unlinked = backgroundJob<{ period: ReportPeriod, currencies: B24CurrencyRow[], sourceIds: string[] }>(async ({ period, currencies, sourceIds }, mine) => {
+    const rows = await fetchAllUntil<B24DealRow>('crm.deal.list', unlinkedWonDealsParams(period), () => mine !== seq)
+    if (mine !== seq) return
+    dataset.value = { ...dataset.value, unlinkedDeals: adaptUnlinkedWonDeals(rows, currencies, sourceIds) }
+  })
+
   /**
-   * Блок 7 отдельной выборкой. `mine` — номер выборки, породившей её: ответ, пришедший после
-   * смены периода, выбрасывается так же, как ответы основного отчёта.
+   * Блок 6: время первого ответа и просрочка — из истории стадий (#26).
+   *
+   * Три выборки подряд: строки лидов периода (когда создан, откуда), переходы и закрытия по
+   * стадиям и создания сразу в стадии не-NEW. Из них — те же строки лидов, что у демо-набора, и
+   * то же ядро `processingMetrics`. Числа «обработано / не обработано» при этом остаются от
+   * счётчиков — см. `mergeProcessing`.
    */
-  async function loadUnlinked(period: ReportPeriod, mine: number, currencies: B24CurrencyRow[], sourceIds: readonly string[]): Promise<void> {
-    unlinkedPending.value = true
-    unlinkedError.value = undefined
-    try {
-      // Собственные исключения ловим здесь же: вызов идёт без `await`, и необработанный отказ
-      // ушёл бы в консоль, а не на экран.
-      const rows = await fetchAllUntil<B24DealRow>('crm.deal.list', unlinkedWonDealsParams(period), () => mine !== seq)
-      if (mine !== seq) return
-      dataset.value = { ...dataset.value, unlinkedDeals: adaptUnlinkedWonDeals(rows, currencies, sourceIds) }
-    } catch (e) {
-      if (mine === seq) unlinkedError.value = e instanceof Error ? e.message : String(e)
-    } finally {
-      if (mine === seq) unlinkedPending.value = false
+  /**
+   * История стадий ПРИШЛА и время посчитано. Нужен явно: по данным это не отличить — у периода,
+   * где никто не ответил, среднее тоже пусто, и блок вечно говорил бы «ждёт историю».
+   */
+  const processingTimed = ref(false)
+  const processing = backgroundJob<{ period: ReportPeriod, junkStatusIds: string[], convertedStatusIds: string[] }>(async ({ period, junkStatusIds, convertedStatusIds }, mine) => {
+    const stale = () => mine !== seq
+    // Три выборки независимы и идут параллельно: строки лидов и история — по несколько тысяч
+    // строк в месяц каждая, друг за другом они ждали бы вдвое дольше. Два запроса истории —
+    // переходы и закрытия (основная масса) и создания сразу в стадии не-NEW (обычно единицы),
+    // см. `leadHistoryParams`.
+    const [leadRows, history, createdInStage] = await Promise.all([
+      fetchAllUntil<B24LeadHistoryRow>('crm.lead.list', leadHistoryLeadParams(period), stale),
+      fetchAllUntil<B24StageHistoryRow>('crm.stagehistory.list', leadHistoryParams(period), stale),
+      fetchAllUntil<B24StageHistoryRow>('crm.stagehistory.list', leadCreatedInStageParams(period), stale)
+    ])
+    if (stale()) return
+    const leads = leadsFromHistory(leadRows, [...history, ...createdInStage], junkStatusIds, convertedStatusIds)
+    // «Сейчас» для просрочки — конец периода, но не позже настоящего «сейчас»: в текущем месяце
+    // лид, созданный час назад, ещё не просрочен, хотя до конца месяца далеко. Конец периода —
+    // в UTC (`Z`), как и у демо-расчёта выше: без суффикса браузер взял бы СВОЙ часовой пояс, и
+    // граница просрочки ездила бы на три часа между Минском и CI.
+    const periodEnd = Date.parse(`${period.to}T23:59:59Z`)
+    const now = new Date(Math.min(Date.now(), Number.isFinite(periodEnd) ? periodEnd : Date.now())).toISOString()
+    const timed = processingMetrics(leads, { conversionBase, firstResponseSlaMinutes: firstResponseSlaMinutes.value, now })
+    // ⚠ Между чтением `dataset.value` и записью — ни одного `await`: блок 7 пишет в тот же объект
+    // из своей фоновой выборки, и пауза здесь потеряла бы его результат (или он — наш).
+    const aggregate = dataset.value.leadAggregate
+    if (!aggregate?.processing) {
+      // Счётчик «не обработано» не пришёл в пакете — сливать время не во что. Молчать нельзя:
+      // индикатор погас бы, а блок остался «не посчитан» без причины.
+      throw new Error('Счётчики обработки лидов не пришли из портала — время первого ответа не посчитать')
     }
-  }
+    dataset.value = { ...dataset.value, leadAggregate: { ...aggregate, processing: mergeProcessing(aggregate.processing, timed) } }
+    processingTimed.value = true
+  })
 
-  /** Запустить отложенную справку блока 7 — по кнопке, для того же периода, что на экране. */
-  function startUnlinked(): void {
-    if (!unlinkedContext || unlinkedContext.mine !== seq) return
-    unlinkedDeferred.value = false
-    void loadUnlinked(unlinkedContext.period, unlinkedContext.mine, unlinkedContext.currencies, unlinkedContext.sourceIds)
+  return {
+    dataset,
+    report,
+    firstResponseSlaMinutes,
+    pending,
+    error,
+    unlinkedPending: unlinked.pending,
+    unlinkedError: unlinked.error,
+    unlinkedDeferred: unlinked.deferred,
+    startUnlinked: unlinked.start,
+    processingPending: processing.pending,
+    processingError: processing.error,
+    processingDeferred: processing.deferred,
+    processingTimed,
+    startProcessing: processing.start,
+    source,
+    isDemo,
+    warnings,
+    latestLeadDate,
+    load
   }
-
-  return { dataset, report, firstResponseSlaMinutes, pending, error, unlinkedPending, unlinkedError, unlinkedDeferred, startUnlinked, source, isDemo, warnings, latestLeadDate, load }
 }

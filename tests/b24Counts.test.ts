@@ -34,9 +34,9 @@ describe('statusIdsBySemantic', () => {
 describe('leadCountBatch', () => {
   const batch = leadCountBatch(PERIOD, { junkStatusIds: ['JUNK', '7'], sourceIds: ['CALL', 'WEB'] })
 
-  it('спрашивает итог, три семантики, каждую причину брака и три числа на источник', () => {
-    // 4 + 2 причины + 2 источника × 3
-    expect(Object.keys(batch)).toHaveLength(4 + 2 + 6)
+  it('спрашивает итог, три семантики, «не обработано», каждую причину брака и три числа на источник', () => {
+    // 4 + «не обработано» + 2 причины + 2 источника × 3
+    expect(Object.keys(batch)).toHaveLength(4 + 1 + 2 + 6)
     expect(batch[leadCountKey.total]?.params.filter).toEqual({ '>=DATE_CREATE': '2026-08-01', '<DATE_CREATE': '2026-09-01' })
     expect(batch[leadCountKey.junkReason('7')]?.params.filter).toMatchObject({ STATUS_ID: '7' })
     expect(batch[leadCountKey.sourceJunk('WEB')]?.params.filter).toMatchObject({ SOURCE_ID: 'WEB', STATUS_SEMANTIC_ID: 'F' })
@@ -44,6 +44,16 @@ describe('leadCountBatch', () => {
 
   // Счётчику нужен только `total`: тащить поля записей значило бы платить за строки, от которых
   // мы ушли.
+  // «Не обработано» — счётчик NEW; открытые стадии — по одному счётчику на стадию (блок 6).
+  it('спрашивает «не обработано» по NEW и открытые стадии, если их передали', () => {
+    expect(batch[leadCountKey.unprocessed]?.params.filter).toMatchObject({ STATUS_ID: 'NEW' })
+    expect(batch[leadCountKey.stage('1')]).toBeUndefined()
+    const withStages = leadCountBatch(PERIOD, { junkStatusIds: [], sourceIds: [], openStatusIds: ['NEW', '1'] })
+    expect(withStages[leadCountKey.stage('1')]?.params.filter).toMatchObject({ STATUS_ID: '1' })
+    // NEW уже спрошен как «не обработано» — тот же счётчик второй раз не шлём.
+    expect(withStages[leadCountKey.stage('NEW')]).toBeUndefined()
+  })
+
   it('каждая команда просит только ID и первую страницу', () => {
     for (const command of Object.values(batch)) {
       expect(command.params.select).toEqual(['ID'])
@@ -98,6 +108,23 @@ describe('adaptLeadCounts', () => {
 
   // Счётчики не знают лидов поимённо: карты источников и обработки быть не должно, иначе ядро
   // решит, что строки есть, и начнёт по ним искать.
+  it('«не обработано» и открытые стадии — только если их спрашивали', () => {
+    const without = adaptLeadCounts({ totals: { total: 10 }, sourceIds: [], junkStatusIds: [] })
+    expect(without.unprocessed).toBeUndefined()
+    expect(without.processing).toBeUndefined()
+    expect(without.byOpenStage).toBeUndefined()
+
+    const withCounts = adaptLeadCounts({
+      totals: { total: 10, unprocessed: 3, [leadCountKey.stage('1')]: 4, [leadCountKey.stage('X')]: 0 },
+      sourceIds: [],
+      junkStatusIds: [],
+      openStatusIds: ['NEW', '1', 'X']
+    })
+    expect(withCounts.unprocessed).toBe(3)
+    expect(withCounts.processing).toMatchObject({ processed: 7, unprocessed: 3 })
+    expect(withCounts.byOpenStage).toEqual({ NEW: 3, 1: 4 })
+  })
+
   it('не притворяется, что знает лиды построчно', () => {
     expect(agg.leadSourceById).toBeUndefined()
     expect(agg.processing).toBeUndefined()

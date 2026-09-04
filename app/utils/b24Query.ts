@@ -1,5 +1,7 @@
 import type { ReportPeriod } from '~/types/report'
 import { dealCountKey, leadCountKey } from '~/utils/b24Adapter'
+import { INITIAL_LEAD_STATUS } from '~/utils/leadHistory'
+import { fromIsoDate, toIsoDate } from '~/utils/period'
 
 /**
  * Запросы к порталу: что именно спрашиваем у CRM за период отчёта.
@@ -119,7 +121,15 @@ function countCommand(method: string, filter: Record<string, unknown>): BatchCom
  */
 export function leadCountBatch(
   period: ReportPeriod,
-  dictionaries: { junkStatusIds: readonly string[], sourceIds: readonly string[] }
+  dictionaries: {
+    junkStatusIds: readonly string[]
+    sourceIds: readonly string[]
+    /**
+     * Открытые стадии лида (без семантики «успех»/«провал»), включая `NEW`. По ним — «Не
+     * обработано» (счётчик `NEW`) и разбивка открытых лидов по стадиям для блока 6.
+     */
+    openStatusIds?: readonly string[]
+  }
 ): Record<string, BatchCommand> {
   const base = periodFilter(period)
   const method = 'crm.lead.list'
@@ -127,10 +137,18 @@ export function leadCountBatch(
     [leadCountKey.total]: countCommand(method, base),
     [leadCountKey.junk]: countCommand(method, { ...base, STATUS_SEMANTIC_ID: 'F' }),
     [leadCountKey.converted]: countCommand(method, { ...base, STATUS_SEMANTIC_ID: 'S' }),
-    [leadCountKey.inWork]: countCommand(method, { ...base, STATUS_SEMANTIC_ID: 'P' })
+    [leadCountKey.inWork]: countCommand(method, { ...base, STATUS_SEMANTIC_ID: 'P' }),
+    // «Не обработано» — лиды, которые до сих пор в `NEW`. Обработано = всего − это число:
+    // решение владельца от 2026-09-04, «ушёл со стадии „Не обработан“ — обработан».
+    [leadCountKey.unprocessed]: countCommand(method, { ...base, STATUS_ID: INITIAL_LEAD_STATUS })
   }
   for (const statusId of dictionaries.junkStatusIds) {
     commands[leadCountKey.junkReason(statusId)] = countCommand(method, { ...base, STATUS_ID: statusId })
+  }
+  // `NEW` уже спрошен как «не обработано» — второй раз тот же счётчик не шлём.
+  for (const statusId of dictionaries.openStatusIds ?? []) {
+    if (statusId === INITIAL_LEAD_STATUS) continue
+    commands[leadCountKey.stage(statusId)] = countCommand(method, { ...base, STATUS_ID: statusId })
   }
   for (const sourceId of dictionaries.sourceIds) {
     commands[leadCountKey.source(sourceId)] = countCommand(method, { ...base, SOURCE_ID: sourceId })
@@ -149,6 +167,58 @@ export function dealContextBatch(period: ReportPeriod): Record<string, BatchComm
     [dealCountKey.lost]: countCommand(method, { ...base, STAGE_SEMANTIC_ID: 'F' }),
     [dealCountKey.inWork]: countCommand(method, { ...base, STAGE_SEMANTIC_ID: 'P' })
   }
+}
+
+/** Строка лида для истории стадий: когда создан, откуда, где сейчас. */
+export const LEAD_HISTORY_LEAD_SELECT = ['ID', 'DATE_CREATE', 'SOURCE_ID', 'STATUS_ID', 'ASSIGNED_BY_ID'] as const
+
+/** Лиды периода — строками, только для расчёта времени первого ответа (см. `leadHistoryParams`). */
+export function leadHistoryLeadParams(period: ReportPeriod) {
+  return { select: [...LEAD_HISTORY_LEAD_SELECT], filter: periodFilter(period) }
+}
+
+/** Поля записи истории: чей лид, куда перешёл и когда. Создание (`TYPE_ID = 1`) не берём — см. фильтр. */
+export const LEAD_HISTORY_SELECT = ['ID', 'TYPE_ID', 'OWNER_ID', 'CREATED_TIME', 'STATUS_ID'] as const
+
+/**
+ * История стадий лидов — переходы и закрытия (`TYPE_ID` 2 и 3) с начала периода и ещё
+ * `graceDays` после его конца.
+ *
+ * ⚠ Запас после конца периода — не роскошь: лид, созданный 31-го, берут в работу 1-го, и без
+ * запаса он числился бы необработанным навсегда. Записи создания (`TYPE_ID = 1`) не нужны:
+ * дата создания уже есть в строке лида, а это треть всех записей.
+ *
+ * ⚠ Фильтр по `CREATED_TIME` этот метод понимает ТОЛЬКО в JSON-теле запроса: в form-data он
+ * молча игнорируется и отдаёт всю историю портала (466 479 записей на боевом, замер 2026-09-04).
+ * SDK шлёт JSON — но при любой замене транспорта это первое, что нужно перепроверить.
+ * Объём: ≈ 5 900 записей в месяц на боевом портале плюс ≈ 3 850 строк лидов — около двух минут.
+ */
+export function leadHistoryParams(period: ReportPeriod, graceDays = 3) {
+  return {
+    entityTypeId: 1,
+    select: [...LEAD_HISTORY_SELECT],
+    filter: { ...periodFilter(withGrace(period, graceDays), 'CREATED_TIME'), TYPE_ID: [2, 3] }
+  }
+}
+
+/**
+ * Лиды, СОЗДАННЫЕ сразу в стадии не-`NEW` (импорт, ручное создание «в работу»): у них нет перехода,
+ * только запись создания с этой стадией. Без этого запроса такой лид числился бы без ответа и
+ * просроченным, хотя счётчик `NEW` его обработанным считает. Строк обычно единицы — одна страница.
+ */
+export function leadCreatedInStageParams(period: ReportPeriod) {
+  return {
+    entityTypeId: 1,
+    select: [...LEAD_HISTORY_SELECT],
+    filter: { ...periodFilter(period, 'CREATED_TIME'), 'TYPE_ID': 1, '!STATUS_ID': INITIAL_LEAD_STATUS }
+  }
+}
+
+/** Период с запасом дней после конца — по календарю, той же арифметикой, что и пресеты. */
+function withGrace(period: ReportPeriod, graceDays: number): ReportPeriod {
+  const to = fromIsoDate(period.to)
+  if (!to) throw new Error(`Период не распознан: ${period.to}`)
+  return { from: period.from, to: toIsoDate(new Date(to.getFullYear(), to.getMonth(), to.getDate() + graceDays)) }
 }
 
 /**

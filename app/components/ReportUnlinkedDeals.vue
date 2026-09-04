@@ -65,6 +65,7 @@ const emit = defineEmits<{ start: [] }>()
         size="sm"
         color="air-primary"
         label="Посчитать"
+        :disabled="pending"
         @click="emit('start')"
       />
     </div>

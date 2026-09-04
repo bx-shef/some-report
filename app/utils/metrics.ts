@@ -257,6 +257,45 @@ export function processingMetrics(leads: ReportLead[], options: ReportOptions): 
   }
 }
 
+/**
+ * Обработка лидов по ДВУМ счётчикам портала: всего и «до сих пор в „Не обработан“».
+ *
+ * Время первого ответа и просрочка требуют истории стадий и приходят позже, из
+ * `processingMetrics` по строкам; до этого поля пусты, и блок говорит, что считает.
+ */
+export function processingFromCounts(total: number, unprocessed: number): ProcessingMetrics {
+  const safeTotal = Math.max(0, total)
+  const safeUnprocessed = Math.min(Math.max(0, unprocessed), safeTotal)
+  const processed = safeTotal - safeUnprocessed
+  return {
+    processed,
+    processedShare: share(processed, safeTotal),
+    unprocessed: safeUnprocessed,
+    unprocessedShare: share(safeUnprocessed, safeTotal),
+    bySource: []
+  }
+}
+
+/**
+ * Совместить счётчики и расчёт по истории: числа «обработано / не обработано» — от счётчиков
+ * портала (они точнее и уже на экране), время, просрочка и разрез по источникам — из истории.
+ *
+ * ⚠ Не заменять целиком: история берётся с запасом в несколько дней после периода, и её
+ * «обработано» на границе месяца отличается от счётчика на несколько лидов. Две разные цифры
+ * под одной подписью с интервалом в минуту — ровно то, чего этот отчёт избегает.
+ */
+export function mergeProcessing(counts: ProcessingMetrics, timed: ProcessingMetrics): ProcessingMetrics {
+  // Доля просроченных — от того же «всего», что и доли обработанных: история видит строки, взятые
+  // минутой позже счётчиков, и её знаменатель на пару лидов другой.
+  const total = counts.processed + counts.unprocessed
+  return {
+    ...counts,
+    ...(timed.overdue === undefined ? {} : { overdue: timed.overdue, overdueShare: share(timed.overdue, total) }),
+    ...(timed.avgFirstResponseMinutes === undefined ? {} : { avgFirstResponseMinutes: timed.avgFirstResponseMinutes }),
+    bySource: timed.bySource
+  }
+}
+
 /** Разбивка брака по причинам. Сортировка — по убыванию количества (крупное первым). */
 export function junkByReason(leads: LeadAggregate): JunkReasonRow[] {
   return Object.entries(leads.junkByReason)
@@ -279,11 +318,18 @@ export function junkByReason(leads: LeadAggregate): JunkReasonRow[] {
 export function preDealLoss(leads: LeadAggregate, summary: SummaryMetrics): PreDealLossMetrics {
   const count = Math.max(0, summary.totalLeads - summary.junk - summary.qualified)
   const stillInWork = Math.min(count, leads.inWork)
+  // Открытые лиды по стадиям — только со счётчиков портала; сортировка по убыванию, потом по коду.
+  const byStage = leads.byOpenStage
+    ? Object.entries(leads.byOpenStage)
+        .map(([stageId, n]) => ({ stageId, count: n }))
+        .sort((a, b) => b.count - a.count || a.stageId.localeCompare(b.stageId))
+    : undefined
   return {
     count,
     share: share(count, summary.conversionBaseValue),
     stillInWork,
-    closedWithoutDeal: Math.max(0, count - stillInWork)
+    closedWithoutDeal: Math.max(0, count - stillInWork),
+    ...(byStage ? { byStage } : {})
   }
 }
 

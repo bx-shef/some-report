@@ -32,6 +32,11 @@ export function lossReasonLabel(dictionaries: ReportDictionaries, id: string): s
   return labelFor(dictionaries.lossReasons, id, UNSPECIFIED_REASON_LABEL)
 }
 
+/** Стадия лида по коду; неизвестный код печатается как есть — по нему стадию можно найти в CRM. */
+export function leadStageLabel(dictionaries: ReportDictionaries, id: string): string {
+  return labelFor(dictionaries.leadStages ?? {}, id, UNSPECIFIED_REASON_LABEL)
+}
+
 /** Подпись строки «пустой или удалённый источник» блока 7 «Успешные сделки без связи с лидом». */
 export const NO_SOURCE_LABEL = 'Источник не указан или удалён из справочника'
 

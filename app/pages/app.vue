@@ -2,11 +2,16 @@
 import type { ReportPeriod } from '~/types/report'
 import { formatDate } from '~/utils/format'
 import { periodLengthDays, resolvePreset } from '~/utils/period'
+import { PROCESSING_MINUTES_PER_MONTH, UNLINKED_MINUTES_PER_MONTH } from '~/composables/useReportData'
 
 /**
  * Главный экран — сам отчёт. Открывается порталом из пункта CRM-аналитики (`CRM_ANALYTICS_MENU`).
  */
-const { dataset, report, isDemo, pending, error, unlinkedPending, unlinkedError, unlinkedDeferred, startUnlinked, warnings, latestLeadDate, load } = useReportData()
+const {
+  dataset, report, isDemo, pending, error, warnings, latestLeadDate, load,
+  unlinkedPending, unlinkedError, unlinkedDeferred, startUnlinked,
+  processingPending, processingError, processingDeferred, processingTimed, startProcessing
+} = useReportData()
 
 /**
  * «Сегодня» фиксируется ОДИН раз на открытие отчёта.
@@ -61,11 +66,13 @@ function samePeriod(a: ReportPeriod, b: ReportPeriod): boolean {
  * (`docs/PORTAL.md`), то есть около минуты на каждые 30 дней. Год — минут двенадцать, и
  * обещать «примерно минуту» на нём значило бы, что человек решит, будто отчёт завис.
  */
-const unlinkedEstimateMinutes = computed(() => Math.max(1, Math.round(periodLengthDays(dataset.value.period) / 30)))
+const unlinkedEstimateMinutes = computed(() => Math.max(1, Math.round(periodLengthDays(dataset.value.period) / 30 * UNLINKED_MINUTES_PER_MONTH)))
+/** История стадий вдвое объёмнее справки блока 7: ≈ 9 700 записей в месяц, около двух минут. */
+const processingEstimateMinutes = computed(() => Math.max(1, Math.round(periodLengthDays(dataset.value.period) / 30 * PROCESSING_MINUTES_PER_MONTH)))
 
-// Справка блока 7 приходит на минуту позже отчёта и меняет высоту страницы — портал должен
-// узнать об этом, иначе таблица уедет под нижний край фрейма.
-watch([unlinkedPending, unlinkedDeferred], fit)
+// Фоновые выборки приходят на минуты позже отчёта и меняют высоту страницы — портал должен
+// узнать об этом, иначе таблицы уедут под нижний край фрейма.
+watch([unlinkedPending, unlinkedDeferred, processingPending, processingDeferred], fit)
 
 /**
  * Первая загрузка идёт из `onMounted`, а НЕ из наблюдателя за периодом.
@@ -248,6 +255,12 @@ async function fit() {
         <ReportProcessing
           :report="report"
           :dictionaries="dataset.dictionaries"
+          :pending="processingPending"
+          :deferred="processingDeferred"
+          :timed="isDemo ? undefined : processingTimed"
+          :estimate-minutes="processingEstimateMinutes"
+          :error="processingError"
+          @start="startProcessing"
         />
 
         <!-- Блок-справка есть только у портала: на демо такого множества нет. Пока фоновая

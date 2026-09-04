@@ -1,5 +1,6 @@
-import { UNSPECIFIED_SOURCE, share, UNSPECIFIED_REASON } from '~/utils/metrics'
+import { UNSPECIFIED_SOURCE, share, UNSPECIFIED_REASON, processingFromCounts } from '~/utils/metrics'
 import { mergeReasons } from '~/utils/reasonMerge'
+import { INITIAL_LEAD_STATUS } from '~/utils/leadHistory'
 import type {
   DealsContext,
   UnlinkedDeals,
@@ -472,6 +473,17 @@ export function statusIdsBySemantic(rows: B24StatusRow[], semantic: B24Semantic)
 }
 
 /**
+ * Открытые стадии лида — все, у которых нет семантики «успех»/«провал»: `NEW`, «взято в работу»
+ * и что ещё заведёт портал. По ним блок 6 раскладывает лиды, не дошедшие до сделки.
+ */
+export function openLeadStatusIds(rows: B24StatusRow[]): string[] {
+  return rows
+    .filter(row => toSemantic(row.SEMANTICS) !== 'S' && toSemantic(row.SEMANTICS) !== 'F')
+    .map(row => toText(row.STATUS_ID))
+    .filter(Boolean)
+}
+
+/**
  * Ключи счётчиков лидов — ОДИН словарь для того, кто спрашивает, и того, кто разбирает ответ.
  *
  * ⚠ Ключи собираются функциями, а не пишутся строками в двух местах: разъехавшийся ключ не даёт
@@ -484,12 +496,18 @@ export const leadCountKey = {
   converted: 'converted',
   inWork: 'inWork',
   junkReason: (statusId: string) => `junk:${statusId}`,
+  /** Лиды, которые до сих пор в «Не обработан». */
+  unprocessed: 'unprocessed',
+  /** Открытые лиды на конкретной стадии. */
+  stage: (statusId: string) => `stage:${statusId}`,
   source: (sourceId: string) => `src:${sourceId}`,
   sourceJunk: (sourceId: string) => `srcJunk:${sourceId}`,
   sourceConverted: (sourceId: string) => `srcConv:${sourceId}`
 } as const
 
 export interface LeadCountsInput {
+  /** Открытые стадии лида — для разбивки блока 6. Нет — разбивки нет. */
+  openStatusIds?: readonly string[]
   /** Ключ (см. `leadCountKey`) → `total` из ответа портала. Отсутствующий ключ читается как 0. */
   totals: Record<string, number>
   /** Коды источников, по которым спрашивали. */
@@ -547,6 +565,18 @@ export function adaptLeadCounts(input: LeadCountsInput): LeadAggregate {
   }
   if (rest.leads > 0) bySource[UNSPECIFIED_SOURCE] = rest
 
+  // Открытые лиды по стадиям — только если стадии передали; счётчик, которого не спрашивали, — ноль.
+  const unprocessed = leadCountKey.unprocessed in input.totals ? Math.min(total, get(leadCountKey.unprocessed)) : undefined
+  let byOpenStage: Record<string, number> | undefined
+  if (input.openStatusIds) {
+    byOpenStage = Object.create(null) as Record<string, number>
+    for (const statusId of input.openStatusIds) {
+      // `NEW` в пакете не спрашивали второй раз — его число и есть «не обработано».
+      const count = statusId === INITIAL_LEAD_STATUS ? (unprocessed ?? 0) : get(leadCountKey.stage(statusId))
+      if (count > 0) byOpenStage[statusId] = count
+    }
+  }
+
   return {
     total,
     junk,
@@ -554,8 +584,12 @@ export function adaptLeadCounts(input: LeadCountsInput): LeadAggregate {
     inWork,
     closedWithoutDeal: Math.max(0, total - junk - qualified - inWork),
     junkByReason,
-    bySource
-    // `leadSourceById` и `processing` намеренно отсутствуют: строк лидов нет.
+    bySource,
+    ...(unprocessed === undefined ? {} : { unprocessed }),
+    ...(byOpenStage ? { byOpenStage } : {}),
+    // «Обработано» по счётчику `NEW` — сразу; время и просрочка приходят позже, из истории.
+    ...(unprocessed === undefined ? {} : { processing: processingFromCounts(total, unprocessed) })
+    // `leadSourceById` намеренно отсутствует: строк лидов нет.
   }
 }
 
