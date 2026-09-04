@@ -144,7 +144,7 @@ export interface DealsContext {
   inWork: number
 }
 
-/** Сделки без связи с лидом по одному источнику. */
+/** Успешные сделки без связи с лидом по одному источнику. */
 export interface UnlinkedDealsRow {
   /** Код источника; `UNSPECIFIED_SOURCE` — источник у сделки не указан либо удалён из справочника. */
   sourceId: string
