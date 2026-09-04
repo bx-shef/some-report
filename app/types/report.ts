@@ -146,7 +146,7 @@ export interface DealsContext {
 
 /** Сделки без связи с лидом по одному источнику. */
 export interface UnlinkedDealsRow {
-  /** Код источника; `UNSPECIFIED_SOURCE` — источник у сделки пуст; `UNKNOWN_SOURCE` — вне справочника. */
+  /** Код источника; `UNSPECIFIED_SOURCE` — источник у сделки не указан либо удалён из справочника. */
   sourceId: string
   count: number
   /** Доля от всех сделок без лида. */

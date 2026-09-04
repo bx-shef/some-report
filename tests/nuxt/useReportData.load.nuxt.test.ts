@@ -23,7 +23,7 @@ const portal = vi.hoisted(() => ({
 function batchAnswer(commands: Record<string, unknown>) {
   const data: Record<string, { getTotal: () => number, getData: () => { result: unknown[] } }> = {}
   for (const key of Object.keys(commands)) {
-    data[key] = { getTotal: () => (key === 'total' ? portal.leadTotal : 0), getData: () => ({ result: [] }) }
+    data[key] = { getTotal: () => (key === 'total' ? portal.leadTotal : key === 'unlinked' ? 5 : 0), getData: () => ({ result: [] }) }
   }
   return { isSuccess: true, getData: () => data, getErrorMessages: () => [] }
 }
@@ -92,6 +92,24 @@ describe('load', () => {
     expect(data.dataset.value.period).toEqual(AUGUST)
     expect(data.dataset.value.leadAggregate?.total).toBe(7)
     expect(data.pending.value).toBe(false)
+  })
+
+  // Блок «Сделки без связи с лидом» существует только у портала: на демо такого множества нет.
+  // Ключ `unlinked` в моке отдаёт 5 — чтобы отличить «заполнен настоящим числом» от «нулями».
+  it('сделки без лида: на портале заполнены, на демо отсутствуют', async () => {
+    portal.initialized = false
+    const demo = useReportData()
+    await demo.load(AUGUST)
+    expect(demo.dataset.value.unlinkedDeals).toBeUndefined()
+
+    portal.initialized = true
+    const live = useReportData()
+    const loading = live.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await loading
+    expect(live.dataset.value.unlinkedDeals?.total).toBe(5)
+    expect(live.dataset.value.unlinkedDeals?.rows.map(r => r.count)).toEqual([5])
   })
 
   // ⚠ Подсказка читала конверт ответа вместо строк и не срабатывала НИКОГДА — на пустом периоде

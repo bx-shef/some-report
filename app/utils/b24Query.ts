@@ -58,8 +58,8 @@ export function leadListParams(period: ReportPeriod) {
  * ⚠ Сделки берём по ИХ СОБСТВЕННОЙ дате создания. Это осознанное упрощение с известным краем:
  * сделка, созданная по лиду конца периода уже в следующем месяце, в выборку не попадёт, и
  * конверсия за период окажется занижена. Точный вариант — добирать сделки по `LEAD_ID` выбранных
- * лидов, но пока в портале заказчика связи лид → сделка нет вовсе (ждём бизнес-процесс, см. #12),
- * и городить это не на чем: проверить правильность было бы не на чем.
+ * лидов. На боевом портале `LEAD_ID` заполнен у 10 % сделок, и это факт о процессе клиента, а не
+ * то, чего ждёт отчёт (блок 7, #12); в режиме счётчиков этот параметр не используется вовсе.
  */
 export function dealListParams(period: ReportPeriod) {
   return { select: [...DEAL_SELECT], filter: periodFilter(period) }
@@ -155,20 +155,19 @@ export function dealContextBatch(period: ReportPeriod): Record<string, BatchComm
  * Сделки без связи с лидом за период — счётчиками, по источникам.
  *
  * ⚠ `LEAD_ID: ''` — так портал понимает «поле пусто» (проверено на боевом портале: 9 191 из
- * 10 178 за август). Два счётчика на источник (всего и успешных) плюс строка «источник пуст»
- * и все сделки периода для доли — порядка 60 команд, два пакета. Строк не читаем: тут нужно
- * только «сколько», и ради этого 180 страниц по 0,54 с никто ждать не будет.
+ * 10 178 за август). Два счётчика на источник (всего и успешных) плюс итог и успешные всего:
+ * `2 + 2 × источников` команд — у заказчика 33 источника, 68 команд, два пакета, ~3 с. Строк не
+ * читаем: тут нужно только «сколько», и 180 страниц по 0,54 с ради этого никто ждать не будет.
+ *
+ * Пустой источник отдельно НЕ спрашиваем — он вычисляется остатком в `adaptUnlinkedDeals`
+ * (см. там, почему). Все сделки периода тоже не спрашиваем: их уже даёт `dealContextBatch`.
  */
 export function unlinkedDealBatch(period: ReportPeriod, sourceIds: readonly string[]): Record<string, BatchCommand> {
-  const base = periodFilter(period)
   const method = 'crm.deal.list'
-  const unlinked = { ...base, LEAD_ID: '' }
+  const unlinked = { ...periodFilter(period), LEAD_ID: '' }
   const commands: Record<string, BatchCommand> = {
-    [unlinkedDealKey.allDeals]: countCommand(method, base),
     [unlinkedDealKey.total]: countCommand(method, unlinked),
-    [unlinkedDealKey.won]: countCommand(method, { ...unlinked, STAGE_SEMANTIC_ID: 'S' }),
-    [unlinkedDealKey.noSource]: countCommand(method, { ...unlinked, SOURCE_ID: '' }),
-    [unlinkedDealKey.noSourceWon]: countCommand(method, { ...unlinked, SOURCE_ID: '', STAGE_SEMANTIC_ID: 'S' })
+    [unlinkedDealKey.won]: countCommand(method, { ...unlinked, STAGE_SEMANTIC_ID: 'S' })
   }
   for (const sourceId of sourceIds) {
     commands[unlinkedDealKey.source(sourceId)] = countCommand(method, { ...unlinked, SOURCE_ID: sourceId })

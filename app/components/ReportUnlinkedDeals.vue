@@ -25,7 +25,7 @@ defineProps<{ unlinked: UnlinkedDeals, dictionaries: ReportDictionaries }>()
         <h2 class="text-base font-semibold">
           7. Сделки без связи с лидом
         </h2>
-        <span class="text-xs opacity-60">по полю LEAD_ID сделки; источник — поле самой сделки</span>
+        <span class="text-xs opacity-60">LEAD_ID пуст; источник — поле самой сделки</span>
       </div>
     </template>
 

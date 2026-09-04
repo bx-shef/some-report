@@ -197,14 +197,14 @@ watch(conversionBase, fit)
         :currency-id="dataset.currencyId"
       />
 
-      <ReportUnlinkedDeals
-        v-if="dataset.unlinkedDeals"
-        :unlinked="dataset.unlinkedDeals"
+      <ReportProcessing
+        :report="report"
         :dictionaries="dataset.dictionaries"
       />
 
-      <ReportProcessing
-        :report="report"
+      <ReportUnlinkedDeals
+        v-if="dataset.unlinkedDeals"
+        :unlinked="dataset.unlinkedDeals"
         :dictionaries="dataset.dictionaries"
       />
     </main>

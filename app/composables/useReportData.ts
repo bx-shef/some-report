@@ -1,10 +1,17 @@
 import { mergeReasons } from '~/utils/reasonMerge'
 import type { ConversionBase, ReportDataset, ReportMetrics, ReportPeriod } from '~/types/report'
 import type { AdapterWarnings, B24CurrencyRow, B24LeadRow, B24StatusRow, B24DealRow } from '~/utils/b24Adapter'
-import { adaptDeals, adaptDealsContext, adaptLeadCounts, baseCurrency, statusIdsBySemantic, statusNames, lossStages,
-  adaptUnlinkedDeals } from '~/utils/b24Adapter'
 import {
-  type BatchCommand,
+  adaptDeals,
+  adaptDealsContext,
+  adaptLeadCounts,
+  adaptUnlinkedDeals,
+  baseCurrency,
+  lossStages,
+  statusIdsBySemantic,
+  statusNames
+} from '~/utils/b24Adapter'
+import {
   categoryListParams,
   dealContextBatch,
   dealStageBatch,
@@ -12,7 +19,9 @@ import {
   dictionaryBatch,
   latestLeadParams,
   leadCountBatch,
-  unlinkedDealBatch } from '~/utils/b24Query'
+  type BatchCommand,
+  unlinkedDealBatch
+} from '~/utils/b24Query'
 import { buildReport, buildReportFromAggregate } from '~/utils/metrics'
 import { resolvePreset } from '~/utils/period'
 import { buildMockDataset } from '~/utils/mockReport'
@@ -241,13 +250,14 @@ export function useReportData() {
       const reasons = mergeReasons(lossStages(dealStages))
       const adaptedDeals = adaptDeals(dealRows, currencies, reasons.keyByCode)
       const currencyId = baseCurrency(currencies)
+      const dealsContext = adaptDealsContext(dealTotals)
 
       dataset.value = {
         leads: [],
         deals: adaptedDeals.deals,
         leadAggregate,
-        allDeals: adaptDealsContext(dealTotals),
-        unlinkedDeals: adaptUnlinkedDeals(unlinkedTotals, sourceIds),
+        allDeals: dealsContext,
+        unlinkedDeals: adaptUnlinkedDeals(unlinkedTotals, sourceIds, dealsContext.won + dealsContext.lost + dealsContext.inWork),
         dictionaries: {
           sources: statusNames(sources),
           junkReasons: statusNames(leadStatuses),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { UNKNOWN_SOURCE, adaptDeals, adaptDealsContext, adaptLeadCounts, adaptUnlinkedDeals, dealCountKey, leadCountKey, lossStages, statusIdsBySemantic, unlinkedDealKey } from '~/utils/b24Adapter'
+import { adaptDeals, adaptDealsContext, adaptLeadCounts, adaptUnlinkedDeals, dealCountKey, leadCountKey, lossStages, statusIdsBySemantic, unlinkedDealKey } from '~/utils/b24Adapter'
 import { UNSPECIFIED_SOURCE, UNSPECIFIED_REASON } from '~/utils/metrics'
 import { unlinkedDealBatch, dealContextBatch, dealStageBatch, dealsFromLeadsParams, leadCountBatch } from '~/utils/b24Query'
 import { mergeReasons } from '~/utils/reasonMerge'
@@ -213,53 +213,80 @@ describe('сделки без связи с лидом', () => {
   const period = { from: '2026-08-01', to: '2026-08-31' }
 
   // ⚠ `LEAD_ID: ''` — так портал понимает «поле пусто». Проверено на боевом портале: 9 191 из 10 178.
-  it('пакет спрашивает пустой LEAD_ID, итог, успешных и каждый источник дважды', () => {
+  it('пакет: пустой LEAD_ID, итог, успешных и каждый источник дважды — без пустого источника', () => {
     const batch = unlinkedDealBatch(period, ['CALL', 'WEB'])
-    expect(Object.keys(batch)).toHaveLength(5 + 2 * 2)
+    expect(Object.keys(batch)).toHaveLength(2 + 2 * 2)
     expect(batch[unlinkedDealKey.total]!.params.filter).toMatchObject({ 'LEAD_ID': '', '>=DATE_CREATE': '2026-08-01' })
     expect(batch[unlinkedDealKey.won]!.params.filter).toMatchObject({ LEAD_ID: '', STAGE_SEMANTIC_ID: 'S' })
-    expect(batch[unlinkedDealKey.noSource]!.params.filter).toMatchObject({ LEAD_ID: '', SOURCE_ID: '' })
     expect(batch[unlinkedDealKey.source('CALL')]!.params.filter).toMatchObject({ LEAD_ID: '', SOURCE_ID: 'CALL' })
-    // Все сделки периода — БЕЗ условия на лид: это знаменатель доли.
-    expect(batch[unlinkedDealKey.allDeals]!.params.filter).not.toHaveProperty('LEAD_ID')
+    // Фильтр по пустому SOURCE_ID ведёт себя по-разному от версии к версии — остаток считаем сами.
+    expect(Object.values(batch).some(c => (c.params as { filter: Record<string, unknown> }).filter.SOURCE_ID === '')).toBe(false)
   })
 
-  // Живые числа августа: 9 191 без лида из 10 178, из них 8 778 без источника.
-  it('строит строки по источникам, пустой источник — отдельной строкой, доли от итога', () => {
+  // Живые числа августа одним снимком: 9 191 без лида из 10 178, из них 5 536 успешных.
+  it('строит строки по источникам, остаток — «источник не указан», доли от итога', () => {
     const totals = {
-      [unlinkedDealKey.allDeals]: 10178,
       [unlinkedDealKey.total]: 9191,
-      [unlinkedDealKey.won]: 5534,
-      [unlinkedDealKey.noSource]: 8778,
-      [unlinkedDealKey.noSourceWon]: 5477,
+      [unlinkedDealKey.won]: 5536,
       [unlinkedDealKey.source('CALL')]: 113,
       [unlinkedDealKey.sourceWon('CALL')]: 5,
       [unlinkedDealKey.source('WEB')]: 0,
       [unlinkedDealKey.sourceWon('WEB')]: 0
     }
-    const result = adaptUnlinkedDeals(totals, ['CALL', 'WEB'])
+    const result = adaptUnlinkedDeals(totals, ['CALL', 'WEB'], 10178)
     expect(result.total).toBe(9191)
-    expect(result.won).toBe(5534)
+    expect(result.won).toBe(5536)
     expect(result.shareOfAllDeals).toBeCloseTo(9191 / 10178, 6)
-    // Нулевой WEB не рисуется; строки по убыванию; остаток 300 — источник вне справочника.
+    // Нулевой WEB не рисуется; остаток по количеству И по успешным — в строке «не указан».
     expect(result.rows.map(r => [r.sourceId, r.count, r.won])).toEqual([
-      [UNSPECIFIED_SOURCE, 8778, 5477],
-      [UNKNOWN_SOURCE, 300, 0],
+      [UNSPECIFIED_SOURCE, 9078, 5531],
       ['CALL', 113, 5]
     ])
-    expect(result.rows[0]!.share).toBeCloseTo(8778 / 9191, 6)
+    expect(result.rows[0]!.share).toBeCloseTo(9078 / 9191, 6)
   })
 
-  // ⚠ Сумма строк обязана сходиться с итогом — иначе руководитель сложит таблицу и не получит
-  // число из заголовка.
-  it('сумма строк равна итогу даже при источниках вне справочника', () => {
-    const totals = { [unlinkedDealKey.total]: 50, [unlinkedDealKey.source('A')]: 20, [unlinkedDealKey.noSource]: 10, [unlinkedDealKey.allDeals]: 100 }
-    const result = adaptUnlinkedDeals(totals, ['A'])
-    expect(result.rows.reduce((sum, r) => sum + r.count, 0)).toBe(50)
+  // ⚠ Сумма строк РАВНА итогу всегда. Счётчики пакета независимы, и между ними портал живёт:
+  // при гонке сумма источников может превысить итог — тогда итог поднимается до суммы, а не
+  // строки режутся. Руководитель складывает таблицу и обязан получить число из заголовка.
+  it('при гонке счётчиков итог поднимается до суммы строк', () => {
+    const totals = {
+      [unlinkedDealKey.total]: 50,
+      [unlinkedDealKey.won]: 10,
+      [unlinkedDealKey.source('A')]: 40,
+      [unlinkedDealKey.sourceWon('A')]: 8,
+      [unlinkedDealKey.source('B')]: 20,
+      [unlinkedDealKey.sourceWon('B')]: 4
+    }
+    const result = adaptUnlinkedDeals(totals, ['A', 'B'], 100)
+    expect(result.total).toBe(60)
+    expect(result.won).toBe(12)
+    expect(result.rows.reduce((sum, r) => sum + r.count, 0)).toBe(result.total)
+    expect(result.rows.reduce((sum, r) => sum + r.won, 0)).toBe(result.won)
+    expect(result.rows.find(r => r.sourceId === UNSPECIFIED_SOURCE)).toBeUndefined()
+  })
+
+  it('успешных в строке не больше, чем сделок в ней', () => {
+    const totals = { [unlinkedDealKey.total]: 5, [unlinkedDealKey.won]: 9, [unlinkedDealKey.source('A')]: 3, [unlinkedDealKey.sourceWon('A')]: 7 }
+    const result = adaptUnlinkedDeals(totals, ['A'], 5)
+    expect(result.rows.find(r => r.sourceId === 'A')!.won).toBe(3)
+    expect(result.won).toBeLessThanOrEqual(result.total)
+  })
+
+  it('источник без ключа успешных — ноль успешных, а не NaN', () => {
+    const result = adaptUnlinkedDeals({ [unlinkedDealKey.total]: 4, [unlinkedDealKey.source('A')]: 4 }, ['A'], 4)
+    expect(result.rows[0]).toEqual({ sourceId: 'A', count: 4, share: 1, won: 0 })
+  })
+
+  it('при равном числе сделок строки идут по коду источника', () => {
+    const totals = { [unlinkedDealKey.total]: 6, [unlinkedDealKey.source('B')]: 3, [unlinkedDealKey.source('A')]: 3 }
+    expect(adaptUnlinkedDeals(totals, ['B', 'A'], 6).rows.map(r => r.sourceId)).toEqual(['A', 'B'])
+  })
+
+  it('доля от всех сделок не превышает единицы, даже если контекст отстал', () => {
+    expect(adaptUnlinkedDeals({ [unlinkedDealKey.total]: 10 }, [], 4).shareOfAllDeals).toBe(1)
   })
 
   it('пустой ответ портала не даёт NaN', () => {
-    const result = adaptUnlinkedDeals({}, ['A'])
-    expect(result).toEqual({ total: 0, won: 0, shareOfAllDeals: 0, rows: [] })
+    expect(adaptUnlinkedDeals({}, ['A'], 0)).toEqual({ total: 0, won: 0, shareOfAllDeals: 0, rows: [] })
   })
 })
