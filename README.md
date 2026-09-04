@@ -64,6 +64,7 @@ pnpm test         # Vitest (unit + nuxt)
 pnpm check        # lint + typecheck + test — основная часть проверок CI
 pnpm generate     # сборка статики → .output/public
 pnpm smoke        # после generate: открыть сборку браузером под боевым CSP (в CI — отдельный шаг)
+pnpm smoke:image http://localhost:8080   # то же на поднятом контейнере из образа
 ```
 
 Перед пушем прогоняйте `pnpm check`.

@@ -34,6 +34,7 @@ pnpm test         # Vitest (оба проекта; быстрый прогон: 
 pnpm check        # lint + typecheck + test — основная часть проверок CI (ещё generate и smoke)
 pnpm generate     # сборка статики (SSG) → .output/public
 pnpm smoke        # после generate: открыть сборку браузером под боевым CSP; в CI — отдельный шаг
+pnpm smoke:image http://localhost:8080   # то же на поднятом контейнере из образа; в CI — на PR
 ```
 
 Страницы приложения вне портала закрыты заглушкой — открывайте с `?preview=1`.

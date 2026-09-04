@@ -3,8 +3,9 @@ import { request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { PRERENDER_ROUTES } from '../app/config/routes'
-import { ORIGINS_PLACEHOLDER, PAGES, extractCspHeader, isCspViolation, markersInMarkup, routeOf, serve, substituteOrigins, uncoveredRoutes } from '../scripts/cspSmoke'
+import { PRERENDER_ROUTES, SERVICE_ROUTES } from '../app/config/routes'
+import { HASH_PLACEHOLDER, buildHashDirective, extractInlineScripts, missingHashes } from '../scripts/cspHashes'
+import { ORIGINS_PLACEHOLDER, PAGES, cspProblems, directiveValue, extractCspHeader, isCspViolation, markersInMarkup, parseOrigin, postPaths, routeOf, serve, substituteOrigins, uncoveredRoutes } from '../scripts/cspSmoke'
 
 /**
  * Чистые части смоука. Сам прогон браузером в юнит-тестах не гоняется — он в CI отдельным
@@ -57,6 +58,82 @@ describe('isCspViolation', () => {
   it('обычные сообщения не считает нарушением', () => {
     expect(isCspViolation('[NUXT_E5002]')).toBe(false)
     expect(isCspViolation('Failed to load resource: 404')).toBe(false)
+  })
+})
+
+describe('cspProblems: что видно в ответе без браузера', () => {
+  const html = readFileSync(join(import.meta.dirname, 'fixtures', 'nuxtPage.html'), 'utf-8')
+  const good = `default-src 'self'; script-src 'self' ${buildHashDirective([html])}; style-src 'self' 'unsafe-inline'`
+
+  it('боевой заголовок с хешами всех скриптов страницы — без замечаний', () => {
+    expect(cspProblems(good, html)).toEqual([])
+  })
+
+  // ⚠ Страница без CSP открывается лучше всех — браузер о снятой защите не скажет ни слова.
+  it('нет заголовка — одна проблема, и она называет причину', () => {
+    expect(cspProblems(undefined, html)).toEqual(['нет заголовка Content-Security-Policy — защита снята целиком'])
+    expect(cspProblems('', html)).toHaveLength(1)
+  })
+
+  it('unsafe-inline при полных хешах — ровно одно замечание', () => {
+    expect(cspProblems(good.replace('script-src \'self\'', 'script-src \'self\' \'unsafe-inline\''), html))
+      .toEqual(['в script-src есть \'unsafe-inline\' — защита от XSS снята'])
+  })
+
+  it('оставшийся плейсхолдер — замечание о нём плюс по одному на каждый непокрытый скрипт', () => {
+    const problems = cspProblems(good.replace(/'sha256[^;]*/, HASH_PLACEHOLDER), html)
+    expect(problems[0]).toContain(HASH_PLACEHOLDER)
+    expect(problems).toHaveLength(1 + extractInlineScripts(html).length)
+  })
+
+  it('скрипт без хеша — замечание на каждый, с хешем и началом текста', () => {
+    const problems = cspProblems('default-src \'self\'; script-src \'self\'', html)
+    expect(problems).toHaveLength(extractInlineScripts(html).length)
+    for (const problem of problems) expect(problem).toMatch(/'sha256-[A-Za-z0-9+/=]+' — «.+…»/)
+  })
+
+  it('нет script-src вовсе — замечание', () => {
+    expect(cspProblems('default-src \'self\'', html)).toEqual(['в CSP нет script-src'])
+  })
+
+  // ⚠ `script-src-attr 'none'` перед `script-src` — законное ужесточение; regex по подстроке взял
+  // бы его и объявил все скрипты непокрытыми.
+  it('директиву ищет по точному имени, а не по подстроке', () => {
+    expect(cspProblems(`script-src-attr 'none'; ${good}`, html)).toEqual([])
+    expect(directiveValue('script-src-attr \'none\'; script-src \'self\' \'sha256-x\'', 'script-src')).toBe('\'self\' \'sha256-x\'')
+    expect(directiveValue('default-src \'self\'', 'script-src')).toBeUndefined()
+  })
+})
+
+describe('missingHashes', () => {
+  it('одна проверка на сборку и смоук: хеш и начало текста', () => {
+    const html = '<script>window.a = 1</script><script src="/x.js"></script>'
+    const missing = missingHashes(html, '\'self\'')
+    expect(missing).toHaveLength(1)
+    expect(missing[0]?.hash).toMatch(/^'sha256-/)
+    expect(missing[0]?.snippet).toBe('window.a = 1…')
+    expect(missingHashes(html, missing[0]!.hash)).toEqual([])
+  })
+})
+
+describe('parseOrigin', () => {
+  it('нормализует до origin', () => {
+    expect(parseOrigin('http://localhost:8080/')).toBe('http://localhost:8080')
+    expect(parseOrigin('https://example.com/app/?x=1')).toBe('https://example.com')
+  })
+
+  // `new URL('localhost:8080')` не бросает — схема «localhost:», origin «null».
+  it('без схемы, с другой схемой и пустой — понятная ошибка', () => {
+    for (const bad of ['localhost:8080', '127.0.0.1:8080', 'file:///tmp', undefined, '']) {
+      expect(() => parseOrigin(bad)).toThrow('http(s)://host:port')
+    }
+  })
+})
+
+describe('postPaths', () => {
+  // Портал открывает обработчики POST-запросом; без `error_page 405 =200` виджет пуст.
+  it('обработчики плейсмента и установки, каталогами', () => {
+    expect(postPaths(SERVICE_ROUTES)).toEqual(['/app/', '/install/'])
   })
 })
 
