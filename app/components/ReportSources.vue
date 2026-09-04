@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import type { ReportDictionaries, ReportMetrics, SourceRow } from '~/types/report'
-import { conversionBaseValue, share } from '~/utils/metrics'
+import type { ReportDictionaries, ReportMetrics } from '~/types/report'
 import { formatCount, formatMoney, formatPercent } from '~/utils/format'
 import { sourceLabel } from '~/utils/labels'
 import { type DrillRequest, drill } from '~/utils/drilldown'
@@ -29,25 +28,7 @@ const maxRevenue = computed(() => Math.max(0, ...props.report.bySource.map(r => 
  * `summary` считает все. На живом портале, где сделки заводят руками, итог не сходился со своей
  * же колонкой — и это читалось как ошибка отчёта, хотя оба числа верны.
  */
-const totals = computed(() => {
-  const rows = props.report.bySource
-  const sum = (pick: (row: SourceRow) => number) => rows.reduce((acc, row) => acc + pick(row), 0)
-  const leads = sum(row => row.leads)
-  const junk = sum(row => row.junk)
-  const base = conversionBaseValue(leads, junk, props.report.summary.conversionBase)
-  const qualified = sum(row => row.qualified)
-  const won = sum(row => row.won)
-  return {
-    leads,
-    junk,
-    junkShare: share(junk, leads),
-    qualified,
-    crToDeal: share(qualified, base),
-    won,
-    crToSale: share(won, base),
-    revenue: sum(row => row.revenue)
-  }
-})
+const totals = computed(() => props.report.sourceTotals)
 
 /**
  * ⚠ Точность процентов в строке «Итого» и в строках выше РАЗНАЯ, и это не забытая унификация.
@@ -65,10 +46,7 @@ const totals = computed(() => {
  */
 
 /** Сделки, которых нет в разрезе источников: у них неизвестен источник (нет лида-родителя). */
-const outsideSources = computed(() => ({
-  revenue: props.report.summary.revenue - totals.value.revenue,
-  deals: props.report.summary.wonDeals - totals.value.won
-}))
+const outsideSources = computed(() => props.report.outsideSources)
 </script>
 
 <template>

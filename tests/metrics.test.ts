@@ -461,9 +461,23 @@ describe('buildReport', () => {
       QUALITY
     )
     expect(Object.keys(report).sort()).toEqual(
-      ['bySource', 'funnel', 'junkByReason', 'lostDeals', 'preDealLoss', 'processing', 'summary', 'topSources']
+      ['bySource', 'funnel', 'junkByReason', 'lostDeals', 'outsideSources', 'preDealLoss', 'processing', 'sourceTotals', 'summary', 'topSources']
     )
     expect(report.funnel.map(s => s.key)).toEqual(['leads', 'qualified', 'won'])
+  })
+
+  // Итог таблицы источников — по её строкам, а разница со сводкой — сделки без лида-родителя:
+  // оба числа считает ядро, чтобы экран и экспорт печатали одно и то же.
+  it('итог источников — по строкам; сделка без лида-родителя — вне разреза, но в сводке', () => {
+    const report = buildReport(
+      [lead({ id: 1, sourceId: 'CALL', outcome: 'converted', dealIds: [1] }), lead({ id: 2, sourceId: 'CALL', outcome: 'junk', junkReasonId: 'JUNK' })],
+      [deal({ id: 1, leadId: 1, sourceId: 'CALL', outcome: 'won', amount: 100 }), deal({ id: 2, sourceId: 'WEB', outcome: 'won', amount: 40 })],
+      QUALITY
+    )
+    expect(report.sourceTotals).toMatchObject({ leads: 2, junk: 1, junkShare: 0.5, qualified: 1, won: 1, crToDeal: 1, crToSale: 1, revenue: 100 })
+    expect(report.summary.wonDeals).toBe(2)
+    expect(report.summary.revenue).toBe(140)
+    expect(report.outsideSources).toEqual({ deals: 1, revenue: 40 })
   })
 })
 

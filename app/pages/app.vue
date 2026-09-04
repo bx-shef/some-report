@@ -28,6 +28,10 @@ const period = ref<ReportPeriod>(dataset.value.period)
 const filters = ref<ReportFilters>({})
 const b24 = useB24()
 
+/** Экспорт: Excel из таблиц и PDF-снимок всего отчёта (`main`), под применёнными фильтрами. */
+const reportRoot = useTemplateRef<HTMLElement>('reportRoot')
+const { pending: exportPending, error: exportError, exportExcel, exportPdf } = useExport({ report, dataset, filters: appliedFilters, isDemo, processingPending, unlinkedPending })
+
 /** Детализация по клику: список записей за числом — под ПРИМЕНЁННЫМИ фильтрами, а не выбранными. */
 const {
   open: drillOpen, request: drillRequest, rows: drillRows, pending: drillPending, error: drillError, done: drillDone,
@@ -178,7 +182,10 @@ async function fit() {
 
 <template>
   <InPortalGate @ready="fit">
-    <main class="mx-auto max-w-[90rem] space-y-4 p-4 lg:p-6">
+    <main
+      ref="reportRoot"
+      class="mx-auto max-w-[90rem] space-y-4 p-4 lg:p-6"
+    >
       <!-- Пока идёт первая выборка, на панели ни значка «Демо», ни периода демо-набора:
            «Загрузка» ниже обещает, что чужих чисел на экране нет, — и подпись тоже. -->
       <ReportToolbar
@@ -186,6 +193,37 @@ async function fit() {
         :applied-period="booting ? undefined : dataset.period"
         :today="today"
         :is-demo="!booting && isDemo"
+      >
+        <template
+          v-if="!booting"
+          #actions
+        >
+          <!-- Экспорт — того, что на экране: во время выборки кнопки закрыты, иначе в файл
+               попали бы числа прошлого периода под подписью нового. -->
+          <B24Button
+            size="sm"
+            color="air-secondary-no-accent"
+            :label="exportPending === 'excel' ? 'Готовим Excel…' : 'Excel'"
+            :disabled="pending || Boolean(exportPending)"
+            data-export-exclude
+            @click="exportExcel"
+          />
+          <B24Button
+            size="sm"
+            color="air-secondary-no-accent"
+            :label="exportPending === 'pdf' ? 'Готовим PDF…' : 'PDF'"
+            :disabled="pending || Boolean(exportPending)"
+            data-export-exclude
+            @click="exportPdf(reportRoot)"
+          />
+        </template>
+      </ReportToolbar>
+
+      <B24Alert
+        v-if="exportError"
+        color="air-primary-alert"
+        title="Не удалось подготовить файл"
+        :description="exportError"
       />
 
       <B24Card v-if="booting">
