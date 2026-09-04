@@ -31,3 +31,15 @@ export function junkReasonLabel(dictionaries: ReportDictionaries, id: string): s
 export function lossReasonLabel(dictionaries: ReportDictionaries, id: string): string {
   return labelFor(dictionaries.lossReasons, id, UNSPECIFIED_REASON_LABEL)
 }
+
+/** Подпись строки-остатка блока «Сделки без связи с лидом». */
+export const NO_SOURCE_LABEL = 'Источник не указан или удалён из справочника'
+
+/**
+ * Источник СДЕЛКИ без лида. Остаток здесь — не «другие источники», а именно «не указан»: на
+ * боевом портале это 8 778 сделок из 9 191, главная строка блока, и назвать её «другими» значило
+ * бы спрятать факт, ради которого блок и заведён.
+ */
+export function unlinkedSourceLabel(dictionaries: ReportDictionaries, id: string): string {
+  return labelFor(dictionaries.sources, id, NO_SOURCE_LABEL)
+}

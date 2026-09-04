@@ -47,7 +47,7 @@ const baseLabel = computed(() =>
         label="Успешные сделки из лидов"
         :value="formatCount(summary.wonDeals)"
         :hint="summary.allDeals
-          ? `${formatPercent(summary.wonShare)} ${baseLabel} · всего успешных за период: ${formatCount(summary.allDeals.won)}`
+          ? `${formatPercent(summary.wonShare)} ${baseLabel} · всего успешных за период: ${formatCount(summary.allDeals.won)} — остальные без связи с лидом, см. блок 7`
           : `${formatPercent(summary.wonShare)} ${baseLabel}`"
         tone="accent"
       />

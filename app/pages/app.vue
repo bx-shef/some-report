@@ -63,7 +63,7 @@ const dataNotes = computed(() => {
   if (!w) return []
   const notes: string[] = []
   if (w.dealsWithoutLead > 0) {
-    notes.push(`Сделок без связи с лидом: ${w.dealsWithoutLead}. Пока связь не настроена, воронка «лид → сделка» не собирается.`)
+    notes.push(`Сделок без связи с лидом среди выбранных строками: ${w.dealsWithoutLead} — в разрез источников лидов они не попадают.`)
   }
   if (w.dealsWithMissingLead > 0) {
     notes.push(`Сделок со ссылкой на лид вне периода: ${w.dealsWithMissingLead}.`)
@@ -199,6 +199,12 @@ watch(conversionBase, fit)
 
       <ReportProcessing
         :report="report"
+        :dictionaries="dataset.dictionaries"
+      />
+
+      <ReportUnlinkedDeals
+        v-if="dataset.unlinkedDeals"
+        :unlinked="dataset.unlinkedDeals"
         :dictionaries="dataset.dictionaries"
       />
     </main>
