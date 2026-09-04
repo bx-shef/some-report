@@ -174,6 +174,8 @@ export interface UnlinkedDeals {
   revenue: number
   /** Сделок в валюте без курса — суммы взяты как есть. */
   unconverted: number
+  /** Доля итога суммы от самого себя: 100 %, а при нулевой сумме — 0, как и у строк. Для подвала. */
+  totalShareOfRevenue: number
   rows: UnlinkedDealsRow[]
 }
 
@@ -334,6 +336,9 @@ export interface ReportDataset {
   currencyId: string
   /** Границы периода — печатаются в шапке отчёта. */
   period: ReportPeriod
-  /** Сделки без связи с лидом по источникам — только с портала (режим счётчиков). */
+  /**
+   * Блок 7: успешные сделки без лида по дате закрытия — только с портала. ⚠ Приходит ПОЗЖЕ
+   * остального набора: грузится фоном строками около минуты, и до этого поле пусто.
+   */
   unlinkedDeals?: UnlinkedDeals
 }

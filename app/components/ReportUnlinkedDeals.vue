@@ -21,6 +21,8 @@ defineProps<{
   /** Нет, пока фоновая выборка не закончилась или упала. */
   unlinked?: UnlinkedDeals
   pending: boolean
+  /** Сколько минут ждать — считает страница по длине периода; здесь только печатаем. */
+  estimateMinutes: number
   error?: string
   dictionaries: ReportDictionaries
   currencyId: string
@@ -51,8 +53,8 @@ defineProps<{
       v-if="pending"
       class="text-sm opacity-70"
     >
-      Считаем успешные сделки без лида… Их около 5 000 в месяц, это занимает примерно минуту.
-      Остальной отчёт уже готов.
+      Считаем успешные сделки без лида… Их около 5 500 в месяц, за этот период — примерно
+      {{ estimateMinutes }} мин. Остальной отчёт уже готов.
     </p>
 
     <B24Alert
@@ -157,8 +159,9 @@ defineProps<{
               <td class="py-2 pr-3 text-right tabular-nums">
                 {{ formatMoney(unlinked.revenue, currencyId) }}
               </td>
+              <!-- Не константа: при нулевой сумме доли строк — нули, и подвал обязан быть нулём тоже. -->
               <td class="py-2 text-right tabular-nums opacity-70">
-                {{ formatPercent(1) }}
+                {{ formatPercent(unlinked.totalShareOfRevenue) }}
               </td>
             </tr>
           </tfoot>

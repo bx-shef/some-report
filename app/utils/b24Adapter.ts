@@ -572,7 +572,16 @@ export const dealCountKey = { won: 'dealsWon', lost: 'dealsLost', inWork: 'deals
  *
  * Сортировка по сумме, затем по количеству: блок про деньги, которые прошли мимо лидов.
  */
-export function adaptUnlinkedWonDeals(rows: B24DealRow[], currencies: B24CurrencyRow[]): UnlinkedDeals {
+export function adaptUnlinkedWonDeals(
+  rows: B24DealRow[],
+  currencies: B24CurrencyRow[],
+  /**
+   * Коды источников из справочника. Код, которого там нет (источник удалили), идёт в строку
+   * «не указан или удалён» — как обещает её подпись; иначе он печатался бы голым кодом.
+   */
+  knownSourceIds: readonly string[] = []
+): UnlinkedDeals {
+  const known = new Set(knownSourceIds)
   const rates = currencyRates(currencies)
   const currencyId = baseCurrency(currencies)
   const seen = new Set<number>()
@@ -587,7 +596,8 @@ export function adaptUnlinkedWonDeals(rows: B24DealRow[], currencies: B24Currenc
     const dealCurrency = toText(row.CURRENCY_ID) || currencyId
     const { value, converted } = toBaseAmount(toNumber(row.OPPORTUNITY), dealCurrency, rates)
     if (!converted && dealCurrency !== currencyId) unconverted++
-    const sourceId = toText(row.SOURCE_ID) || UNSPECIFIED_SOURCE
+    const rawSource = toText(row.SOURCE_ID)
+    const sourceId = rawSource && known.has(rawSource) ? rawSource : UNSPECIFIED_SOURCE
     const acc = bySource.get(sourceId) ?? { count: 0, revenue: 0 }
     acc.count++
     acc.revenue += value
@@ -604,7 +614,7 @@ export function adaptUnlinkedWonDeals(rows: B24DealRow[], currencies: B24Currenc
       shareOfRevenue: share(acc.revenue, revenue)
     }))
     .sort((a, b) => b.revenue - a.revenue || b.count - a.count || a.sourceId.localeCompare(b.sourceId))
-  return { total, revenue, unconverted, rows: result }
+  return { total, revenue, unconverted, totalShareOfRevenue: share(revenue, revenue), rows: result }
 }
 
 /** Счётчики сделок всего портала → контекст для сводки. */

@@ -44,12 +44,20 @@ mockNuxtImport('useB24', () => () => ({
             return batchAnswer(calls)
           }
         },
-        call: { make: async () => ({ isSuccess: true, getData: () => ({ result: { categories: [] } }) }) },
+        call: {
+          make: ({ method, params }: { method: string, params: { filter?: Record<string, string> } }) => {
+            // Справка блока 7 (фоном, по дате закрытия) — своим курсором через `call`.
+            if (method === 'crm.deal.list') {
+              return new Promise((resolve) => {
+                portal.pending[`closed:${params.filter?.['>=CLOSEDATE'] ?? '?'}`] = rows => resolve({ isSuccess: true, getData: () => ({ result: rows }), getErrorMessages: () => [] })
+              })
+            }
+            return Promise.resolve({ isSuccess: true, getData: () => ({ result: { categories: [] } }), getErrorMessages: () => [] })
+          }
+        },
         callList: {
           make: ({ params }: { params: { filter: Record<string, string> } }) => new Promise((resolve) => {
-            // Сделки из лидов — по дате создания; справка без лида (фоном) — по дате закрытия.
-            const key = params.filter['>=DATE_CREATE'] ?? `closed:${params.filter['>=CLOSEDATE'] ?? '?'}`
-            portal.pending[key] = rows => resolve({ isSuccess: true, getData: () => rows, getErrorMessages: () => [] })
+            portal.pending[params.filter['>=DATE_CREATE'] ?? '?'] = rows => resolve({ isSuccess: true, getData: () => rows, getErrorMessages: () => [] })
           })
         }
       }

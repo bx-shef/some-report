@@ -218,7 +218,7 @@ describe('успешные сделки без связи с лидом', () => 
   it('запрос: успешные, без лида, по CLOSEDATE, верхняя граница строгая', () => {
     const params = unlinkedWonDealsParams(period)
     expect(params.filter).toEqual({ '>=CLOSEDATE': '2026-08-01', '<CLOSEDATE': '2026-09-01', 'LEAD_ID': '', 'STAGE_SEMANTIC_ID': 'S' })
-    expect(params.select).toEqual(expect.arrayContaining(['ID', 'SOURCE_ID', 'OPPORTUNITY', 'CURRENCY_ID']))
+    expect(params.select).toEqual(['ID', 'SOURCE_ID', 'OPPORTUNITY', 'CURRENCY_ID'])
     expect(params.filter).not.toHaveProperty('>=DATE_CREATE')
   })
 
@@ -229,10 +229,11 @@ describe('успешные сделки без связи с лидом', () => 
       { ID: '3', SOURCE_ID: null, OPPORTUNITY: '200', CURRENCY_ID: 'BYN' },
       { ID: '4', SOURCE_ID: 'CALL', OPPORTUNITY: '0', CURRENCY_ID: 'BYN' }
     ]
-    const result = adaptUnlinkedWonDeals(rows, currencies)
+    const result = adaptUnlinkedWonDeals(rows, currencies, ['CALL'])
     expect(result.total).toBe(4)
     expect(result.revenue).toBe(1000)
     expect(result.unconverted).toBe(0)
+    expect(result.totalShareOfRevenue).toBe(1)
     // Сортировка по сумме: «не указан» (900) выше CALL (100), хотя сделок у обоих по две.
     expect(result.rows.map(r => [r.sourceId, r.count, r.revenue])).toEqual([
       [UNSPECIFIED_SOURCE, 2, 900],
@@ -250,14 +251,33 @@ describe('успешные сделки без связи с лидом', () => 
       { ID: '1', SOURCE_ID: 'CALL', OPPORTUNITY: '100', CURRENCY_ID: 'RUB' },
       { ID: '2', SOURCE_ID: 'CALL', OPPORTUNITY: '50', CURRENCY_ID: 'USD' }
     ]
-    const result = adaptUnlinkedWonDeals(rows, currencies)
+    const result = adaptUnlinkedWonDeals(rows, currencies, ['CALL'])
     expect(result.revenue).toBeCloseTo(100 * 0.035 + 50, 6)
     expect(result.unconverted).toBe(1)
   })
 
+  // ⚠ Подпись строки обещает «не указан ИЛИ удалён из справочника» — код, которого в справочнике
+  // нет, обязан попасть в неё, а не печататься голым кодом отдельной строкой.
+  it('источник, удалённый из справочника, идёт в строку «не указан»', () => {
+    const rows = [
+      { ID: '1', SOURCE_ID: 'UC_OLD', OPPORTUNITY: '10' },
+      { ID: '2', SOURCE_ID: '', OPPORTUNITY: '20' },
+      { ID: '3', SOURCE_ID: 'CALL', OPPORTUNITY: '30' }
+    ]
+    const result = adaptUnlinkedWonDeals(rows, currencies, ['CALL'])
+    expect(result.rows.map(r => [r.sourceId, r.count, r.revenue])).toEqual([[UNSPECIFIED_SOURCE, 2, 30], ['CALL', 1, 30]])
+  })
+
+  it('нулевая сумма: доли строк и подвала — нули, а не 100 % против нулей', () => {
+    const result = adaptUnlinkedWonDeals([{ ID: '1', SOURCE_ID: 'CALL', OPPORTUNITY: '0' }], currencies, ['CALL'])
+    expect(result.rows[0]!.shareOfRevenue).toBe(0)
+    expect(result.totalShareOfRevenue).toBe(0)
+    expect(result.rows[0]!.share).toBe(1)
+  })
+
   it('повторы по ID отбрасываются, пустой список — нули без строк', () => {
     const rows = [{ ID: '7', SOURCE_ID: 'CALL', OPPORTUNITY: '10' }, { ID: 7, SOURCE_ID: 'CALL', OPPORTUNITY: '10' }]
-    expect(adaptUnlinkedWonDeals(rows, currencies).total).toBe(1)
-    expect(adaptUnlinkedWonDeals([], currencies)).toEqual({ total: 0, revenue: 0, unconverted: 0, rows: [] })
+    expect(adaptUnlinkedWonDeals(rows, currencies, ['CALL']).total).toBe(1)
+    expect(adaptUnlinkedWonDeals([], currencies)).toEqual({ total: 0, revenue: 0, unconverted: 0, totalShareOfRevenue: 0, rows: [] })
   })
 })

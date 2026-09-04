@@ -132,6 +132,39 @@ export function useReportData() {
   }
 
   /**
+   * Постраничная выборка, которую МОЖНО бросить на полпути.
+   *
+   * ⚠ `callList` SDK отмены не знает: начатая выборка идёт до конца, даже если её результат уже
+   * никому не нужен. Для фоновой справки блока 7 это ≈ 110 страниц на месяц и ≈ 1 300 на год —
+   * каждая смена периода оставляла бы в портале ещё одну многоминутную выборку, и три быстрых
+   * клика по периодам исчерпали бы лимит запросов портала для ОСНОВНОГО отчёта. Поэтому здесь
+   * свой курсор по `ID` (тот же приём, что у `callList`: `start: -1` отключает подсчёт итога), и
+   * между страницами спрашиваем, не устарела ли выборка.
+   */
+  async function fetchAllUntil<T extends { ID?: string | number }>(
+    method: string,
+    params: { select: string[], filter: Record<string, unknown> },
+    stale: () => boolean
+  ): Promise<T[]> {
+    const rows: T[] = []
+    let lastId = 0
+    while (!stale()) {
+      const result = await b24.getOrThrow().actions.v2.call.make<T[]>({
+        method,
+        params: { ...params, order: { ID: 'ASC' }, filter: { ...params.filter, '>ID': lastId }, start: -1 }
+      })
+      if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
+      const page = result.getData()?.result
+      if (!Array.isArray(page) || page.length === 0) break
+      rows.push(...page)
+      const last = Number(page[page.length - 1]?.ID)
+      if (page.length < 50 || !Number.isFinite(last) || last <= lastId) break
+      lastId = last
+    }
+    return rows
+  }
+
+  /**
    * Пакет команд → результат каждой по её ключу.
    *
    * ⚠ Команды режутся по 50: это предел одного пакета у портала, а именованные команды SDK умеет
@@ -214,6 +247,10 @@ export function useReportData() {
     const mine = ++seq
     pending.value = true
     error.value = undefined
+    // Справка прошлого периода больше не наша: индикатор и ошибка — заново. Иначе, если новая
+    // выборка упадёт, «Считаем…» от осиротевшей висело бы бесконечно.
+    unlinkedPending.value = false
+    unlinkedError.value = undefined
     try {
       /**
        * Порядок шагов и почему именно так — см. `docs/PORTAL.md` § «Что делать с объёмами».
@@ -291,7 +328,7 @@ export function useReportData() {
       source.value = 'portal'
       // 6. Успешные сделки БЕЗ лида — строками, фоном: основной отчёт уже на экране. Факт о
       //    процессе, который отчёт обязан показать, а не спрятать: на боевом портале это 90 % сделок.
-      void loadUnlinked(period, mine, currencies)
+      void loadUnlinked(period, mine, currencies, sourceIds)
     } catch (e) {
       if (mine === seq) error.value = e instanceof Error ? e.message : String(e)
     } finally {
@@ -305,13 +342,15 @@ export function useReportData() {
    * Блок 7 отдельной выборкой. `mine` — номер выборки, породившей её: ответ, пришедший после
    * смены периода, выбрасывается так же, как ответы основного отчёта.
    */
-  async function loadUnlinked(period: ReportPeriod, mine: number, currencies: B24CurrencyRow[]): Promise<void> {
+  async function loadUnlinked(period: ReportPeriod, mine: number, currencies: B24CurrencyRow[], sourceIds: readonly string[]): Promise<void> {
     unlinkedPending.value = true
     unlinkedError.value = undefined
     try {
-      const rows = await fetchAll<B24DealRow>('crm.deal.list', unlinkedWonDealsParams(period))
+      // Собственные исключения ловим здесь же: вызов идёт без `await`, и необработанный отказ
+      // ушёл бы в консоль, а не на экран.
+      const rows = await fetchAllUntil<B24DealRow>('crm.deal.list', unlinkedWonDealsParams(period), () => mine !== seq)
       if (mine !== seq) return
-      dataset.value = { ...dataset.value, unlinkedDeals: adaptUnlinkedWonDeals(rows, currencies) }
+      dataset.value = { ...dataset.value, unlinkedDeals: adaptUnlinkedWonDeals(rows, currencies, sourceIds) }
     } catch (e) {
       if (mine === seq) unlinkedError.value = e instanceof Error ? e.message : String(e)
     } finally {

@@ -151,8 +151,11 @@ export function dealContextBatch(period: ReportPeriod): Record<string, BatchComm
   }
 }
 
-/** Поля успешной сделки без лида: источник и деньги. Стадия и лид уже в фильтре. */
-export const UNLINKED_DEAL_SELECT = ['ID', 'SOURCE_ID', 'OPPORTUNITY', 'CURRENCY_ID', 'CLOSEDATE'] as const
+/**
+ * Поля успешной сделки без лида: источник и деньги. Стадия, лид и дата закрытия уже в фильтре —
+ * `CLOSEDATE` в выборку не берём: строк ≈ 5 500 в месяц, каждое лишнее поле — лишний трафик.
+ */
+export const UNLINKED_DEAL_SELECT = ['ID', 'SOURCE_ID', 'OPPORTUNITY', 'CURRENCY_ID'] as const
 
 /**
  * Успешные сделки БЕЗ лида, закрытые в периоде, — строками.

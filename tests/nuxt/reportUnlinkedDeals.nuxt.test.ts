@@ -17,15 +17,16 @@ const august: UnlinkedDeals = {
   total: 5536,
   revenue: 1_234_500,
   unconverted: 0,
+  totalShareOfRevenue: 1,
   rows: [
     { sourceId: UNSPECIFIED_SOURCE, count: 5531, share: 0.999, revenue: 1_230_000, shareOfRevenue: 0.996 },
     { sourceId: 'CALL', count: 5, share: 0.001, revenue: 4_500, shareOfRevenue: 0.004 }
   ]
 }
 
-function render(props: Partial<{ unlinked: UnlinkedDeals, pending: boolean, error: string }> = {}) {
+function render(props: Partial<{ unlinked: UnlinkedDeals, pending: boolean, error: string, estimateMinutes: number }> = {}) {
   return mountSuspended(ReportUnlinkedDeals, {
-    props: { unlinked: august, pending: false, dictionaries, currencyId: 'BYN', ...props }
+    props: { unlinked: august, pending: false, estimateMinutes: 1, dictionaries, currencyId: 'BYN', ...props }
   })
 }
 
@@ -41,9 +42,10 @@ describe('ReportUnlinkedDeals', () => {
     expect((await render({ pending: true })).text()).toContain('Заказы из интернет-магазина лид не порождают')
   })
 
-  it('пока идёт фоновая выборка — говорит об этом, таблицы нет', async () => {
-    const wrapper = await render({ pending: true, unlinked: undefined })
+  it('пока идёт фоновая выборка — говорит об этом и о времени по длине периода, таблицы нет', async () => {
+    const wrapper = await render({ pending: true, unlinked: undefined, estimateMinutes: 12 })
     expect(wrapper.text()).toContain('Считаем успешные сделки без лида')
+    expect(wrapper.text()).toContain('примерно 12 мин')
     expect(wrapper.find('table').exists()).toBe(false)
   })
 
@@ -80,13 +82,20 @@ describe('ReportUnlinkedDeals', () => {
   })
 
   it('сделки без курса — оговорка с числом', async () => {
-    const text = (await render({ unlinked: { ...august, unconverted: 3 } })).text()
+    const text = (await render({ unlinked: { ...august, unconverted: 42 } })).text()
     expect(text).toContain('без курса')
-    expect(text).toContain('3')
+    expect(text).toContain('42')
+    expect((await render()).text()).not.toContain('без курса')
+  })
+
+  it('подвал доли суммы берёт из данных: при нулевой сумме — 0 %', async () => {
+    const zero: UnlinkedDeals = { ...august, revenue: 0, totalShareOfRevenue: 0, rows: [{ ...august.rows[0]!, revenue: 0, shareOfRevenue: 0 }] }
+    const foot = (await render({ unlinked: zero })).find('tfoot').findAll('td').map(td => nbsp(td.text()))
+    expect(foot[4]).toBe('0 %')
   })
 
   it('без сделок без лида говорит об этом словами, а не пустой таблицей', async () => {
-    const wrapper = await render({ unlinked: { total: 0, revenue: 0, unconverted: 0, rows: [] } })
+    const wrapper = await render({ unlinked: { total: 0, revenue: 0, unconverted: 0, totalShareOfRevenue: 0, rows: [] } })
     expect(wrapper.text()).toContain('успешных сделок без лида нет')
     expect(wrapper.find('table').exists()).toBe(false)
   })
