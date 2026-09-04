@@ -34,6 +34,8 @@ export function fromIsoDate(iso: string): Date | undefined {
 export type PeriodPresetId
   = | 'today'
     | 'yesterday'
+    | 'this-week'
+    | 'prev-week'
     | 'last7'
     | 'last30'
     | 'this-month'
@@ -54,6 +56,18 @@ function shiftDays(date: Date, days: number): Date {
   return result
 }
 
+/**
+ * Календарная неделя с понедельника по воскресенье, сдвинутая на `offsetWeeks` от недели «сегодня».
+ *
+ * ⚠ Понедельник, а не воскресенье: `getDay()` считает неделю с воскресенья (0), а отчёт читают
+ * в Беларуси, где неделя начинается с понедельника. `(getDay() + 6) % 7` — сколько дней прошло
+ * с понедельника.
+ */
+function weekBounds(today: Date, offsetWeeks: number): ReportPeriod {
+  const monday = shiftDays(today, -((today.getDay() + 6) % 7) + offsetWeeks * 7)
+  return { from: toIsoDate(monday), to: toIsoDate(shiftDays(monday, 6)) }
+}
+
 function monthBounds(year: number, month: number): ReportPeriod {
   // День 0 следующего месяца — последний день текущего: так не нужно помнить про високосный год.
   return { from: toIsoDate(new Date(year, month, 1)), to: toIsoDate(new Date(year, month + 1, 0)) }
@@ -72,6 +86,10 @@ function monthBounds(year: number, month: number): ReportPeriod {
 export const PERIOD_PRESETS: readonly PeriodPreset[] = [
   { id: 'this-month', label: 'Текущий месяц', resolve: today => monthBounds(today.getFullYear(), today.getMonth()) },
   { id: 'prev-month', label: 'Прошлый месяц', resolve: today => monthBounds(today.getFullYear(), today.getMonth() - 1) },
+  // Календарная неделя — из ТЗ («день / неделя / месяц / квартал»). Стоит ДО «последних 7 дней»:
+  // в воскресенье их границы совпадают, и подсветка должна назвать интервал по календарю.
+  { id: 'this-week', label: 'Текущая неделя', resolve: today => weekBounds(today, 0) },
+  { id: 'prev-week', label: 'Прошлая неделя', resolve: today => weekBounds(today, -1) },
   { id: 'last7', label: 'Последние 7 дней', resolve: today => ({ from: toIsoDate(shiftDays(today, -6)), to: toIsoDate(today) }) },
   { id: 'last30', label: 'Последние 30 дней', resolve: today => ({ from: toIsoDate(shiftDays(today, -29)), to: toIsoDate(today) }) },
   { id: 'today', label: 'Сегодня', resolve: today => ({ from: toIsoDate(today), to: toIsoDate(today) }) },
