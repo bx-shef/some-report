@@ -69,6 +69,23 @@ export function scriptHash(source: string): string {
   return `'sha256-${createHash('sha256').update(source, 'utf8').digest('base64')}'`
 }
 
+/** Инлайновый скрипт без хеша: сам хеш и начало текста — чтобы в логе было видно, ЧТО не покрыто. */
+export interface MissingHash {
+  hash: string
+  snippet: string
+}
+
+/**
+ * Инлайновые скрипты страницы, чьих хешей нет в `allowed` — в строке `script-src` или в целом
+ * конфиге. Одна проверка на всех: `cspVerify` на сборке и смоук в браузере; две копии однажды
+ * разошлись бы ровно на той странице, где это важно.
+ */
+export function missingHashes(html: string, allowed: string): MissingHash[] {
+  return extractInlineScripts(html)
+    .map(source => ({ hash: scriptHash(source), snippet: `${source.slice(0, 60).replace(/\s+/g, ' ')}…` }))
+    .filter(({ hash }) => !allowed.includes(hash))
+}
+
 /**
  * Готовая строка источников для `script-src` по набору HTML-страниц.
  *

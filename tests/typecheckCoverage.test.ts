@@ -87,11 +87,12 @@ describe('охват typecheck', () => {
     expect(ci).toContain('target: runner')
   })
 
-  // Выкат заперт за зелёным CI (`needs: ci`) и только с main. Снятие любого из двух условий
-  // означает, что в GHCR может уехать непроверенный образ.
-  it('выкат зависит от CI и ограничен веткой main', () => {
+  // Выкат заперт за зелёным CI И за зелёным образом (`needs: [ci, docker-build]`) и только с main.
+  // Снятие любого из условий означает, что в GHCR может уехать непроверенный образ — в том числе
+  // тот, что не открылся браузером в docker-build.
+  it('выкат зависит от CI, от проверки образа и ограничен веткой main', () => {
     const deploy = read('.github/workflows/ci.yml').split('  deploy:')[1] ?? ''
-    expect(deploy).toContain('needs: ci')
+    expect(deploy).toContain('needs: [ci, docker-build]')
     expect(deploy).toContain('github.ref == \'refs/heads/main\'')
   })
 })

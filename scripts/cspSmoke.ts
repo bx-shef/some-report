@@ -3,7 +3,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { extname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Browser } from 'playwright-core'
 import { PRERENDER_ROUTES, SERVICE_ROUTES } from '../app/config/routes.ts'
-import { HASH_PLACEHOLDER, applyHashes, buildHashDirective, extractInlineScripts, htmlFiles, scriptHash } from './cspHashes.ts'
+import { HASH_PLACEHOLDER, applyHashes, buildHashDirective, htmlFiles, missingHashes } from './cspHashes.ts'
 
 /**
  * Смоук: открыть собранную страницу НАСТОЯЩИМ браузером под боевым CSP и упасть на первом
@@ -96,14 +96,42 @@ export function cspProblems(csp: string | undefined, html: string): string[] {
   if (!csp) return ['нет заголовка Content-Security-Policy — защита снята целиком']
   const problems: string[] = []
   if (csp.includes(HASH_PLACEHOLDER)) problems.push(`в CSP остался плейсхолдер ${HASH_PLACEHOLDER} — браузер заблокирует собственный бандл`)
-  const scriptSrc = /script-src([^;]*)/.exec(csp)?.[1]
+  const scriptSrc = directiveValue(csp, 'script-src')
   if (scriptSrc === undefined) return [...problems, 'в CSP нет script-src']
   if (scriptSrc.includes('\'unsafe-inline\'')) problems.push('в script-src есть \'unsafe-inline\' — защита от XSS снята')
-  for (const script of extractInlineScripts(html)) {
-    const hash = scriptHash(script)
-    if (!scriptSrc.includes(hash)) problems.push(`инлайновый скрипт без хеша в script-src: ${hash}`)
+  for (const { hash, snippet } of missingHashes(html, scriptSrc)) {
+    problems.push(`инлайновый скрипт без хеша в script-src: ${hash} — «${snippet}»`)
   }
   return problems
+}
+
+/**
+ * Значение директивы по точному имени. Не regex по подстроке: `script-src-attr 'none'`, стоящая
+ * раньше `script-src`, подошла бы под `/script-src([^;]*)/` и «съела» бы настоящую директиву.
+ */
+export function directiveValue(csp: string, name: string): string | undefined {
+  for (const part of csp.split(';')) {
+    const [directive, ...rest] = part.trim().split(/\s+/)
+    if (directive === name) return rest.join(' ')
+  }
+  return undefined
+}
+
+/**
+ * Origin из аргумента `--origin`. Только http(s): `localhost:8080` без схемы `new URL` принимает,
+ * но origin у него «null», и смоук упал бы пятью «Cannot navigate to invalid URL» вместо подсказки.
+ */
+export function parseOrigin(value: string | undefined): string {
+  let url: URL | undefined
+  try {
+    url = new URL(value ?? '')
+  } catch {
+    url = undefined
+  }
+  if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
+    throw new Error(`«${value ?? ''}» — не адрес сервера; нужен http(s)://host:port`)
+  }
+  return url.origin
 }
 
 /**
@@ -209,7 +237,9 @@ async function checkPage(origin: string, check: PageCheck, browser: Browser): Pr
     // Заголовок и разметку берём из ответа, а не из конфига или файла: в режиме образа это
     // единственный источник правды, а в локальном — та же проверка, что и в CI.
     const html = await response.text()
-    problems.push(...cspProblems(response.headers()['content-security-policy'], html))
+    // `allHeaders()`, а не `headers()`: второй по документации Playwright может не отдавать
+    // заголовки безопасности — и «нет заголовка CSP» на всех PR было бы ложным.
+    problems.push(...cspProblems((await response.allHeaders())['content-security-policy'], html))
     for (const marker of markersInMarkup(check, html)) {
       problems.push(`маркер «${marker}» есть в SSR-разметке — он не отличает живую страницу от мёртвой`)
     }
@@ -238,18 +268,23 @@ async function checkPage(origin: string, check: PageCheck, browser: Browser): Pr
   return { path: check.path, problems }
 }
 
-/** POST на обработчик — ответ 200 и та же страница, что по GET. */
-async function checkPost(origin: string, path: string, browser: Browser): Promise<PageResult> {
+/**
+ * POST на обработчик — ответ 200, та же страница, что по GET, и тот же CSP.
+ *
+ * Без браузера, через `fetch`: это проверка nginx, а не страницы, и не должна зависеть от того,
+ * нашёлся ли Chrome. Заголовок проверяем и здесь: именно этот ответ портал и рисует, а
+ * `error_page` с именованной локацией мог бы отдать его без серверных `add_header`.
+ */
+async function checkPost(origin: string, path: string): Promise<PageResult> {
   const problems: string[] = []
-  const context = await browser.newContext()
   try {
-    const response = await context.request.post(origin + path, { timeout: 15_000 })
-    if (response.status() !== 200) problems.push(`HTTP ${response.status()} — портал открывает обработчик POST-запросом и увидит пустоту`)
-    else if (!(await response.text()).includes('id="__nuxt"')) problems.push('в ответе нет разметки приложения')
+    const response = await fetch(origin + path, { method: 'POST', signal: AbortSignal.timeout(15_000) })
+    const body = await response.text()
+    if (response.status !== 200) problems.push(`HTTP ${response.status} — портал открывает обработчик POST-запросом и увидит пустоту`)
+    else if (!body.includes('id="__nuxt"')) problems.push('в ответе нет разметки приложения')
+    problems.push(...cspProblems(response.headers.get('content-security-policy') ?? undefined, body))
   } catch (error) {
     problems.push(`не открылась: ${error instanceof Error ? error.message.slice(0, 160) : String(error)}`)
-  } finally {
-    await context.close()
   }
   return { path: `POST ${path}`, problems }
 }
@@ -273,14 +308,23 @@ async function main(): Promise<void> {
   const uncovered = uncoveredRoutes(PAGES, PRERENDER_ROUTES)
   if (uncovered.length) throw new Error(`маршруты пререндера без проверки: ${uncovered.join(', ')} — добавьте их в PAGES`)
 
+  const imageMode = args[0] === '--origin'
   let server: { origin: string, close: () => void }
-  if (args[0] === '--origin') {
-    if (!args[1]) throw new Error(USAGE)
-    server = { origin: new URL(args[1]).origin, close: () => {} }
+  if (imageMode) {
+    server = { origin: parseOrigin(args[1]), close: () => {} }
   } else {
     const [dir, configPath] = args
     if (!dir || !configPath) throw new Error(USAGE)
     server = await serveBuild(dir, configPath)
+  }
+
+  // POST — только на образе: локальный сервер на метод не смотрит, и зелёная галочка там ничего
+  // не значила бы. Идёт до браузера: nginx проверяется и тогда, когда Chrome не нашёлся.
+  const results: PageResult[] = []
+  if (imageMode) {
+    for (const path of postPaths(SERVICE_ROUTES)) results.push(await checkPost(server.origin, path))
+  } else {
+    console.log('[smoke] POST на обработчики: пропущено — проверяется только на образе (pnpm smoke:image)')
   }
 
   // Браузер подключаем только здесь: тесты импортируют чистые функции выше и тянуть playwright не должны.
@@ -290,9 +334,7 @@ async function main(): Promise<void> {
   let browser: Browser | undefined
   try {
     browser = await chromium.launch(executablePath ? { executablePath } : { channel: 'chrome' })
-    const results: PageResult[] = []
     for (const check of PAGES) results.push(await checkPage(server.origin, check, browser))
-    for (const path of postPaths(SERVICE_ROUTES)) results.push(await checkPost(server.origin, path, browser))
     let failed = 0
     for (const { path, problems } of results) {
       if (problems.length) {

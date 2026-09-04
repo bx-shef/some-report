@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { extractInlineScripts, htmlFiles, scriptHash } from './cspHashes.ts'
+import { extractInlineScripts, htmlFiles, missingHashes } from './cspHashes.ts'
 
 /**
  * Проверка, что собранный `nginx.conf` разрешает КАЖДЫЙ инлайновый скрипт КАЖДОЙ собранной
@@ -34,12 +34,9 @@ async function main(): Promise<void> {
   const missing: string[] = []
   let checked = 0
   for (const file of files) {
-    for (const source of extractInlineScripts(await readFile(file, 'utf-8'))) {
-      checked++
-      if (!config.includes(scriptHash(source))) {
-        missing.push(`${file}: ${source.slice(0, 60).replace(/\s+/g, ' ')}…`)
-      }
-    }
+    const html = await readFile(file, 'utf-8')
+    checked += extractInlineScripts(html).length
+    for (const { snippet } of missingHashes(html, config)) missing.push(`${file}: ${snippet}`)
   }
 
   if (missing.length) {

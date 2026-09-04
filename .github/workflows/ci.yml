@@ -1,7 +1,10 @@
 name: CI/CD
 
-# Проверки на каждый PR и на main, плюс публикация образа с main. Имя джобы `ci` — то, что включается в required status checks
-# правила защиты ветки: переименование молча снимет требование, поэтому имя менять нельзя.
+# Проверки на каждый PR и на main, плюс публикация образа с main. Имена джоб `ci` и `docker-build` —
+# то, что включается в required status checks правила защиты ветки: переименование молча снимет
+# требование, поэтому имена менять нельзя. ⚠ `docker-build` в required checks добавляется руками в
+# настройках репозитория; пока его там нет, красный образ всё равно не уедет в GHCR — `deploy`
+# ждёт обе джобы.
 #
 # Сторонние actions запинены на полный commit SHA: изменяемый тег может быть перезаписан
 # владельцем action и выполнить чужой код на раннере с GITHUB_TOKEN. Комментарий `# vX.Y.Z`
@@ -76,10 +79,11 @@ jobs:
 
   docker-build:
     name: docker-build
-    # Собираем боевой образ на каждом PR — БЕЗ публикации. Ловит поломку Dockerfile, базового
-    # образа и гардов на артефакте до того, как они доедут до main и до выката.
-    # Гоняется и на PR от Dependabot: обновление node — ровно тот случай, где это и всплывёт.
-    if: github.event_name == 'pull_request'
+    # Собираем боевой образ на каждом PR — БЕЗ публикации — и открываем его браузером. Ловит
+    # поломку Dockerfile, базового образа, гардов на артефакте и nginx до того, как они доедут до
+    # выката. Гоняется и на PR от Dependabot: обновление node — ровно тот случай, где это всплывёт.
+    # На main — тоже: `deploy` ждёт эту джобу, и сломанный образ не уедет в GHCR, даже если
+    # `docker-build` забыли добавить в required checks. Цена — ещё одна сборка на main из кэша.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
@@ -110,10 +114,17 @@ jobs:
       # скриптов за 7 с, но заголовок там собирается в памяти из nginx.conf. Только здесь виден
       # весь путь Dockerfile → envsubst → nginx -t → реальные add_header по location и
       # `error_page 405 =200` для POST от портала — то, что локальный сервер лишь имитирует.
-      # На main не повторяем: тот же код уже проверен на PR, а deploy заперт за зелёным ci.
+      # Контейнер из кода PR (в том числе из форка) здесь РЕАЛЬНО запускается, а не только
+      # собирается. Поэтому — минимум прав: порт только на loopback, файловая система только на
+      # чтение (nginx-unprivileged пишет лишь в /tmp и в conf.d при подстановке шаблона — они на
+      # tmpfs под его uid), без capabilities, без повышения привилегий, с лимитами. Проверено на
+      # том же базовом образе: стартует за 2 с, POST и gzip работают.
       - name: Run image
         run: |
-          docker run -d --name some-report-ci -p 8080:8080 some-report:ci
+          docker run -d --name some-report-ci -p 127.0.0.1:8080:8080 \
+            --read-only --tmpfs /tmp:rw,uid=101,gid=101 --tmpfs /etc/nginx/conf.d:rw,uid=101,gid=101 \
+            --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=256 --memory=256m \
+            some-report:ci
           for i in $(seq 1 30); do
             curl -sf -o /dev/null http://127.0.0.1:8080/ && exit 0
             sleep 1
@@ -145,8 +156,9 @@ jobs:
 
   deploy:
     name: Build & Push to GHCR
-    needs: ci
-    # Выкат заперт за зелёным CI: красный CI не пускает образ в GHCR, а значит и на сервер.
+    needs: [ci, docker-build]
+    # Выкат заперт за зелёным CI и зелёным образом: красная проверка не пускает образ в GHCR, а
+    # значит и на сервер.
     # Только main — пушем или ручным workflow_dispatch (передеплой после смены переменной).
     if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-24.04
