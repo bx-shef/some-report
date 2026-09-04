@@ -1,3 +1,4 @@
+import { mergeReasons } from '~/utils/reasonMerge'
 import type {
   DealsContext,
   LeadAggregate,
@@ -185,6 +186,14 @@ export interface AdapterWarnings {
   /** Сделки без лида-родителя (`LEAD_ID` пуст): в разрез источников они не попадают. */
   dealsWithoutLead: number
   /**
+   * Сколько кодов стадий провала свёрнуто в одноимённые причины (см. `reasonMerge.ts`).
+   *
+   * Показываем человеку не как ошибку, а как объяснение: «Отказ - дорого» в таблице одной
+   * строкой, хотя в CRM это шесть стадий, — иначе он сверит с CRM и решит, что отчёт что-то
+   * потерял.
+   */
+  mergedLossReasons: number
+  /**
    * Сделки, чей `LEAD_ID` указывает на лид ВНЕ выборки: он создан до начала периода либо удалён.
    *
    * ⚠ Считается отдельно от `dealsWithoutLead`, хотя для пользователя следствие то же — выручка
@@ -248,7 +257,8 @@ export interface AdapterInput {
 function dealFromRow(
   row: B24DealRow,
   rates: Record<string, number>,
-  currencyId: string
+  currencyId: string,
+  reasonKeyByCode: Record<string, string>
 ): { deal: ReportDeal, converted: boolean } {
   const id = toNumber(row.ID)
   const leadId = toNumber(row.LEAD_ID)
@@ -268,7 +278,11 @@ function dealFromRow(
       // Причина проигрыша — сама стадия провала. Отдельного поля причины в Битрикс24 нет
       // (docs/PORTAL.md §2), поэтому разбивка наполнится ровно тогда, когда в портале заведут
       // стадии под причины.
-      ...(semantic === 'F' ? { lossReasonId: toText(row.STAGE_ID) } : {})
+      //
+      // ⚠ Помечаем не кодом стадии, а каноничным ключом причины: одна причина в четырёх
+      // направлениях — это разные коды, и ядро, группируя по коду, печатало бы её четырьмя
+      // строками. Код, которого нет в справочнике, остаётся кодом — его хотя бы можно найти в CRM.
+      ...(semantic === 'F' ? { lossReasonId: reasonKeyByCode[toText(row.STAGE_ID)] ?? toText(row.STAGE_ID) } : {})
     }
   }
 }
@@ -282,7 +296,16 @@ function dealFromRow(
  */
 export function adaptDeals(
   rows: B24DealRow[],
-  currencies: B24CurrencyRow[]
+  currencies: B24CurrencyRow[],
+  /**
+   * Код стадии провала → каноничный ключ причины (`mergeReasons(lossStages(…)).keyByCode`).
+   *
+   * ⚠ Принимаем ГОТОВУЮ карту, а не справочник: вызывающий строит и словарь имён, и эту карту
+   * из одного `mergeReasons`, и рассинхрон между тем, чем помечена сделка, и тем, под чем лежит
+   * её имя, становится невозможен по построению. Пересчёт здесь из справочника оставлял бы два
+   * места, которым надо совпасть.
+   */
+  reasonKeyByCode: Record<string, string> = {}
 ): { deals: ReportDeal[], unconvertedDeals: number, dealsWithoutLead: number, duplicateIds: number, wonWithoutAmount: number } {
   const rates = currencyRates(currencies)
   const currencyId = baseCurrency(currencies)
@@ -299,7 +322,7 @@ export function adaptDeals(
       continue
     }
     seen.add(id)
-    const { deal, converted } = dealFromRow(row, rates, currencyId)
+    const { deal, converted } = dealFromRow(row, rates, currencyId, reasonKeyByCode)
     if (!converted) unconvertedDeals++
     if (deal.leadId === undefined) dealsWithoutLead++
     /**
@@ -324,6 +347,8 @@ export function adaptDeals(
 export function adaptPortalData(input: AdapterInput): AdaptedData {
   const rates = currencyRates(input.currencies)
   const currencyId = baseCurrency(input.currencies)
+  const reasons = mergeReasons(lossStages(input.dealStages))
+  const reasonKeyByCode = reasons.keyByCode
 
   /**
    * Повторы по `ID` выбрасываем, оставляя ПЕРВОЕ вхождение.
@@ -357,7 +382,7 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
   let unconvertedDeals = 0
 
   const deals: ReportDeal[] = dealRows.map((row) => {
-    const { deal, converted } = dealFromRow(row, rates, currencyId)
+    const { deal, converted } = dealFromRow(row, rates, currencyId, reasonKeyByCode)
     const { id, leadId = 0 } = deal
     if (!converted) unconvertedDeals++
 
@@ -408,9 +433,11 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
     dictionaries: {
       sources: statusNames(input.sources),
       junkReasons: statusNames(input.leadStatuses),
-      lossReasons: statusNames(input.dealStages)
+      // Словарь по каноничным ключам, а не по кодам: ключами помечены сделки.
+      lossReasons: reasons.names
     },
     warnings: {
+      mergedLossReasons: reasons.foldedCodes,
       unconvertedDeals,
       wonStageWithoutDeal,
       dealsWithoutLead,
@@ -423,6 +450,18 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
 }
 
 /** Коды стадий с заданной семантикой — например, все стадии брака лида (`F`). */
+/**
+ * Только стадии провала — то, из чего складываются причины проигрыша.
+ *
+ * ⚠ Сводить надо ИМЕННО их. Стадии «Новая», «Обработка», «Успех» тоже продублированы во всех
+ * направлениях, и сведение по всему справочнику давало бы счётчик «стадий свёрнуто» втрое больше
+ * правды: на экране он объясняет, почему строк в таблице причин меньше, чем стадий, — и
+ * с чужими стадиями внутри не сходился бы ни с чем.
+ */
+export function lossStages(rows: readonly B24StatusRow[]): B24StatusRow[] {
+  return rows.filter(row => toSemantic(row.SEMANTICS) === 'F' && toText(row.SEMANTICS) !== '')
+}
+
 export function statusIdsBySemantic(rows: B24StatusRow[], semantic: B24Semantic): string[] {
   return rows
     .filter(row => toSemantic(row.SEMANTICS) === semantic && toText(row.SEMANTICS) !== '')

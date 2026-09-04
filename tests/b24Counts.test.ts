@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { adaptDeals, adaptDealsContext, adaptLeadCounts, dealCountKey, leadCountKey, statusIdsBySemantic } from '~/utils/b24Adapter'
+import { adaptDeals, adaptDealsContext, adaptLeadCounts, dealCountKey, leadCountKey, lossStages, statusIdsBySemantic } from '~/utils/b24Adapter'
+import { mergeReasons } from '~/utils/reasonMerge'
 import { dealContextBatch, dealStageBatch, dealsFromLeadsParams, leadCountBatch } from '~/utils/b24Query'
 import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
 
@@ -152,6 +153,30 @@ describe('adaptDeals', () => {
     expect(adaptDeals([row({ LEAD_ID: null })], BYN).dealsWithoutLead).toBe(1)
   })
 
+  /**
+   * ⚠ Это боевой путь: композабл зовёт `adaptDeals` с картой ключей из ОДНОГО `mergeReasons`.
+   * Без этого теста «упрощение» обратно к коду стадии оставило бы сделки под кодами, а словарь —
+   * под ключами: каждая строка причин печаталась бы сырым кодом, и вся выборка оставалась зелёной.
+   */
+  it('помечает проигранные сделки каноничным ключом из переданной карты', () => {
+    const stages = [
+      { STATUS_ID: 'LOSE', NAME: 'Отказ - Дорого', SEMANTICS: 'F' },
+      { STATUS_ID: 'C1:LOSE', NAME: 'Отказ - дорого', SEMANTICS: 'F' }
+    ]
+    const reasons = mergeReasons(lossStages(stages))
+    const { deals } = adaptDeals([
+      row({ ID: '1', STAGE_ID: 'LOSE', STAGE_SEMANTIC_ID: 'F' }),
+      row({ ID: '2', STAGE_ID: 'C1:LOSE', STAGE_SEMANTIC_ID: 'F' })
+    ], BYN, reasons.keyByCode)
+    expect(deals[0]!.lossReasonId).toBe(deals[1]!.lossReasonId)
+    expect(reasons.names[deals[0]!.lossReasonId!]).toBe('Отказ - Дорого')
+  })
+
+  it('стадия, которой нет в карте, остаётся кодом — его хотя бы можно найти в CRM', () => {
+    const { deals } = adaptDeals([row({ STAGE_ID: 'C9:LOSE', STAGE_SEMANTIC_ID: 'F' })], BYN, {})
+    expect(deals[0]!.lossReasonId).toBe('C9:LOSE')
+  })
+
   // ⚠ На портале заказчика ВСЕ успешные сделки из лидов с нулём — это факт о процессе в CRM, и
   // «выручка 0» без этого счётчика читалась бы как поломка отчёта.
   it('успешную сделку с нулевой суммой считает отдельно', () => {
@@ -163,5 +188,23 @@ describe('adaptDeals', () => {
     const { deals, unconvertedDeals } = adaptDeals([row({ CURRENCY_ID: 'XYZ' })], BYN)
     expect(deals[0]?.amount).toBe(100)
     expect(unconvertedDeals).toBe(1)
+  })
+})
+
+describe('lossStages', () => {
+  // ⚠ «Новая» и «Успех» тоже продублированы по направлениям. Сведи мы весь справочник, счётчик
+  // «стадий свёрнуто» на экране был бы втрое больше правды и не сходился бы ни с чем.
+  it('оставляет только стадии провала', () => {
+    const rows = [
+      { STATUS_ID: 'NEW', NAME: 'Новая', SEMANTICS: null },
+      { STATUS_ID: 'C1:NEW', NAME: 'Новая', SEMANTICS: null },
+      { STATUS_ID: 'WON', NAME: 'Успех', SEMANTICS: 'S' },
+      { STATUS_ID: 'C1:WON', NAME: 'Успех', SEMANTICS: 'S' },
+      { STATUS_ID: 'LOSE', NAME: 'Отказ - дорого', SEMANTICS: 'F' },
+      { STATUS_ID: 'C1:LOSE', NAME: 'Отказ - дорого', SEMANTICS: 'f' }
+    ]
+    expect(lossStages(rows).map(r => r.STATUS_ID)).toEqual(['LOSE', 'C1:LOSE'])
+    expect(mergeReasons(lossStages(rows)).foldedCodes).toBe(1)
+    expect(mergeReasons(rows).foldedCodes).toBe(3)
   })
 })
