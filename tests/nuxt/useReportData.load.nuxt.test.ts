@@ -213,21 +213,53 @@ describe('load', () => {
     portal.pending[`history:${AUGUST.from}`]!([
       { ID: '9', TYPE_ID: 2, OWNER_ID: '1', CREATED_TIME: '2026-08-10T10:30:00+03:00', STATUS_ID: '1' }
     ])
-    // Второй запрос истории — создания сразу в стадии не-NEW; здесь их нет.
-    portal.pending[`created:${AUGUST.from}`]!([])
+    // Второй запрос истории — создания сразу в стадии не-NEW: лид 3 заведён вручную уже «в
+    // работе», ответ в момент создания. Отбрось композабл эту выборку — лид 3 стал бы просроченным.
+    portal.pending[`created:${AUGUST.from}`]!([
+      { ID: '10', TYPE_ID: 1, OWNER_ID: '3', CREATED_TIME: '2026-08-11T09:00:00+03:00', STATUS_ID: '1' }
+    ])
     portal.pending[`leads:${AUGUST.from}`]!([
       { ID: '1', DATE_CREATE: '2026-08-10T10:00:00+03:00', SOURCE_ID: 'CALL', STATUS_ID: '1' },
-      { ID: '2', DATE_CREATE: '2026-08-10T10:00:00+03:00', SOURCE_ID: 'CALL', STATUS_ID: 'NEW' }
+      { ID: '2', DATE_CREATE: '2026-08-10T10:00:00+03:00', SOURCE_ID: 'CALL', STATUS_ID: 'NEW' },
+      { ID: '3', DATE_CREATE: '2026-08-11T09:00:00+03:00', SOURCE_ID: 'WEB', STATUS_ID: '1' }
     ])
     await vi.waitFor(() => expect(data.processingPending.value).toBe(false))
     expect(data.processingTimed.value).toBe(true)
     const processing = data.report.value.processing!
-    // Числа — от счётчиков, время — из истории: 30 минут по единственному ответу.
+    // Числа — от счётчиков, время — из истории: два ответа, 30 и 0 минут → 15 в среднем.
     expect(processing.processed).toBe(5)
-    expect(processing.avgFirstResponseMinutes).toBeCloseTo(30, 6)
-    expect(processing.bySource.map(r => r.sourceId)).toEqual(['CALL'])
-    // Лид 2 без ответа с 10 августа — просрочен по нормативу 120 минут.
+    expect(processing.avgFirstResponseMinutes).toBeCloseTo(15, 6)
+    expect(processing.bySource.map(r => r.sourceId).sort()).toEqual(['CALL', 'WEB'])
+    // Лид 2 без ответа с 10 августа — просрочен по нормативу 120 минут; лид 3 — нет.
     expect(processing.overdue).toBe(1)
+  })
+
+  // ⚠ Смена периода посреди трёх выборок истории: их ответы обязаны пропасть, иначе под
+  // сентябрьскими счётчиками окажется августовское время ответа — и флаг «история пришла».
+  it('история за прошлый период после смены периода выбрасывается, следующая страница не запрашивается', async () => {
+    const data = useReportData()
+    const first = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await first
+    await vi.waitFor(() => expect(portal.pending[`leads:${AUGUST.from}`]).toBeDefined())
+    const leadCalls = portal.calls.filter(c => c === `leads:${AUGUST.from}`).length
+
+    const second = data.load(SEPTEMBER)
+    await vi.waitFor(() => expect(portal.pending[SEPTEMBER.from]).toBeDefined())
+    portal.pending[SEPTEMBER.from]!([])
+    await second
+    // Полная страница лидов августа приходит ПОСЛЕ смены периода: следующую страницу не просим.
+    const fullPage = Array.from({ length: 50 }, (_, i) => ({ ID: String(i + 1), DATE_CREATE: '2026-08-10T10:00:00+03:00', SOURCE_ID: 'CALL', STATUS_ID: '1' }))
+    portal.pending[`leads:${AUGUST.from}`]!(fullPage)
+    portal.pending[`history:${AUGUST.from}`]!([{ ID: '9', TYPE_ID: 2, OWNER_ID: '1', CREATED_TIME: '2026-08-10T10:30:00+03:00', STATUS_ID: '1' }])
+    portal.pending[`created:${AUGUST.from}`]!([])
+    await vi.waitFor(() => expect(portal.pending[`leads:${SEPTEMBER.from}`]).toBeDefined())
+    expect(portal.calls.filter(c => c === `leads:${AUGUST.from}`).length).toBe(leadCalls)
+    expect(data.dataset.value.period).toEqual(SEPTEMBER)
+    expect(data.processingTimed.value).toBe(false)
+    expect(data.report.value.processing?.avgFirstResponseMinutes).toBeUndefined()
+    expect(data.processingPending.value).toBe(true)
   })
 
   it('история стадий: ошибка — своя, счётчики блока 6 на месте', async () => {

@@ -20,6 +20,12 @@ describe('leadHistoryParams', () => {
     expect(params.select).toEqual(['ID', 'TYPE_ID', 'OWNER_ID', 'CREATED_TIME', 'STATUS_ID'])
   })
 
+  // Композабл зовёт функцию БЕЗ второго аргумента — значит, запас в проде задаёт умолчание, и
+  // проверять нужно именно его: `graceDays = 0` в сигнатуре не заметил бы ни один тест выше.
+  it('запас по умолчанию — три дня после конца периода', () => {
+    expect(leadHistoryParams(AUGUST).filter).toMatchObject({ '<CREATED_TIME': '2026-09-04' })
+  })
+
   // Запас через границу года: 31 декабря + 3 дня = 3 января, верхняя граница строгая — 4 января.
   it('запас после конца периода считается по календарю, через границу года тоже', () => {
     expect(leadHistoryParams({ from: '2026-12-01', to: '2026-12-31' }, 3).filter).toMatchObject({ '<CREATED_TIME': '2027-01-04' })
