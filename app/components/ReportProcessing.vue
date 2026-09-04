@@ -7,7 +7,15 @@ import { sourceLabel } from '~/utils/labels'
  * Обработка лидов и потери до сделки — блоки из ТЗ, которых нет на макете. Стоят рядом намеренно:
  * оба отвечают на вопрос «где лид умер, не дойдя до сделки», и порознь читаются хуже.
  */
-defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries }>()
+const props = defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries }>()
+
+/**
+ * Обработка лидов может отсутствовать целиком — когда время первого ответа не выбиралось.
+ *
+ * ⚠ Показать в этом случае «обработано 0 %, просрочено 100 %» значило бы выдать факт о том, что
+ * данных не запрашивали, за факт о работе живых людей. Это разные утверждения, и первое клевещет.
+ */
+const processing = computed(() => props.report.processing)
 </script>
 
 <template>
@@ -18,16 +26,26 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries }>()
       </h2>
     </template>
 
-    <div class="grid grid-cols-2 gap-4 lg:grid-cols-4">
+    <B24Alert
+      v-if="!processing"
+      color="air-primary-warning"
+      title="Время первого ответа не выбиралось"
+      description="Заказчик пока не сказал, что считать «первым ответом» — любое дело по лиду или только исходящий звонок/письмо. До ответа блок не считается, чтобы не показывать «обработано 0 %» как факт о работе отдела."
+    />
+
+    <div
+      v-if="processing"
+      class="grid grid-cols-2 gap-4 lg:grid-cols-4"
+    >
       <div>
         <div class="text-xs opacity-60">
           Обработано
         </div>
         <div class="mt-1 text-xl font-semibold leading-none">
-          {{ formatCount(report.processing.processed) }}
+          {{ formatCount(processing.processed) }}
         </div>
         <div class="mt-1 text-xs text-[color:var(--chart-1)]">
-          {{ formatPercent(report.processing.processedShare) }}
+          {{ formatPercent(processing.processedShare) }}
         </div>
       </div>
       <div>
@@ -35,10 +53,10 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries }>()
           Не обработано
         </div>
         <div class="mt-1 text-xl font-semibold leading-none">
-          {{ formatCount(report.processing.unprocessed) }}
+          {{ formatCount(processing.unprocessed) }}
         </div>
         <div class="mt-1 text-xs text-red-600 dark:text-red-400">
-          {{ formatPercent(report.processing.unprocessedShare) }}
+          {{ formatPercent(processing.unprocessedShare) }}
         </div>
       </div>
       <div>
@@ -48,10 +66,10 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries }>()
         <!-- Норматив не задан — печатаем прочерк, а не ноль: «в срок всё» и «не с чем сравнивать»
              это разные утверждения, и ноль соврал бы. -->
         <div class="mt-1 text-xl font-semibold leading-none">
-          {{ report.processing.overdue === undefined ? '—' : formatCount(report.processing.overdue) }}
+          {{ processing.overdue === undefined ? '—' : formatCount(processing.overdue) }}
         </div>
         <div class="mt-1 text-xs opacity-60">
-          {{ report.processing.overdue === undefined ? 'норматив не задан' : formatPercent(report.processing.overdueShare ?? 0) }}
+          {{ processing.overdue === undefined ? 'норматив не задан' : formatPercent(processing.overdueShare ?? 0) }}
         </div>
       </div>
       <div>
@@ -59,12 +77,15 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries }>()
           Среднее время первого ответа
         </div>
         <div class="mt-1 text-xl font-semibold leading-none">
-          {{ formatDuration(report.processing.avgFirstResponseMinutes) }}
+          {{ formatDuration(processing.avgFirstResponseMinutes) }}
         </div>
       </div>
     </div>
 
-    <div class="mt-5 grid grid-cols-1 gap-6 lg:grid-cols-2">
+    <div
+      v-if="processing"
+      class="mt-5 grid grid-cols-1 gap-6 lg:grid-cols-2"
+    >
       <div>
         <h3 class="text-sm font-semibold">
           Среднее время ответа по источникам
@@ -72,7 +93,7 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries }>()
         <table class="mt-2 w-full text-sm">
           <tbody>
             <tr
-              v-for="row in report.processing.bySource"
+              v-for="row in processing.bySource"
               :key="row.sourceId"
               class="border-b border-[color:var(--chart-track)]"
             >
@@ -86,7 +107,7 @@ defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries }>()
                 {{ formatDuration(row.avgFirstResponseMinutes) }}
               </td>
             </tr>
-            <tr v-if="!report.processing.bySource.length">
+            <tr v-if="!processing.bySource.length">
               <td
                 colspan="3"
                 class="py-4 text-center opacity-60"

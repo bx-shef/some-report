@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -30,8 +31,7 @@ describe('CSP боевого конфига', () => {
   })
 
   it('зашитых доменов Битрикс24 в заголовке не осталось', () => {
-    expect(cspLine).not.toContain('bitrix24.ru')
-    expect(cspLine).not.toContain('bitrix24.by')
+    expect(cspLine).not.toMatch(/bitrix24\./)
   })
 
   // Отчёт по назначению живёт во фрейме портала: `frame-ancestors` обязан пускать хоть кого-то.
@@ -72,12 +72,19 @@ describe('Dockerfile', () => {
 
   // ⚠ Без фильтра энтрипойнт подставляет в шаблон ВСЕ переменные окружения, а конфиг полон
   // собственных `$uri` и `$host`: совпадение имён молча сломало бы конфиг.
-  it('ограничивает подстановку одной переменной', () => {
-    expect(dockerfile).toContain('NGINX_ENVSUBST_FILTER="B24_PORTAL_ORIGINS"')
+  // ⚠ Ищем ДИРЕКТИВУ в начале строки, а не подстроку: закомментированная `# ENV …` содержит тот же
+  // текст, а рантайм-подстановка при этом сломана — и подставлялись бы ВСЕ переменные окружения.
+  it('ограничивает подстановку одной переменной, с якорями', () => {
+    expect(dockerfile).toMatch(/^ENV NGINX_ENVSUBST_FILTER="\^B24_PORTAL_ORIGINS\$"$/m)
   })
 
   it('кладёт конфиг шаблоном, чтобы подстановка случилась при старте', () => {
-    expect(dockerfile).toContain('/etc/nginx/templates/default.conf.template')
+    expect(dockerfile).toMatch(/^COPY --from=builder .*\/etc\/nginx\/templates\/default\.conf\.template$/m)
+  })
+
+  it('проверяет значение переменной до подстановки — при старте и при сборке', () => {
+    expect(dockerfile).toMatch(/^COPY deploy\/validate-portal-origins\.sh \/docker-entrypoint\.d\/05-/m)
+    expect(dockerfile).toMatch(/^RUN sh \/docker-entrypoint\.d\/05-validate-portal-origins\.sh/m)
   })
 
   // ⚠ Список порталов — часть ПРОДУКТА: приложение хостится одним экземпляром на всех клиентов,
@@ -96,5 +103,27 @@ describe('docker-compose', () => {
   // значением при пустой переменной в `.env` — и запретила бы встраивание всем.
   it('не задаёт список порталов сам — он приезжает с образом', () => {
     expect(compose).not.toMatch(/^\s*B24_PORTAL_ORIGINS\s*:/m)
+  })
+})
+
+describe('validate-portal-origins.sh', () => {
+  const script = join(import.meta.dirname, '..', 'deploy', 'validate-portal-origins.sh')
+  const run = (value: string) => spawnSync('sh', [script], { env: { ...process.env, B24_PORTAL_ORIGINS: value }, encoding: 'utf-8' })
+
+  it('пропускает список https-origin\'ов с wildcard', () => {
+    expect(run('https://*.bitrix24.by https://bitrix.ankron.by').status).toBe(0)
+  })
+
+  // ⚠ envsubst не понимает синтаксис nginx: кавычка в значении разрывает строку заголовка, из CSP
+  // выпадает `frame-ancestors` целиком, а рядом встаёт чужая директива. Конфиг при этом ВАЛИДЕН.
+  it.each([
+    ['инъекция директивы', 'https://evil.example" always; add_header X-Pwned "yes'],
+    ['голая звёздочка', '*'],
+    ['пустое значение', ''],
+    ['http без TLS', 'http://plain.example'],
+    ['битое имя хоста', 'https://bad..host'],
+    ['точка с запятой', 'https://a.example;']
+  ])('отвергает: %s', (_name, value) => {
+    expect(run(value).status).not.toBe(0)
   })
 })

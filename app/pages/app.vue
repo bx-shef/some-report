@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ReportPeriod } from '~/types/report'
 import { formatDate } from '~/utils/format'
-import { currentMonthPeriod } from '~/utils/b24Query'
+import { resolvePreset } from '~/utils/period'
 
 /**
  * Главный экран — сам отчёт. Открывается порталом из пункта CRM-аналитики (`CRM_ANALYTICS_MENU`).
@@ -28,14 +28,25 @@ onMounted(async () => {
   // демонстрационный набор со своим периодом, и подпись обязана совпадать с данными: шапка
   // «сентябрь» над августовскими числами — это ровно то враньё, из-за которого заказчик уже
   // однажды принял чужие цифры за свои.
-  if (b24.isInit()) period.value = currentMonthPeriod(today)
+  if (b24.isInit()) period.value = resolvePreset('this-month', today)!
   // Внутри портала берём живые лиды и сделки. Снаружи `load()` тихо ничего не делает.
   await load(period.value)
+  booted = true
   await fit()
 })
 
-// Смена периода — новая выборка. Гонку ответов сторожит сам композабл.
+/**
+ * Первая загрузка идёт из `onMounted`, а НЕ из наблюдателя за периодом.
+ *
+ * ⚠ Наблюдатель регистрируется в setup, и присвоение `period.value` в `onMounted` запускало бы
+ * его тоже — две выборки одного периода на каждое открытие. Гонку данных `seq` в композабле
+ * снял бы, но портал получал бы вдвое больше запросов, а именно запросы здесь и дороги.
+ */
+let booted = false
+
+// Смена периода человеком — новая выборка. Гонку ответов сторожит сам композабл.
 watch(period, async (next) => {
+  if (!booted) return
   await load(next)
   await fit()
 })
@@ -65,6 +76,9 @@ const dataNotes = computed(() => {
   }
   if (w.duplicateIds > 0) {
     notes.push(`Повторов по идентификатору отброшено: ${w.duplicateIds}.`)
+  }
+  if (w.wonWithoutAmount > 0) {
+    notes.push(`Успешных сделок из лидов с нулевой суммой: ${w.wonWithoutAmount}. Выручка по лидам считается по сумме сделки, а она в CRM не заполнена — деньги, судя по всему, оформляются на других сделках.`)
   }
   if (w.firstResponseNotFetched) {
     notes.push('Время первого ответа не выбиралось — блок «Обработка лидов» считать не по чему.')
@@ -110,6 +124,7 @@ watch(conversionBase, fit)
       <ReportToolbar
         v-model:conversion-base="conversionBase"
         v-model:period="period"
+        :applied-period="dataset.period"
         :today="today"
         :is-demo="isDemo"
       />
@@ -118,7 +133,7 @@ watch(conversionBase, fit)
         v-if="pending"
         class="text-sm opacity-70"
       >
-        Читаем лиды и сделки портала…
+        Читаем лиды и сделки портала… Месяц занимает около 15 секунд, год — до минуты.
       </p>
 
       <!-- ⚠ Демо-плашку заказчик однажды не заметил и принял числа макета за свои. Поэтому

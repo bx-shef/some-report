@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CalendarDate, getLocalTimeZone, today } from '@internationalized/date'
+import { CalendarDate, type DateValue } from '@internationalized/date'
 import CalendarIcon from '@bitrix24/b24icons-vue/outline/CalendarIcon'
 import { fromIsoDate, toIsoDate } from '~/utils/period'
 
@@ -23,6 +23,9 @@ import { fromIsoDate, toIsoDate } from '~/utils/period'
 const from = defineModel<string>('from', { default: '' })
 const to = defineModel<string>('to', { default: '' })
 
+/** «Сегодня» — снаружи, как и в панели: будущее выбрать нельзя, а в тестах день должен быть задан. */
+const props = defineProps<{ today: Date }>()
+
 const inputDate = useTemplateRef<{ inputsRef?: { $el?: HTMLElement }[] }>('inputDate')
 const calendarOpen = ref(false)
 
@@ -31,7 +34,8 @@ function toCalendar(iso: string): CalendarDate | undefined {
   return date ? new CalendarDate(date.getFullYear(), date.getMonth() + 1, date.getDate()) : undefined
 }
 
-function toIso(value: CalendarDate | undefined): string {
+/** Любая календарная дата библиотеки → строка. Год, месяц и день есть у каждого `DateValue`. */
+function toIso(value: DateValue | undefined): string {
   return value ? toIsoDate(new Date(value.year, value.month - 1, value.day)) : ''
 }
 
@@ -50,15 +54,15 @@ const value = computed({
  *
  * ⚠ Не после первой: у периода два клика, и закрытие по первому не дало бы выбрать конец.
  */
-function pickRange(range: { start?: unknown, end?: unknown } | null): void {
-  const start = range?.start as CalendarDate | undefined
-  const end = range?.end as CalendarDate | undefined
-  value.value = { start, end }
+function pickRange(range: { start?: DateValue, end?: DateValue } | null): void {
+  const start = range?.start
+  const end = range?.end
+  value.value = { start: start ? toCalendar(toIso(start)) : undefined, end: end ? toCalendar(toIso(end)) : undefined }
   if (start && end) calendarOpen.value = false
 }
 
 /** Будущее выбрать нельзя: лидов, созданных завтра, не бывает. */
-const maxValue = computed(() => today(getLocalTimeZone()))
+const maxValue = computed(() => toCalendar(toIsoDate(props.today)))
 </script>
 
 <template>

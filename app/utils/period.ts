@@ -117,7 +117,13 @@ export function periodLengthDays(period: ReportPeriod): number {
   const from = fromIsoDate(period.from)
   const to = fromIsoDate(period.to)
   if (!from || !to) return 0
-  return Math.floor((to.getTime() - from.getTime()) / 86_400_000) + 1
+  /**
+   * ⚠ Считаем по UTC-полуночам локальных календарных дат, а не разницей локальных `getTime()`.
+   * В сутки перевода на летнее время 23 часа, и деление разницы на 86 400 000 с округлением вниз
+   * недосчитывало день — а прогон в UTC этого не показывал, тест был зелёным по совпадению.
+   */
+  const utc = (d: Date) => Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())
+  return Math.round((utc(to) - utc(from)) / 86_400_000) + 1
 }
 
 export interface PeriodProblem {
@@ -144,9 +150,9 @@ export function validatePeriod(period: ReportPeriod, maxDays = 366): PeriodProbl
       fixed: { from: period.to, to: period.from }
     }
   }
-  // ⚠ Ограничение не из осторожности: при 5 000 записей в месяц год — это уже до 60 000 записей и
-  // больше тысячи страниц выборки. Такое считается во фрейме минутами, и человек решит, что
-  // отчёт завис.
+  // ⚠ Ограничение не из осторожности: объём выборки растёт с периодом линейно, и на замеренных
+  // объёмах заказчика (см. `docs/PORTAL.md`) год — это минуты ожидания во фрейме даже в режиме
+  // счётчиков. Человек решит, что отчёт завис.
   if (periodLengthDays(period) > maxDays) {
     return { message: `Период больше ${maxDays} дней — выберите промежуток покороче, иначе выборка из портала займёт минуты.` }
   }

@@ -231,7 +231,8 @@ describe('adaptPortalData', () => {
       dealsWithoutLead: 1,
       dealsWithMissingLead: 0,
       duplicateIds: 0,
-      firstResponseNotFetched: true
+      firstResponseNotFetched: true,
+      wonWithoutAmount: 0
     })
   })
 
@@ -391,7 +392,7 @@ describe('адаптер + ядро отчёта', () => {
     const numbers = [
       report.summary.junkShare, report.summary.qualifiedShare, report.summary.wonShare,
       report.summary.revenue, report.lostDeals.lostRevenue, report.lostDeals.shareOfQualified,
-      report.preDealLoss.share, report.processing.processedShare
+      report.preDealLoss.share, report.processing!.processedShare
     ]
     expect(numbers.every(Number.isFinite)).toBe(true)
   })
@@ -403,7 +404,7 @@ describe('адаптер + ядро отчёта', () => {
   })
 
   it('переданное первое действие доезжает до блока обработки', () => {
-    expect(report.processing.processed).toBe(1)
-    expect(report.processing.avgFirstResponseMinutes).toBe(20)
+    expect(report.processing!.processed).toBe(1)
+    expect(report.processing!.avgFirstResponseMinutes).toBe(20)
   })
 })

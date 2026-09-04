@@ -100,6 +100,13 @@ describe('matchPreset', () => {
     expect(matchPreset({ from: '2026-08-01', to: '2026-08-31' }, TODAY)).toBe('prev-month')
   })
 
+  // В последний день 30-дневного месяца «текущий месяц» и «последние 30 дней» совпадают дословно.
+  // Побеждает более конкретный — порядок в PERIOD_PRESETS это правило, а не случайность.
+  it('при совпадении границ выбирает более конкретный интервал', () => {
+    const lastDayOfApril = new Date(2026, 3, 30)
+    expect(matchPreset({ from: '2026-04-01', to: '2026-04-30' }, lastDayOfApril)).toBe('this-month')
+  })
+
   it('чужие границы называет произвольными', () => {
     expect(matchPreset({ from: '2026-08-15', to: '2026-09-02' }, TODAY)).toBe('custom')
   })
@@ -111,9 +118,17 @@ describe('periodLengthDays', () => {
     expect(periodLengthDays({ from: '2026-09-01', to: '2026-09-30' })).toBe(30)
   })
 
-  // Переход на летнее время в сутках длиной 23 часа не должен округляться вниз.
-  it('не сбивается на переводе часов', () => {
-    expect(periodLengthDays({ from: '2026-03-01', to: '2026-04-01' })).toBe(32)
+  // ⚠ Прогон идёт в UTC, где перевода часов нет, — обычный вызов ничего бы не доказал: прошлая
+  // формула на нём была зелёной и при этом недосчитывала день в Берлине. Поэтому пояс ставим явно.
+  it('не сбивается на переводе часов (Europe/Berlin, 23-часовые сутки 29 марта)', () => {
+    const previous = process.env.TZ
+    process.env.TZ = 'Europe/Berlin'
+    try {
+      expect(periodLengthDays({ from: '2026-03-28', to: '2026-03-30' })).toBe(3)
+      expect(periodLengthDays({ from: '2026-03-01', to: '2026-04-01' })).toBe(32)
+    } finally {
+      process.env.TZ = previous
+    }
   })
 })
 

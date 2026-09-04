@@ -41,10 +41,14 @@ const baseLabel = computed(() =>
         :hint="`${formatPercent(summary.qualifiedShare)} ${baseLabel}`"
         tone="accent"
       />
+      <!-- ⚠ Контекст обязателен: на боевом портале сделок из лидов — каждая десятая. Без
+           «из 6 076 всего» число 636 читается как «компания продала 636 раз за месяц». -->
       <StatTile
-        label="Успешные сделки"
+        label="Успешные сделки из лидов"
         :value="formatCount(summary.wonDeals)"
-        :hint="`${formatPercent(summary.wonShare)} ${baseLabel}`"
+        :hint="summary.allDeals
+          ? `${formatPercent(summary.wonShare)} ${baseLabel} · всего успешных за период: ${formatCount(summary.allDeals.won)}`
+          : `${formatPercent(summary.wonShare)} ${baseLabel}`"
         tone="accent"
       />
       <!-- ТЗ просит ОБЕ конверсии отдельными показателями. «Лид → продажа» стоит подписью
@@ -55,9 +59,9 @@ const baseLabel = computed(() =>
         :hint="`знаменатель: ${formatCount(summary.conversionBaseValue)}`"
       />
       <StatTile
-        label="Выручка"
+        label="Выручка по лидам"
         :value="formatMoney(summary.revenue, currencyId)"
-        hint="сумма успешных сделок"
+        hint="сумма успешных сделок из лидов"
       />
     </dl>
   </B24Card>
