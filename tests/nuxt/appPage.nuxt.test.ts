@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
 import AppPage from '~/pages/app.vue'
+import ReportFilters from '~/components/ReportFilters.vue'
 
 /**
  * Экран отчёта до и после первой выборки.
@@ -13,6 +14,8 @@ import AppPage from '~/pages/app.vue'
  */
 const portal = vi.hoisted(() => ({
   initialized: true,
+  /** Сколько лидов «нашёл» портал: ноль под фильтром — подсказка про фильтр, не про портал. */
+  leadTotal: 7,
   /** Отложенный ответ построчной выборки: тест сам решает, когда портал «ответил». */
   pending: {} as Record<string, (rows: unknown[]) => void>,
   /** Портал отвечает ошибкой на первый же пакет. */
@@ -23,7 +26,7 @@ const portal = vi.hoisted(() => ({
 function batchAnswer(commands: Record<string, unknown>) {
   const data: Record<string, { getTotal: () => number, getData: () => { result: unknown[] } }> = {}
   for (const key of Object.keys(commands)) {
-    data[key] = { getTotal: () => (key === 'total' ? 7 : 0), getData: () => ({ result: [] }) }
+    data[key] = { getTotal: () => (key === 'total' ? portal.leadTotal : 0), getData: () => ({ result: [] }) }
   }
   return { isSuccess: true, getData: () => data, getErrorMessages: () => [] }
 }
@@ -67,6 +70,7 @@ mockNuxtImport('useB24', () => () => ({
 
 beforeEach(() => {
   portal.initialized = true
+  portal.leadTotal = 7
   portal.pending = {}
   portal.batchThrows = false
   portal.batchCalls = 0
@@ -83,6 +87,8 @@ describe('страница отчёта в портале', () => {
     const before = wrapper.text()
     expect(before).toContain('Загрузка')
     expect(before).not.toContain('Сводка')
+    // Панель фильтров — тоже после первой выборки: смена фильтра до неё слала бы второй запрос.
+    expect(before).not.toContain('Фильтры:')
     expect(before).not.toContain('Демо-данные')
     expect(before).not.toContain('Это НЕ данные вашего портала')
     // Период демо-набора (август) на панели не показывается — только выбранный.
@@ -92,6 +98,7 @@ describe('страница отчёта в портале', () => {
     await vi.waitFor(() => expect(wrapper.text()).not.toContain('Загрузка…'))
     const after = wrapper.text()
     expect(after).toContain('1. Сводка')
+    expect(after).toContain('Фильтры:')
     expect(after).not.toContain('Демо-данные')
     // Справка блока 7 ещё считается — и говорит об этом сама, не задерживая отчёт.
     expect(after).toContain('Считаем успешные сделки без лида')
@@ -130,6 +137,32 @@ describe('страница отчёта в портале', () => {
     expect(portal.batchCalls).toBe(1)
     expect(wrapper.text()).toContain('Показан демонстрационный набор')
     expect(wrapper.text()).toContain('Это НЕ данные вашего портала')
+  })
+
+  // Под фильтром пустота объяснима самим фильтром, а причина проигрыша по построению обнуляет
+  // продажи — оба случая экран обязан подписать, иначе читаются как поломка отчёта.
+  it('под фильтром: пустой период — про фильтр, причина проигрыша — плашка, блок 7 подписан', async () => {
+    const wrapper = await mountSuspended(AppPage)
+    await vi.waitFor(() => expect(mainKeys()).toHaveLength(1))
+    const from = mainKeys()[0]!
+    portal.pending[from]!([])
+    await vi.waitFor(() => expect(wrapper.text()).toContain('1. Сводка'))
+
+    portal.leadTotal = 0
+    wrapper.findComponent(ReportFilters).vm.$emit('update:modelValue', { sourceId: 'CALL' })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Читаем лиды и сделки портала…'))
+    portal.pending[from]!([])
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Под выбранными фильтрами за этот период лидов нет'))
+    expect(wrapper.text()).not.toContain('Последний лид создан')
+    expect(wrapper.text()).toContain('Фильтры отчёта здесь не действуют')
+    expect(wrapper.text()).not.toContain('Успешных сделок под этим фильтром не бывает')
+
+    portal.leadTotal = 7
+    wrapper.findComponent(ReportFilters).vm.$emit('update:modelValue', { lossReasonKey: 'дорого' })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Читаем лиды и сделки портала…'))
+    portal.pending[from]!([])
+    await vi.waitFor(() => expect(wrapper.text()).toContain('Успешных сделок под этим фильтром не бывает'))
+    expect(wrapper.text()).not.toContain('Под выбранными фильтрами')
   })
 
   it('вне портала «Загрузка» сменяется демо-набором с предупреждением', async () => {

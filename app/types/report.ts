@@ -326,8 +326,32 @@ export interface ReportDictionaries {
   sources: Record<string, string>
   junkReasons: Record<string, string>
   lossReasons: Record<string, string>
-  /** Все стадии лида (код → имя) — для разбивки открытых лидов по стадиям. */
+  /** Все стадии лида (код → имя) — для разбивки открытых лидов по стадиям и фильтра. */
   leadStages?: Record<string, string>
+  /** Сотрудники (id → «Фамилия Имя») — для фильтра по менеджеру. Только с портала. */
+  users?: Record<string, string>
+  /**
+   * Коды стадий провала под каждым каноничным ключом причины проигрыша (обратная карта к
+   * `reasonMerge`). Нужна тому, кто строит запрос «тем же фильтром, что дал число»: фильтру
+   * сейчас, детализации по клику — потом. Только с портала.
+   */
+  lossReasonCodes?: Record<string, string[]>
+}
+
+/**
+ * Фильтры отчёта из ТЗ от 2026-09-04. Все необязательны; пустое значение — «без фильтра».
+ *
+ * - `assignedById` — ответственный ЛИДА (решение владельца);
+ * - `leadStatusId` и `junkReasonId` — одно поле лида `STATUS_ID`, вместе не задаются;
+ * - `lossReasonKey` — каноничный ключ причины проигрыша (`reasonMerge`), действует на сделки.
+ * На блок 7 фильтры не действуют.
+ */
+export interface ReportFilters {
+  sourceId?: string
+  assignedById?: number
+  leadStatusId?: string
+  junkReasonId?: string
+  lossReasonKey?: string
 }
 
 /** Границы периода отчёта: ISO-даты `YYYY-MM-DD`, обе включительно. */

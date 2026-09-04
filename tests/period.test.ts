@@ -6,8 +6,7 @@ import {
   periodLengthDays,
   resolvePreset,
   toIsoDate,
-  validatePeriod
-} from '~/utils/period'
+  validatePeriod, samePeriod } from '~/utils/period'
 
 /** 3 сентября 2026 — тот самый день, когда заказчик открыл отчёт и увидел пустой месяц. */
 const TODAY = new Date(2026, 8, 3)
@@ -187,5 +186,13 @@ describe('validatePeriod', () => {
   it('ровно граничная длина проходит', () => {
     expect(validatePeriod({ from: '2026-01-01', to: '2026-01-10' }, 10)).toBeUndefined()
     expect(validatePeriod({ from: '2026-01-01', to: '2026-01-11' }, 10)?.message).toContain('покороче')
+  })
+})
+
+describe('samePeriod', () => {
+  it('сравнивает по границам, пустое — не совпадает ни с чем', () => {
+    expect(samePeriod({ from: '2026-08-01', to: '2026-08-31' }, { from: '2026-08-01', to: '2026-08-31' })).toBe(true)
+    expect(samePeriod({ from: '2026-08-01', to: '2026-08-31' }, { from: '2026-08-01', to: '2026-08-30' })).toBe(false)
+    expect(samePeriod(undefined, { from: '2026-08-01', to: '2026-08-31' })).toBe(false)
   })
 })
