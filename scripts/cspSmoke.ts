@@ -117,8 +117,13 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2'
 }
 
-/** Статика с боевым заголовком на свободном порту. `root` — абсолютный путь. */
-async function serve(root: string, csp: string): Promise<{ origin: string, close: () => void }> {
+/**
+ * Статика с боевым заголовком на свободном порту. `root` — абсолютный путь.
+ *
+ * Экспортирована ради теста: браузера ей не нужно, а выход за корень и отдача `index.html`
+ * каталогу — ровно то, что дешевле поймать тестом, чем ревью.
+ */
+export async function serve(root: string, csp: string): Promise<{ origin: string, close: () => void }> {
   const server = createServer(async (req, res) => {
     try {
       const pathname = decodeURIComponent(new URL(req.url ?? '/', 'http://localhost').pathname)
