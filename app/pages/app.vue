@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import type { ReportPeriod } from '~/types/report'
 import { formatDate } from '~/utils/format'
-import { resolvePreset } from '~/utils/period'
+import { periodLengthDays, resolvePreset } from '~/utils/period'
 
 /**
  * Главный экран — сам отчёт. Открывается порталом из пункта CRM-аналитики (`CRM_ANALYTICS_MENU`).
  */
-const { dataset, report, isDemo, pending, error, warnings, latestLeadDate, load } = useReportData()
+const { dataset, report, isDemo, pending, error, unlinkedPending, unlinkedError, unlinkedDeferred, startUnlinked, warnings, latestLeadDate, load } = useReportData()
 
 /**
  * «Сегодня» фиксируется ОДИН раз на открытие отчёта.
@@ -55,6 +55,17 @@ onMounted(async () => {
 function samePeriod(a: ReportPeriod, b: ReportPeriod): boolean {
   return a.from === b.from && a.to === b.to
 }
+
+/**
+ * Сколько ждать справку блока 7, в минутах: ≈ 5 500 строк на месяц по замеру боевого портала
+ * (`docs/PORTAL.md`), то есть около минуты на каждые 30 дней. Год — минут двенадцать, и
+ * обещать «примерно минуту» на нём значило бы, что человек решит, будто отчёт завис.
+ */
+const unlinkedEstimateMinutes = computed(() => Math.max(1, Math.round(periodLengthDays(dataset.value.period) / 30)))
+
+// Справка блока 7 приходит на минуту позже отчёта и меняет высоту страницы — портал должен
+// узнать об этом, иначе таблица уедет под нижний край фрейма.
+watch([unlinkedPending, unlinkedDeferred], fit)
 
 /**
  * Первая загрузка идёт из `onMounted`, а НЕ из наблюдателя за периодом.
@@ -239,10 +250,18 @@ async function fit() {
           :dictionaries="dataset.dictionaries"
         />
 
+        <!-- Блок-справка есть только у портала: на демо такого множества нет. Пока фоновая
+             выборка идёт, блок сам говорит, что считает. -->
         <ReportUnlinkedDeals
-          v-if="dataset.unlinkedDeals"
+          v-if="!isDemo"
           :unlinked="dataset.unlinkedDeals"
+          :pending="unlinkedPending"
+          :deferred="unlinkedDeferred"
+          :estimate-minutes="unlinkedEstimateMinutes"
+          :error="unlinkedError"
           :dictionaries="dataset.dictionaries"
+          :currency-id="dataset.currencyId"
+          @start="startUnlinked"
         />
       </template>
     </main>

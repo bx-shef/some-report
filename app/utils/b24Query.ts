@@ -1,5 +1,5 @@
 import type { ReportPeriod } from '~/types/report'
-import { dealCountKey, leadCountKey, unlinkedDealKey } from '~/utils/b24Adapter'
+import { dealCountKey, leadCountKey } from '~/utils/b24Adapter'
 
 /**
  * Запросы к порталу: что именно спрашиваем у CRM за период отчёта.
@@ -152,28 +152,27 @@ export function dealContextBatch(period: ReportPeriod): Record<string, BatchComm
 }
 
 /**
- * Сделки без связи с лидом за период — счётчиками, по источникам.
- *
- * ⚠ `LEAD_ID: ''` — так портал понимает «поле пусто» (проверено на боевом портале: 9 191 из
- * 10 178 за август). Два счётчика на источник (всего и успешных) плюс итог и успешные всего:
- * `2 + 2 × источников` команд — у заказчика 33 источника, 68 команд, два пакета, ~3 с. Строк не
- * читаем: тут нужно только «сколько», и 180 страниц по 0,54 с ради этого никто ждать не будет.
- *
- * Пустой источник отдельно НЕ спрашиваем — он вычисляется остатком в `adaptUnlinkedDeals`
- * (см. там, почему). Все сделки периода тоже не спрашиваем: их уже даёт `dealContextBatch`.
+ * Поля успешной сделки без лида: источник и деньги. Стадия, лид и дата закрытия уже в фильтре —
+ * `CLOSEDATE` в выборку не берём: строк ≈ 5 500 в месяц, каждое лишнее поле — лишний трафик.
  */
-export function unlinkedDealBatch(period: ReportPeriod, sourceIds: readonly string[]): Record<string, BatchCommand> {
-  const method = 'crm.deal.list'
-  const unlinked = { ...periodFilter(period), LEAD_ID: '' }
-  const commands: Record<string, BatchCommand> = {
-    [unlinkedDealKey.total]: countCommand(method, unlinked),
-    [unlinkedDealKey.won]: countCommand(method, { ...unlinked, STAGE_SEMANTIC_ID: 'S' })
+export const UNLINKED_DEAL_SELECT = ['ID', 'SOURCE_ID', 'OPPORTUNITY', 'CURRENCY_ID'] as const
+
+/**
+ * Успешные сделки БЕЗ лида, закрытые в периоде, — строками.
+ *
+ * ⚠ Период здесь по `CLOSEDATE`, а не по дате создания, как во всём остальном отчёте. Это
+ * решение владельца от 2026-09-04: блок — справка «сколько денег прошло мимо лидов за период»,
+ * и для денег важен момент закрытия. Строк ≈ 5 500 в месяц на боевом портале (около минуты),
+ * поэтому выборка идёт фоном после основного отчёта, а не внутри него.
+ *
+ * `LEAD_ID: ''` — так портал понимает «поле пусто» (проверено на боевом портале: 9 191 из 10 178
+ * за август, ровно разность «все − с лидом»).
+ */
+export function unlinkedWonDealsParams(period: ReportPeriod) {
+  return {
+    select: [...UNLINKED_DEAL_SELECT],
+    filter: { ...periodFilter(period, 'CLOSEDATE'), LEAD_ID: '', STAGE_SEMANTIC_ID: 'S' }
   }
-  for (const sourceId of sourceIds) {
-    commands[unlinkedDealKey.source(sourceId)] = countCommand(method, { ...unlinked, SOURCE_ID: sourceId })
-    commands[unlinkedDealKey.sourceWon(sourceId)] = countCommand(method, { ...unlinked, SOURCE_ID: sourceId, STAGE_SEMANTIC_ID: 'S' })
-  }
-  return commands
 }
 
 /**

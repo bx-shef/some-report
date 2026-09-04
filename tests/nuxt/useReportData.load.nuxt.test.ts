@@ -15,7 +15,7 @@ const portal = vi.hoisted(() => ({
   /** Сколько лидов «нашёл» портал за период. Ноль включает подсказку о последнем лиде. */
   leadTotal: 7,
   /** Отложенные ответы постраничной выборки по периоду: тест сам решает, кто ответит первым. */
-  pending: {} as Record<string, (rows: unknown[]) => void>,
+  pending: {} as Record<string, (rows: unknown[] | Error) => void>,
   calls: [] as string[]
 }))
 
@@ -23,7 +23,7 @@ const portal = vi.hoisted(() => ({
 function batchAnswer(commands: Record<string, unknown>) {
   const data: Record<string, { getTotal: () => number, getData: () => { result: unknown[] } }> = {}
   for (const key of Object.keys(commands)) {
-    data[key] = { getTotal: () => (key === 'total' ? portal.leadTotal : key === 'unlinked' ? 5 : 0), getData: () => ({ result: [] }) }
+    data[key] = { getTotal: () => (key === 'total' ? portal.leadTotal : 0), getData: () => ({ result: [] }) }
   }
   return { isSuccess: true, getData: () => data, getErrorMessages: () => [] }
 }
@@ -39,22 +39,37 @@ mockNuxtImport('useB24', () => () => ({
       v2: {
         batch: { make: async ({ calls }: { calls: Record<string, unknown> }) => batchAnswer(calls) },
         call: {
-          make: async ({ method }: { method: string }) => ({
-            isSuccess: true,
-            // ⚠ Как и живой SDK: `getData()` отдаёт КОНВЕРТ `{ result }`, а не сами строки.
-            getData: () => ({
-              result: method === 'crm.lead.list'
-                ? [{ ID: '5', DATE_CREATE: '2026-08-17T10:00:00+03:00' }]
-                : { categories: [] }
+          make: ({ method, params }: { method: string, params: { filter?: Record<string, string> } }) => {
+            // Справка блока 7 — своим курсором по ID (отменяемая выборка), страница за страницей.
+            if (method === 'crm.deal.list') {
+              const key = `closed:${params.filter?.['>=CLOSEDATE'] ?? '?'}`
+              portal.calls.push(key)
+              return new Promise((resolve) => {
+                portal.pending[key] = rows => resolve(rows instanceof Error
+                  ? { isSuccess: false, getData: () => undefined, getErrorMessages: () => [rows.message] }
+                  : { isSuccess: true, getData: () => ({ result: rows }), getErrorMessages: () => [] })
+              })
+            }
+            return Promise.resolve({
+              isSuccess: true,
+              // ⚠ Как и живой SDK: `getData()` отдаёт КОНВЕРТ `{ result }`, а не сами строки.
+              getData: () => ({
+                result: method === 'crm.lead.list'
+                  ? [{ ID: '5', DATE_CREATE: '2026-08-17T10:00:00+03:00' }]
+                  : { categories: [] }
+              }),
+              getErrorMessages: () => []
             })
-          })
+          }
         },
         callList: {
           make: ({ params }: { params: { filter: Record<string, string> } }) => {
             const from = params.filter['>=DATE_CREATE'] ?? '?'
             portal.calls.push(from)
             return new Promise((resolve) => {
-              portal.pending[from] = rows => resolve({ isSuccess: true, getData: () => rows, getErrorMessages: () => [] })
+              portal.pending[from] = rows => resolve(rows instanceof Error
+                ? { isSuccess: false, getData: () => undefined, getErrorMessages: () => [rows.message] }
+                : { isSuccess: true, getData: () => rows, getErrorMessages: () => [] })
             })
           }
         }
@@ -94,13 +109,14 @@ describe('load', () => {
     expect(data.pending.value).toBe(false)
   })
 
-  // Блок «Сделки без связи с лидом» существует только у портала: на демо такого множества нет.
-  // Ключ `unlinked` в моке отдаёт 5 — чтобы отличить «заполнен настоящим числом» от «нулями».
-  it('сделки без лида: на портале заполнены, на демо отсутствуют', async () => {
+  // Блок «Успешные сделки без связи с лидом» существует только у портала и грузится ФОНОМ:
+  // основной отчёт готов раньше, чем придут ≈ 5 500 строк справки.
+  it('сделки без лида: на демо отсутствуют, на портале приходят фоном после основного отчёта', async () => {
     portal.initialized = false
     const demo = useReportData()
     await demo.load(AUGUST)
     expect(demo.dataset.value.unlinkedDeals).toBeUndefined()
+    expect(demo.unlinkedPending.value).toBe(false)
 
     portal.initialized = true
     const live = useReportData()
@@ -108,8 +124,117 @@ describe('load', () => {
     await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
     portal.pending[AUGUST.from]!([])
     await loading
-    expect(live.dataset.value.unlinkedDeals?.total).toBe(5)
-    expect(live.dataset.value.unlinkedDeals?.rows.map(r => r.count)).toEqual([5])
+    // Основной отчёт готов, справка ещё считается — и об этом сказано отдельным флагом.
+    expect(live.pending.value).toBe(false)
+    expect(live.isDemo.value).toBe(false)
+    expect(live.unlinkedPending.value).toBe(true)
+    expect(live.dataset.value.unlinkedDeals).toBeUndefined()
+
+    await vi.waitFor(() => expect(portal.pending[`closed:${AUGUST.from}`]).toBeDefined())
+    portal.pending[`closed:${AUGUST.from}`]!([{ ID: '1', SOURCE_ID: '', OPPORTUNITY: '500', CURRENCY_ID: 'BYN' }])
+    await vi.waitFor(() => expect(live.unlinkedPending.value).toBe(false))
+    expect(live.dataset.value.unlinkedDeals?.total).toBe(1)
+    expect(live.dataset.value.unlinkedDeals?.revenue).toBe(500)
+  })
+
+  // ⚠ Смена периода, пока справка за прошлый период ещё идёт: её ответ обязан пропасть, иначе
+  // под сентябрьской воронкой окажется августовский блок 7.
+  it('ответ справки за прошлый период после смены периода выбрасывается', async () => {
+    const data = useReportData()
+    const first = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await first
+    await vi.waitFor(() => expect(portal.pending[`closed:${AUGUST.from}`]).toBeDefined())
+
+    const second = data.load(SEPTEMBER)
+    await vi.waitFor(() => expect(portal.pending[SEPTEMBER.from]).toBeDefined())
+    // Августовская справка отвечает ПОСЛЕ того, как спросили сентябрь.
+    portal.pending[`closed:${AUGUST.from}`]!([{ ID: '1', SOURCE_ID: '', OPPORTUNITY: '500' }])
+    portal.pending[SEPTEMBER.from]!([])
+    await second
+    expect(data.dataset.value.period).toEqual(SEPTEMBER)
+    expect(data.dataset.value.unlinkedDeals).toBeUndefined()
+    await vi.waitFor(() => expect(portal.pending[`closed:${SEPTEMBER.from}`]).toBeDefined())
+    portal.pending[`closed:${SEPTEMBER.from}`]!([])
+    await vi.waitFor(() => expect(data.unlinkedPending.value).toBe(false))
+    expect(data.dataset.value.unlinkedDeals?.total).toBe(0)
+  })
+
+  // ⚠ Устаревшая выборка обязана ОСТАНОВИТЬСЯ, а не только выбросить результат: год — это
+  // ≈ 1 300 страниц, и три быстрых клика по периодам исчерпали бы лимит запросов портала.
+  it('осиротевшая справка не запрашивает следующую страницу', async () => {
+    const data = useReportData()
+    const first = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await first
+    await vi.waitFor(() => expect(portal.pending[`closed:${AUGUST.from}`]).toBeDefined())
+    const calls = portal.calls.filter(c => c === `closed:${AUGUST.from}`).length
+
+    const second = data.load(SEPTEMBER)
+    await vi.waitFor(() => expect(portal.pending[SEPTEMBER.from]).toBeDefined())
+    // Полная страница из 50 строк обещает продолжение — но выборка уже чужая.
+    const fullPage = Array.from({ length: 50 }, (_, i) => ({ ID: String(i + 1), SOURCE_ID: '', OPPORTUNITY: '1' }))
+    portal.pending[`closed:${AUGUST.from}`]!(fullPage)
+    portal.pending[SEPTEMBER.from]!([])
+    await second
+    await vi.waitFor(() => expect(portal.pending[`closed:${SEPTEMBER.from}`]).toBeDefined())
+    expect(portal.calls.filter(c => c === `closed:${AUGUST.from}`).length).toBe(calls)
+  })
+
+  // ⚠ Год — ≈ 1 300 страниц. Сама справка на таком периоде не стартует; стартует по кнопке —
+  // и только для того периода, что на экране.
+  it('на периоде длиннее квартала справка ждёт кнопки, по кнопке — стартует', async () => {
+    const YEAR = { from: '2026-01-01', to: '2026-12-31' }
+    const data = useReportData()
+    const loading = data.load(YEAR)
+    await vi.waitFor(() => expect(portal.pending[YEAR.from]).toBeDefined())
+    portal.pending[YEAR.from]!([])
+    await loading
+    expect(data.unlinkedDeferred.value).toBe(true)
+    expect(data.unlinkedPending.value).toBe(false)
+    expect(portal.calls.some(c => c.startsWith('closed:'))).toBe(false)
+
+    data.startUnlinked()
+    expect(data.unlinkedDeferred.value).toBe(false)
+    await vi.waitFor(() => expect(portal.pending[`closed:${YEAR.from}`]).toBeDefined())
+    portal.pending[`closed:${YEAR.from}`]!([])
+    await vi.waitFor(() => expect(data.unlinkedPending.value).toBe(false))
+    expect(data.dataset.value.unlinkedDeals?.total).toBe(0)
+  })
+
+  it('ошибка справки — своя ошибка, индикатор снят, основной отчёт цел', async () => {
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await loading
+    await vi.waitFor(() => expect(portal.pending[`closed:${AUGUST.from}`]).toBeDefined())
+    portal.pending[`closed:${AUGUST.from}`]!(new Error('нет доступа'))
+    await vi.waitFor(() => expect(data.unlinkedPending.value).toBe(false))
+    expect(data.unlinkedError.value).toContain('нет доступа')
+    expect(data.error.value).toBeUndefined()
+    expect(data.isDemo.value).toBe(false)
+    expect(data.dataset.value.unlinkedDeals).toBeUndefined()
+  })
+
+  // ⚠ Новая выборка упала до запуска своей справки, а справка прошлой ещё шла: без сброса
+  // «Считаем…» от осиротевшей висело бы бесконечно под плашкой об ошибке.
+  it('новая выборка снимает индикатор справки прошлого периода, даже если сама упала', async () => {
+    const data = useReportData()
+    const first = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await first
+    await vi.waitFor(() => expect(data.unlinkedPending.value).toBe(true))
+
+    const second = data.load(SEPTEMBER)
+    await vi.waitFor(() => expect(portal.pending[SEPTEMBER.from]).toBeDefined())
+    portal.pending[SEPTEMBER.from]!(new Error('портал недоступен'))
+    await second
+    expect(data.error.value).toContain('портал недоступен')
+    expect(data.unlinkedPending.value).toBe(false)
   })
 
   // ⚠ Подсказка читала конверт ответа вместо строк и не срабатывала НИКОГДА — на пустом периоде

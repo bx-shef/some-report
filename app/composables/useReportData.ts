@@ -5,7 +5,7 @@ import {
   adaptDeals,
   adaptDealsContext,
   adaptLeadCounts,
-  adaptUnlinkedDeals,
+  adaptUnlinkedWonDeals,
   baseCurrency,
   lossStages,
   statusIdsBySemantic,
@@ -20,10 +20,10 @@ import {
   latestLeadParams,
   leadCountBatch,
   type BatchCommand,
-  unlinkedDealBatch
+  unlinkedWonDealsParams
 } from '~/utils/b24Query'
 import { buildReport, buildReportFromAggregate } from '~/utils/metrics'
-import { resolvePreset } from '~/utils/period'
+import { periodLengthDays, resolvePreset } from '~/utils/period'
 import { buildMockDataset } from '~/utils/mockReport'
 
 /**
@@ -37,6 +37,14 @@ import { buildMockDataset } from '~/utils/mockReport'
  * данные неоткуда. Признак `isDemo` обязан это показывать: отчёт, молча выдающий чужие числа за
  * данные клиента, хуже отсутствующего отчёта.
  */
+/**
+ * До скольких дней справка блока 7 стартует сама. 92 дня — квартал: ≈ 16 500 строк, минуты три.
+ * Дальше — только по кнопке: год стоил бы минут двенадцать, и запускать это от случайного клика
+ * по «Текущий год» нельзя. Порог — решение разработчика от 2026-09-04 (владельца не спрашивали),
+ * менять — одну константу.
+ */
+export const UNLINKED_AUTO_MAX_DAYS = 92
+
 export function useReportData() {
   /**
    * Знаменатель конверсий — `Лиды − Брак`, как в ТЗ от 2026-09-04.
@@ -71,6 +79,21 @@ export function useReportData() {
   const dataset = ref<ReportDataset>(buildMockDataset())
   const pending = ref(false)
   const error = ref<string | undefined>(undefined)
+  /**
+   * Блок 7 «Успешные сделки без лида» грузится ФОНОМ после основного отчёта: это ≈ 5 500 строк в
+   * месяц (около минуты), и заставлять руководителя ждать справку вместе с воронкой нельзя.
+   * У блока свой индикатор и своя ошибка — основной отчёт от них не зависит.
+   */
+  const unlinkedPending = ref(false)
+  const unlinkedError = ref<string | undefined>(undefined)
+  /**
+   * Справка отложена: период длиннее `UNLINKED_AUTO_MAX_DAYS`, и выборка стартует только по
+   * кнопке. Год — это ≈ 1 300 страниц и минут двенадцать; запускать такое от случайного клика
+   * по «Текущий год» нельзя, а от осознанного — можно.
+   */
+  const unlinkedDeferred = ref(false)
+  /** Что нужно, чтобы запустить справку позже по кнопке: тот же период и справочники, что у отчёта. */
+  let unlinkedContext: { period: ReportPeriod, mine: number, currencies: B24CurrencyRow[], sourceIds: string[] } | undefined
   /** Оговорки адаптера к качеству данных портала. Пока источник демонстрационный — их нет. */
   const warnings = ref<AdapterWarnings | undefined>(undefined)
   /**
@@ -122,6 +145,39 @@ export function useReportData() {
     const result = await b24.getOrThrow().actions.v2.callList.make<T>({ method, params })
     if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
     return (result.getData() ?? []) as T[]
+  }
+
+  /**
+   * Постраничная выборка, которую МОЖНО бросить на полпути.
+   *
+   * ⚠ `callList` SDK отмены не знает: начатая выборка идёт до конца, даже если её результат уже
+   * никому не нужен. Для фоновой справки блока 7 это ≈ 110 страниц на месяц и ≈ 1 300 на год —
+   * каждая смена периода оставляла бы в портале ещё одну многоминутную выборку, и три быстрых
+   * клика по периодам исчерпали бы лимит запросов портала для ОСНОВНОГО отчёта. Поэтому здесь
+   * свой курсор по `ID` (тот же приём, что у `callList`: `start: -1` отключает подсчёт итога), и
+   * между страницами спрашиваем, не устарела ли выборка.
+   */
+  async function fetchAllUntil<T extends { ID?: string | number }>(
+    method: string,
+    params: { select: string[], filter: Record<string, unknown> },
+    stale: () => boolean
+  ): Promise<T[]> {
+    const rows: T[] = []
+    let lastId = 0
+    while (!stale()) {
+      const result = await b24.getOrThrow().actions.v2.call.make<T[]>({
+        method,
+        params: { ...params, order: { ID: 'ASC' }, filter: { ...params.filter, '>ID': lastId }, start: -1 }
+      })
+      if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
+      const page = result.getData()?.result
+      if (!Array.isArray(page) || page.length === 0) break
+      rows.push(...page)
+      const last = Number(page[page.length - 1]?.ID)
+      if (page.length < 50 || !Number.isFinite(last) || last <= lastId) break
+      lastId = last
+    }
+    return rows
   }
 
   /**
@@ -207,6 +263,12 @@ export function useReportData() {
     const mine = ++seq
     pending.value = true
     error.value = undefined
+    // Справка прошлого периода больше не наша: индикатор и ошибка — заново. Иначе, если новая
+    // выборка упадёт, «Считаем…» от осиротевшей висело бы бесконечно.
+    unlinkedPending.value = false
+    unlinkedError.value = undefined
+    unlinkedDeferred.value = false
+    unlinkedContext = undefined
     try {
       /**
        * Порядок шагов и почему именно так — см. `docs/PORTAL.md` § «Что делать с объёмами».
@@ -225,7 +287,7 @@ export function useReportData() {
 
       // Шаги 2–5 независимы друг от друга — идут параллельно. Последовательно они стоили бы ещё
       // 4–5 секунд поверх самого долгого шага (строки сделок), ожидая ничего.
-      const [dealStages, leadTotals, dealRows, dealTotals, unlinkedTotals] = await Promise.all([
+      const [dealStages, leadTotals, dealRows, dealTotals] = await Promise.all([
         // 2. Стадии сделок ВСЕХ направлений: `DEAL_STAGE` — только направление по умолчанию,
         //    у заказчика их четыре. Без остальных причина проигрыша приедет кодом вместо названия.
         fetchCategoryIds().then(ids => batchRows<B24StatusRow>(dealStageBatch(ids))).then(books => Object.values(books).flat()),
@@ -234,10 +296,7 @@ export function useReportData() {
         // 4. Сделки из лидов — строками: ради выручки и причин проигрыша. Их ~10 % от всех.
         fetchAll<B24DealRow>('crm.deal.list', dealsFromLeadsParams(period)),
         // 5. Сделки всего портала — три счётчика, чтобы «успешных: 636» не читалось как «всего продаж».
-        batchTotals(dealContextBatch(period)),
-        // 6. Сделки БЕЗ лида по источникам — факт о процессе, который отчёт обязан показать,
-        //    а не спрятать в оговорку: на боевом портале это 90 % сделок.
-        batchTotals(unlinkedDealBatch(period, sourceIds))
+        batchTotals(dealContextBatch(period))
       ])
 
       if (mine !== seq) return
@@ -256,7 +315,6 @@ export function useReportData() {
         deals: adaptedDeals.deals,
         leadAggregate,
         allDeals: dealsContext,
-        unlinkedDeals: adaptUnlinkedDeals(unlinkedTotals, sourceIds, dealsContext.won + dealsContext.lost + dealsContext.inWork),
         dictionaries: {
           sources: statusNames(sources),
           junkReasons: statusNames(leadStatuses),
@@ -286,6 +344,12 @@ export function useReportData() {
         latestLeadDate.value = latest
       }
       source.value = 'portal'
+      // 6. Успешные сделки БЕЗ лида — строками, фоном: основной отчёт уже на экране. Факт о
+      //    процессе, который отчёт обязан показать, а не спрятать: на боевом портале это 90 % сделок.
+      //    На длинном периоде — только по кнопке (см. `unlinkedDeferred`).
+      unlinkedContext = { period, mine, currencies, sourceIds }
+      if (periodLengthDays(period) <= UNLINKED_AUTO_MAX_DAYS) void loadUnlinked(period, mine, currencies, sourceIds)
+      else unlinkedDeferred.value = true
     } catch (e) {
       if (mine === seq) error.value = e instanceof Error ? e.message : String(e)
     } finally {
@@ -295,5 +359,32 @@ export function useReportData() {
     }
   }
 
-  return { dataset, report, firstResponseSlaMinutes, pending, error, source, isDemo, warnings, latestLeadDate, load }
+  /**
+   * Блок 7 отдельной выборкой. `mine` — номер выборки, породившей её: ответ, пришедший после
+   * смены периода, выбрасывается так же, как ответы основного отчёта.
+   */
+  async function loadUnlinked(period: ReportPeriod, mine: number, currencies: B24CurrencyRow[], sourceIds: readonly string[]): Promise<void> {
+    unlinkedPending.value = true
+    unlinkedError.value = undefined
+    try {
+      // Собственные исключения ловим здесь же: вызов идёт без `await`, и необработанный отказ
+      // ушёл бы в консоль, а не на экран.
+      const rows = await fetchAllUntil<B24DealRow>('crm.deal.list', unlinkedWonDealsParams(period), () => mine !== seq)
+      if (mine !== seq) return
+      dataset.value = { ...dataset.value, unlinkedDeals: adaptUnlinkedWonDeals(rows, currencies, sourceIds) }
+    } catch (e) {
+      if (mine === seq) unlinkedError.value = e instanceof Error ? e.message : String(e)
+    } finally {
+      if (mine === seq) unlinkedPending.value = false
+    }
+  }
+
+  /** Запустить отложенную справку блока 7 — по кнопке, для того же периода, что на экране. */
+  function startUnlinked(): void {
+    if (!unlinkedContext || unlinkedContext.mine !== seq) return
+    unlinkedDeferred.value = false
+    void loadUnlinked(unlinkedContext.period, unlinkedContext.mine, unlinkedContext.currencies, unlinkedContext.sourceIds)
+  }
+
+  return { dataset, report, firstResponseSlaMinutes, pending, error, unlinkedPending, unlinkedError, unlinkedDeferred, startUnlinked, source, isDemo, warnings, latestLeadDate, load }
 }
