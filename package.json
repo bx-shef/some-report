@@ -22,6 +22,7 @@
     "test": "vitest run",
     "typecheck": "vue-tsc --noEmit && vue-tsc -p tsconfig.node.json --noEmit",
     "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "smoke": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/cspSmoke.ts .output/public nginx.conf",
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
@@ -42,6 +43,7 @@
     "eslint": "^10.8.1",
     "happy-dom": "^20.11.2",
     "nuxt": "^4.5.2",
+    "playwright-core": "^1.62.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10",
     "vue-tsc": "^3.3.9"

@@ -18,8 +18,8 @@ import { extractInlineScripts, htmlFiles, scriptHash } from './cspHashes.ts'
  *
  * ⚠ Чего этот шаг НЕ ловит: ошибку в самой классификации скриптов (он зовёт тот же
  * `extractInlineScripts`). Её сторожат тесты на настоящей странице Nuxt в
- * `tests/cspHashes.test.ts`, а окончательно — только загрузка страницы браузером с боевым
- * заголовком.
+ * `tests/cspHashes.test.ts`, а окончательно — `scripts/cspSmoke.ts`: загрузка страницы
+ * браузером с боевым заголовком, отдельным шагом CI.
  */
 async function main(): Promise<void> {
   const [dir, configPath] = process.argv.slice(2)

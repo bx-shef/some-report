@@ -33,6 +33,7 @@ pnpm typecheck    # ДВА прохода: приложение (.nuxt/tsconfig.
 pnpm test         # Vitest (оба проекта; быстрый прогон: pnpm test --project unit)
 pnpm check        # lint + typecheck + test — ровно то, что гоняет CI
 pnpm generate     # сборка статики (SSG) → .output/public
+pnpm smoke        # после generate: открыть сборку браузером под боевым CSP; в CI — отдельный шаг
 ```
 
 Страницы приложения вне портала закрыты заглушкой — открывайте с `?preview=1`.
