@@ -1,0 +1,222 @@
+<script setup lang="ts">
+import type { ManagerCellRef, ManagerLoadOffice, ManagerLoadReport } from '~/types/managers'
+import { UNLISTED_MANAGER_LABEL } from '~/utils/managerLoad'
+import { formatCount, formatPercent } from '~/utils/format'
+
+/**
+ * Матрица «офис → менеджер → стадия»: по карточке на офис, строка на менеджера, столбец на
+ * стадию. Компонент только рисует: ни одной формулы здесь нет — всё посчитано ядром
+ * (`app/utils/managerLoad.ts`), а условие списка за числом собирает страница.
+ *
+ * ⚠ Пустых столбцов нет: у направления заказчика 16 стадий, а «в работе» из них четыре.
+ * Сколько скрыто — сказано подписью, чтобы сверка со справочником CRM не выглядела как потеря.
+ *
+ * ⚠ Таблица прокручивается ВНУТРИ карточки (`overflow-x-auto`), а не растягивает страницу: во
+ * фрейме портала горизонтальный скролл всей страницы прячет часть отчёта под край окна.
+ */
+const props = defineProps<{
+  report: ManagerLoadReport
+}>()
+
+const emit = defineEmits<{ drill: [ManagerCellRef] }>()
+
+/** Кому досталось больше всех в офисе — по нему меряются полосы строк. */
+function peak(office: ManagerLoadOffice): number {
+  return office.rows.reduce((max, row) => Math.max(max, row.total), 0)
+}
+
+/** Клик по числу: заголовок списка повторяет то, по чему нажали. */
+function cell(office: ManagerLoadOffice, parts: { managerId?: number, managerName?: string, stageId?: string, stageName?: string, total: number }): ManagerCellRef {
+  const title = [office.officeName, parts.managerName, parts.stageName].filter(Boolean).join(' · ')
+  return {
+    officeId: office.officeId,
+    ...(parts.managerId === undefined ? {} : { managerId: parts.managerId }),
+    ...(parts.stageId === undefined ? {} : { stageId: parts.stageId }),
+    title: `Сделки: ${title}`,
+    total: parts.total
+  }
+}
+
+const hasOther = computed(() => props.report.otherStages > 0)
+</script>
+
+<template>
+  <div class="space-y-4">
+    <B24Card
+      v-for="office in report.offices"
+      :key="office.officeId"
+    >
+      <template #header>
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 class="text-base font-semibold">
+            {{ office.officeName }}
+          </h2>
+          <p class="text-sm opacity-70">
+            сделок: <span class="font-semibold">{{ formatCount(office.total) }}</span>
+            ({{ formatPercent(office.share) }} от всех)
+          </p>
+        </div>
+      </template>
+
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[640px] text-sm">
+          <thead>
+            <tr class="border-b border-[color:var(--chart-track)] text-left text-xs opacity-60">
+              <th class="py-2 pr-3 font-normal">
+                Менеджер
+              </th>
+              <th
+                v-for="stage in report.stages"
+                :key="stage.id"
+                class="py-2 pr-3 text-right font-normal"
+              >
+                {{ stage.name }}
+              </th>
+              <th
+                v-if="hasOther"
+                class="py-2 pr-3 text-right font-normal"
+              >
+                Прочие стадии
+              </th>
+              <th class="py-2 text-right font-normal">
+                Всего
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="row in office.rows"
+              :key="row.managerId"
+              class="border-b border-[color:var(--chart-track)]"
+            >
+              <td class="py-2 pr-3">
+                <div class="min-w-[12rem]">
+                  {{ row.managerName }}
+                  <MetricBar
+                    class="mt-1"
+                    :value="peak(office) ? row.total / peak(office) : 0"
+                    :label="`${row.managerName}: ${formatCount(row.total)}`"
+                  />
+                </div>
+              </td>
+              <td
+                v-for="stage in report.stages"
+                :key="stage.id"
+                class="py-2 pr-3 text-right tabular-nums"
+              >
+                <button
+                  v-if="row.byStage[stage.id]"
+                  type="button"
+                  class="drill-number"
+                  :title="`Открыть список: ${row.managerName}, ${stage.name}`"
+                  @click="emit('drill', cell(office, { managerId: row.managerId, managerName: row.managerName, stageId: stage.id, stageName: stage.name, total: row.byStage[stage.id]! }))"
+                >
+                  {{ formatCount(row.byStage[stage.id]!) }}
+                </button>
+                <span
+                  v-else
+                  class="opacity-30"
+                >—</span>
+              </td>
+              <!-- Стадии вне справочника: число есть, а списка «тем же условием» нет — стадий мы
+                   не знаем. Поэтому оно и не притворяется ссылкой. -->
+              <td
+                v-if="hasOther"
+                class="py-2 pr-3 text-right tabular-nums opacity-70"
+              >
+                {{ row.otherStages ? formatCount(row.otherStages) : '—' }}
+              </td>
+              <td class="py-2 text-right font-semibold tabular-nums">
+                <button
+                  type="button"
+                  class="drill-number"
+                  :title="`Открыть список: все сделки, ${row.managerName}`"
+                  @click="emit('drill', cell(office, { managerId: row.managerId, managerName: row.managerName, total: row.total }))"
+                >
+                  {{ formatCount(row.total) }}
+                </button>
+              </td>
+            </tr>
+
+            <!-- Сделки офиса без строки: ответственный не назначен или не попал в перечисление. -->
+            <tr
+              v-if="office.unlisted > 0"
+              class="border-b border-[color:var(--chart-track)]"
+            >
+              <td class="py-2 pr-3 opacity-70">
+                {{ UNLISTED_MANAGER_LABEL }}
+              </td>
+              <td
+                v-for="stage in report.stages"
+                :key="stage.id"
+                class="py-2 pr-3 text-right opacity-30"
+              >
+                —
+              </td>
+              <td
+                v-if="hasOther"
+                class="py-2 pr-3 text-right opacity-30"
+              >
+                —
+              </td>
+              <td class="py-2 text-right tabular-nums opacity-70">
+                {{ formatCount(office.unlisted) }}
+              </td>
+            </tr>
+          </tbody>
+          <tfoot>
+            <tr class="text-sm font-semibold">
+              <td class="py-2 pr-3">
+                Итого по офису
+              </td>
+              <td
+                v-for="stage in report.stages"
+                :key="stage.id"
+                class="py-2 pr-3 text-right tabular-nums"
+              >
+                <button
+                  v-if="office.byStage[stage.id]"
+                  type="button"
+                  class="drill-number"
+                  :title="`Открыть список: ${office.officeName}, ${stage.name}`"
+                  @click="emit('drill', cell(office, { stageId: stage.id, stageName: stage.name, total: office.byStage[stage.id]! }))"
+                >
+                  {{ formatCount(office.byStage[stage.id]!) }}
+                </button>
+                <span
+                  v-else
+                  class="opacity-30"
+                >—</span>
+              </td>
+              <td
+                v-if="hasOther"
+                class="py-2 pr-3 text-right tabular-nums"
+              >
+                {{ office.otherStages ? formatCount(office.otherStages) : '—' }}
+              </td>
+              <td class="py-2 text-right tabular-nums">
+                <button
+                  type="button"
+                  class="drill-number"
+                  :title="`Открыть список: все сделки офиса ${office.officeName}`"
+                  @click="emit('drill', cell(office, { total: office.total }))"
+                >
+                  {{ formatCount(office.total) }}
+                </button>
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <p
+        v-if="office.unlisted > 0"
+        class="mt-3 text-xs opacity-60"
+      >
+        Строка «{{ UNLISTED_MANAGER_LABEL }}» — разница между итогом офиса и суммой строк:
+        сделки без ответственного или у сотрудника, которого не нашлось среди ответственных
+        (например, его сделки появились уже после того, как отчёт перечислил менеджеров).
+      </p>
+    </B24Card>
+  </div>
+</template>

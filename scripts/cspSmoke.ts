@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
 import { extname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Browser } from 'playwright-core'
-import { PRERENDER_ROUTES, SERVICE_ROUTES } from '../app/config/routes.ts'
+import { PORTAL_HANDLER_ROUTES, PRERENDER_ROUTES } from '../app/config/routes.ts'
 import { HASH_PLACEHOLDER, applyHashes, buildHashDirective, htmlFiles, missingHashes } from './cspHashes.ts'
 
 /**
@@ -49,13 +49,20 @@ export interface PageCheck {
  * Страницы смоука. Список обязан покрывать `PRERENDER_ROUTES` — это проверяется и тестом, и самим
  * прогоном: новая страница, забытая здесь, уедет в статику непроверенной.
  *
- * Маркеры — литералы из `app/pages/app.vue`, `app/utils/period.ts`, `app/pages/install.vue`.
- * Сменили там текст — обновите здесь: смоук упадёт с «нет текста «…»», и это не поломка CSP.
+ * Маркеры — литералы из страниц приложения (`app/pages/app/*.vue`), `app/utils/period.ts` и
+ * `app/pages/install.vue`. Сменили там текст — обновите здесь: смоук упадёт с «нет текста «…»»,
+ * и это не поломка CSP.
  */
 export const PAGES: readonly PageCheck[] = [
   { path: '/', mustContain: [] },
+  // Главная приложения: список отчётов есть в разметке, а плашку «вне портала» рисует только
+  // клиент — после проверки, во фрейме мы или нет.
+  { path: '/app/', mustContain: ['Страница открыта вне портала'] },
   // Вне портала `?preview=1` открывает заглушку на клиенте: плашка и панель периодов — только JS.
-  { path: '/app/?preview=1', mustContain: ['Это НЕ данные вашего портала', 'Текущий месяц'] },
+  { path: '/app/leads/?preview=1', mustContain: ['Это НЕ данные вашего портала', 'Текущий месяц'] },
+  // Второй отчёт: демо-плашка и посчитанная матрица — тоже только JS. «Итого по офису» есть
+  // только в таблице: заголовок страницы для маркера не годится, он уезжает в SSR-разметку.
+  { path: '/app/managers/?preview=1', mustContain: ['Это НЕ данные вашего портала', 'Итого по офису'] },
   // Установщик вне фрейма честно говорит об этом — но говорит это JavaScript, не разметка.
   { path: '/install/', mustContain: ['вне портала Битрикс24'] }
 ]
@@ -322,7 +329,7 @@ async function main(): Promise<void> {
   // не значила бы. Идёт до браузера: nginx проверяется и тогда, когда Chrome не нашёлся.
   const results: PageResult[] = []
   if (imageMode) {
-    for (const path of postPaths(SERVICE_ROUTES)) results.push(await checkPost(server.origin, path))
+    for (const path of postPaths(PORTAL_HANDLER_ROUTES)) results.push(await checkPost(server.origin, path))
   } else {
     console.log('[smoke] POST на обработчики: пропущено — проверяется только на образе (pnpm smoke:image)')
   }

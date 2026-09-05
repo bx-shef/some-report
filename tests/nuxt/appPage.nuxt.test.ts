@@ -1,7 +1,7 @@
 // @vitest-environment nuxt
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
-import AppPage from '~/pages/app.vue'
+import AppPage from '~/pages/app/leads.vue'
 import ReportFilters from '~/components/ReportFilters.vue'
 
 /** Библиотеки экспорта подменены: страница обязана отдать снимку САМ корень отчёта. */

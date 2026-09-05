@@ -6,7 +6,10 @@ import { periodLengthDays, resolvePreset, samePeriod } from '~/utils/period'
 import { PROCESSING_MINUTES_PER_MONTH, UNLINKED_MINUTES_PER_MONTH } from '~/composables/useReportData'
 
 /**
- * Главный экран — сам отчёт. Открывается порталом из пункта CRM-аналитики (`CRM_ANALYTICS_MENU`).
+ * Отчёт «Аналитика по лидам»: путь лида от поступления до закрытия сделки.
+ *
+ * Открывается с главной страницы приложения (`/app`) — её и показывает портал по пункту
+ * CRM-аналитики. Переключатель отчётов — в шапке (`ReportNav`).
  */
 const {
   dataset, report, isDemo, pending, error, warnings, latestLeadDate, load, filters: appliedFilters,
@@ -186,6 +189,8 @@ async function fit() {
       ref="reportRoot"
       class="mx-auto max-w-[90rem] space-y-4 p-4 lg:p-6"
     >
+      <ReportNav />
+
       <!-- Пока идёт первая выборка, на панели ни значка «Демо», ни периода демо-набора:
            «Загрузка» ниже обещает, что чужих чисел на экране нет, — и подпись тоже. -->
       <ReportToolbar
