@@ -1,7 +1,7 @@
 import type { ManagerFilters } from '~/types/managers'
 import type { BatchCommand } from '~/utils/b24Query'
 import { periodFilter } from '~/utils/b24Query'
-import { cellKey, officeKey, pairKey, scopeSemantic, totalKey } from '~/utils/managerLoad'
+import { cellKey, officeKey, officeStageKey, pairKey, scopeSemantic, totalKey } from '~/utils/managerLoad'
 
 /**
  * Запросы отчёта «Сделки по менеджерам»: что именно спрашиваем у портала.
@@ -126,12 +126,33 @@ export function officeCountRequests(officeIds: readonly number[], base: Record<s
 }
 
 /**
+ * Итоги колонок: сколько сделок офиса на каждой стадии.
+ *
+ * ⚠ Отдельные вопросы порталу, а не суммы клеток: в сумму не попали бы сделки без ответственного
+ * (строка «вне таблицы»), и клик по итогу колонки открывал бы список длиннее числа над ним.
+ * Стоят они дёшево — офисов единицы, стадий полтора десятка.
+ */
+export function officeStageCountRequests(
+  officeIds: readonly number[],
+  stageIds: readonly string[],
+  base: Record<string, unknown>
+): CountRequest[] {
+  const out: CountRequest[] = []
+  for (const officeId of officeIds) {
+    for (const stageId of stageIds) {
+      out.push({ key: officeStageKey(officeId, stageId), filter: { ...base, [OFFICE_FIELD]: officeId, STAGE_ID: stageId } })
+    }
+  }
+  return out
+}
+
+/**
  * Итог каждой пары «офис + менеджер».
  *
  * ⚠ Спрашиваем ВСЕ пары, а не только «менеджер работает в этом офисе»: портал не знает, к какому
- * офису относится сотрудник, а сделки одного менеджера бывают в двух офисах. Пар немного —
- * менеджеров у заказчика 72, офисов 2, — а пустые пары дальше отсекаются и не порождают
- * вопросов по стадиям, которых было бы в шестнадцать раз больше.
+ * офису относится сотрудник, а сделки одного менеджера бывают в двух офисах. Пар немного — на
+ * боевом портале 70 менеджеров и 2 офиса (`docs/PORTAL.md`), — а пустые пары дальше отсекаются
+ * и не порождают вопросов по стадиям, которых было бы в шестнадцать раз больше.
  */
 export function pairCountRequests(
   officeIds: readonly number[],

@@ -7,8 +7,10 @@ import {
   officeKey,
   OFFICE_UNSET,
   OFFICE_UNSET_LABEL,
+  officeStageKey,
   pairKey,
   scopeSemantic,
+  stageCountSeconds,
   stagesForScope,
   totalKey
 } from '~/utils/managerLoad'
@@ -169,5 +171,100 @@ describe('buildManagerLoad', () => {
   it('без счётчиков — пустой отчёт, а не деление на ноль', () => {
     const report = buildManagerLoad({ ...input, totals: {} })
     expect(report).toEqual(emptyManagerLoad())
+  })
+})
+
+describe('итоги колонок — счётчики портала, а не суммы клеток', () => {
+  const base = {
+    offices: OFFICES,
+    managers: MANAGERS,
+    stages: stagesForScope(STAGES, 'in-work'),
+    totals: totals({
+      [totalKey()]: 30,
+      [officeKey(10)]: 25,
+      [pairKey(10, 1)]: 12,
+      [cellKey(10, 1, 'NEW')]: 5,
+      [cellKey(10, 1, '1')]: 7,
+      // Итоги колонок больше суммы клеток ровно на сделки без ответственного (25 − 12 = 13).
+      [officeStageKey(10, 'NEW')]: 8,
+      [officeStageKey(10, '1')]: 17
+    })
+  }
+
+  // Ровно та причина, по которой колонка спрашивается отдельно: клик по её итогу открывает
+  // список по «офис + стадия», и число обязано совпадать с длиной этого списка.
+  it('итог колонки берётся из счётчика, даже если он больше суммы строк', () => {
+    const office = buildManagerLoad(base).offices[0]!
+    expect(office.byStage).toEqual({ NEW: 8, 1: 17 })
+    expect(office.total).toBe(25)
+  })
+
+  it('разница раскладывается в строку «вне таблицы» по стадиям', () => {
+    const office = buildManagerLoad(base).offices[0]!
+    expect(office.unlisted).toBe(13)
+    expect(office.unlistedByStage).toEqual({ NEW: 3, 1: 10 })
+  })
+
+  it('сошлось: колонки плюс прочие стадии равны итогу офиса', () => {
+    const office = buildManagerLoad(base).offices[0]!
+    const columns = Object.values(office.byStage).reduce((sum, value) => sum + value, 0)
+    expect(columns + office.otherStages).toBe(office.total)
+  })
+
+  // Стадии считаются по кнопке: колонок нет вовсе, и «прочими» не может стать вся таблица.
+  it('без колонок остатков по стадиям нет', () => {
+    const report = buildManagerLoad({ ...base, stages: [] })
+    expect(report.stages).toEqual([])
+    expect(report.otherStages).toBe(0)
+    expect(report.offices[0]!.rows[0]!.otherStages).toBe(0)
+    expect(report.offices[0]!.total).toBe(25)
+  })
+})
+
+describe('остатки уровня отчёта', () => {
+  // Офис не перечислился (цепочка упёрлась в предел): его сделки есть в общем итоге, но ни в
+  // одной строке. Молчать о них нельзя — это те же «сделки вне таблицы».
+  it('сделки офиса, которого нет в списке, попадают в общий остаток', () => {
+    const report = buildManagerLoad({
+      offices: [{ id: 10, name: 'Минск' }],
+      managers: MANAGERS,
+      stages: stagesForScope(STAGES, 'in-work'),
+      totals: totals({
+        [totalKey()]: 50,
+        [officeKey(10)]: 20,
+        [pairKey(10, 1)]: 20,
+        [cellKey(10, 1, 'NEW')]: 20
+      })
+    })
+    expect(report.total).toBe(50)
+    expect(report.unlisted).toBe(30)
+  })
+})
+
+describe('порядок при равных числах', () => {
+  // Иначе строки прыгали бы между обновлениями, и человек читал бы это как «данные меняются».
+  it('равные итоги сортируются по имени', () => {
+    const report = buildManagerLoad({
+      offices: [{ id: 10, name: 'Минск' }],
+      managers: [{ id: 1, name: 'Яковлев Ян' }, { id: 2, name: 'Абрамов Абрам' }],
+      stages: stagesForScope(STAGES, 'in-work'),
+      totals: totals({
+        [totalKey()]: 10,
+        [officeKey(10)]: 10,
+        [pairKey(10, 1)]: 5,
+        [pairKey(10, 2)]: 5
+      })
+    })
+    expect(report.offices[0]!.rows.map(row => row.managerName)).toEqual(['Абрамов Абрам', 'Яковлев Ян'])
+  })
+})
+
+describe('stageCountSeconds', () => {
+  // По этой оценке экран обещает время ожидания — обещание должно быть не оптимистичнее замера.
+  it('считает по пакетам, а не по клеткам', () => {
+    expect(stageCountSeconds(0)).toBe(0)
+    expect(stageCountSeconds(50)).toBe(2)
+    expect(stageCountSeconds(51)).toBe(4)
+    expect(stageCountSeconds(3000)).toBe(120)
   })
 })

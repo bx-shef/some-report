@@ -78,8 +78,32 @@ export function pairKey(officeId: number, managerId: number): string {
   return `p|${officeId}|${managerId}`
 }
 
+/**
+ * Счётчик «офис + стадия» — итог колонки.
+ *
+ * ⚠ Отдельный вопрос порталу, а НЕ сумма клеток над ним. Сумма не включала бы сделки, у которых
+ * ответственного нет вовсе (строка «вне таблицы»), — и клик по итогу колонки открывал бы список
+ * длиннее числа, по которому нажали. Ровно то, чего этот отчёт не должен делать.
+ */
+export function officeStageKey(officeId: number, stageId: string): string {
+  return `os|${officeId}|${stageId}`
+}
+
 export function cellKey(officeId: number, managerId: number, stageId: string): string {
   return `c|${officeId}|${managerId}|${stageId}`
+}
+
+/**
+ * Сколько примерно ждать счётчики стадий, секунды.
+ *
+ * Пакет из 50 вопросов «сколько» портал считает от 0,26 с (открытые сделки) до 3,5 с (все сделки
+ * направления, 600 тысяч записей) — замер `docs/PORTAL.md`. Берём два: обещать лучшее время
+ * значит обещать то, чего человек не увидит на охвате «все стадии».
+ */
+export const SECONDS_PER_COUNT_BATCH = 2
+
+export function stageCountSeconds(cells: number, batchSize = 50): number {
+  return Math.ceil(cells / batchSize) * SECONDS_PER_COUNT_BATCH
 }
 
 /** Что нужно ядру, чтобы собрать матрицу. */
@@ -131,7 +155,9 @@ export function buildManagerLoad(input: ManagerLoadInput): ManagerLoadReport {
         managerId: manager.id,
         managerName: manager.name,
         byStage: rowStages,
-        otherStages: Math.max(0, total - sum(Object.values(rowStages))),
+        // Колонок не просили (стадии считаются по кнопке) — «прочих стадий» тоже нет: иначе
+        // остатком оказались бы ВСЕ сделки строки, и экран сказал бы неправду.
+        otherStages: input.stages.length ? Math.max(0, total - sum(Object.values(rowStages))) : 0,
         total,
         share: 0
       })
@@ -144,21 +170,46 @@ export function buildManagerLoad(input: ManagerLoadInput): ManagerLoadReport {
     if (officeTotal === 0) continue
     rows.sort((a, b) => b.total - a.total || a.managerName.localeCompare(b.managerName, 'ru') || a.managerId - b.managerId)
     for (const row of rows) row.share = officeTotal > 0 ? row.total / officeTotal : 0
+    // Итог колонки — свой счётчик портала; сумма клеток над ним берётся только если счётчика
+    // нет. Разница между ними — сделки строки «вне таблицы»: их стадии известны, а ответственный
+    // нет, поэтому раскладываются они здесь, а не в строке менеджера.
     const officeStages: Record<string, number> = {}
+    const listedByStage: Record<string, number> = {}
     for (const row of rows) {
       for (const [stageId, value] of Object.entries(row.byStage)) {
-        officeStages[stageId] = (officeStages[stageId] ?? 0) + value
-        byStage[stageId] = (byStage[stageId] ?? 0) + value
+        listedByStage[stageId] = (listedByStage[stageId] ?? 0) + value
       }
     }
+    const unlistedByStage: Record<string, number> = {}
+    // Пришли ли счётчики колонок. Без них итог колонки — сумма клеток, и тогда сделки строки
+    // «вне таблицы» по стадиям не разложены: записать их в «прочие стадии» значило бы объявить
+    // их стоящими на неизвестной стадии, а это разные вещи.
+    let stageCounters = false
+    for (const stage of input.stages) {
+      const listed = listedByStage[stage.id] ?? 0
+      const counted = count(totals, officeStageKey(office.id, stage.id))
+      if (counted > 0) stageCounters = true
+      const value = Math.max(counted, listed)
+      if (value === 0) continue
+      officeStages[stage.id] = value
+      byStage[stage.id] = (byStage[stage.id] ?? 0) + value
+      if (value > listed) unlistedByStage[stage.id] = value - listed
+    }
+    const unlisted = Math.max(0, officeTotal - rowsTotal)
     offices.push({
       officeId: office.id,
       officeName: office.name,
       rows,
       byStage: officeStages,
-      otherStages: sum(rows.map(row => row.otherStages)),
+      // Сделки офиса вне колонок: стадии, которой нет в справочнике направления.
+      otherStages: !input.stages.length
+        ? 0
+        : stageCounters
+          ? Math.max(0, officeTotal - sum(Object.values(officeStages)))
+          : sum(rows.map(row => row.otherStages)),
       total: officeTotal,
-      unlisted: Math.max(0, officeTotal - rowsTotal),
+      unlisted,
+      unlistedByStage: unlisted > 0 ? unlistedByStage : {},
       share: 0
     })
   }

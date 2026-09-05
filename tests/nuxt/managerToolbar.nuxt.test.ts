@@ -100,3 +100,25 @@ describe('ManagerToolbar', () => {
     expect((await mount()).text()).not.toContain('Демо-данные')
   })
 })
+
+describe('ManagerToolbar: защита от лишних выборок', () => {
+  // Каждая смена отбора — секунд пятнадцать запросов к порталу; во время выборки списки закрыты.
+  it('во время выборки списки заблокированы', async () => {
+    const wrapper = await mount({ disabled: true })
+    for (const item of wrapper.findAllComponents(B24SelectMenu as unknown as DefineComponent)) {
+      expect((item.props() as Record<string, unknown>).disabled).toBe(true)
+    }
+  })
+
+  it('мусорное значение из списка отбор не меняет', async () => {
+    const wrapper = await mount()
+    await menu(wrapper, 'Направление').vm.$emit('update:modelValue', 'не число')
+    await menu(wrapper, 'Какие сделки считать').vm.$emit('update:modelValue', 'чужой охват')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+  })
+
+  it('без направлений список закрыт: выбирать нечего', async () => {
+    const wrapper = await mount({ categories: [] })
+    expect((menu(wrapper, 'Направление').props() as Record<string, unknown>).disabled).toBe(true)
+  })
+})

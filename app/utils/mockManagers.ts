@@ -1,5 +1,5 @@
 import type { CategoryRef, ManagerFilters, ManagerLoadReport, ManagerRef, OfficeRef, StageRef } from '~/types/managers'
-import { buildManagerLoad, cellKey, officeKey, OFFICE_UNSET, OFFICE_UNSET_LABEL, pairKey, stagesForScope, totalKey } from '~/utils/managerLoad'
+import { buildManagerLoad, cellKey, officeKey, officeStageKey, OFFICE_UNSET, OFFICE_UNSET_LABEL, pairKey, stagesForScope, totalKey } from '~/utils/managerLoad'
 
 /**
  * Демонстрационный набор отчёта «Сделки по менеджерам» — то, что видно вне портала (`?preview=1`).
@@ -147,6 +147,9 @@ export function mockTotals(deals: readonly MockManagerDeal[]): Record<string, nu
   }
   for (const deal of deals) {
     add(officeKey(deal.officeId))
+    // Итог колонки — такой же отдельный вопрос, как на портале: набор обязан отвечать на ВСЕ
+    // вопросы, которые отчёт задаёт живому порталу, иначе предпросмотр считает по другой ветке.
+    add(officeStageKey(deal.officeId, deal.stageId))
     add(pairKey(deal.officeId, deal.managerId))
     add(cellKey(deal.officeId, deal.managerId, deal.stageId))
   }

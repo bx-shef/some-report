@@ -1,7 +1,8 @@
 // @vitest-environment nuxt
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { mockNuxtImport } from '@nuxt/test-utils/runtime'
+import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
 import { useManagerReport } from '~/composables/useManagerReport'
+import ManagersPage from '~/pages/app/managers.vue'
 import { OFFICE_UNSET } from '~/utils/managerLoad'
 
 /**
@@ -27,6 +28,10 @@ const portal = vi.hoisted(() => ({
   /** Сколько раз портал спросили пакетом — по этому числу видно, что счётчиков не стало вдвое больше. */
   batches: 0,
   usersFail: false,
+  /** Портал отвечает ошибкой на пакет: отчёт обязан сказать об этом, а не показать нули. */
+  batchFails: false,
+  /** Направление, ответы по которому приходят с задержкой, — для проверки гонки. */
+  slowCategory: undefined as number | undefined,
   deals: [] as Array<Record<string, unknown>>,
   categories: [] as Array<Record<string, unknown>>,
   stages: [] as Array<Record<string, unknown>>
@@ -74,6 +79,12 @@ mockNuxtImport('useB24', () => () => ({
         batch: {
           make: async ({ calls }: { calls: Record<string, { method: string, params: Record<string, unknown> }> }) => {
             portal.batches++
+            if (portal.batchFails) return { isSuccess: false, getData: () => undefined, getErrorMessages: () => ['портал недоступен'] }
+            // Медленное направление отвечает позже быстрого — так проверяется гонка отборов.
+            const anyFilter = Object.values(calls)[0]?.params as { filter?: Record<string, unknown> } | undefined
+            if (portal.slowCategory !== undefined && Number(anyFilter?.filter?.CATEGORY_ID) === portal.slowCategory) {
+              await new Promise(resolve => setTimeout(resolve, 30))
+            }
             const data: Record<string, { getTotal: () => number, getData: () => { result: unknown[] } }> = {}
             const answers: Record<string, unknown[]> = {}
             for (const [key, command] of Object.entries(calls)) {
@@ -139,6 +150,8 @@ beforeEach(() => {
   portal.initialized = true
   portal.batches = 0
   portal.usersFail = false
+  portal.batchFails = false
+  portal.slowCategory = undefined
   portal.categories = [{ id: 0, name: 'Общее направление', isDefault: 'Y' }, { id: 1, name: 'Оптовые продажи' }]
   portal.stages = [
     { STATUS_ID: 'NEW', NAME: 'Новая', SEMANTICS: null },
@@ -254,5 +267,169 @@ describe('useManagerReport: живая выборка', () => {
     expect(state.isDemo.value).toBe(true)
     expect(state.report.value.total).toBeGreaterThan(0)
     expect(state.categories.value.map(category => category.name)).toContain('Оптовые продажи')
+  })
+})
+
+describe('useManagerReport: сколько стоит выборка', () => {
+  // ⚠ Счётчики — главная цена отчёта. Лишний проход по парам или клеткам не виден на экране, но
+  // удваивает число вопросов к порталу; здесь это зафиксировано числом.
+  it('пакетов ровно столько, сколько шагов выборки', async () => {
+    const state = useManagerReport()
+    await state.load({ categoryId: 0, scope: 'in-work' })
+    // справочники + цепочка офисов + цепочка менеджеров + счётчики (офисы, колонки, пары) + клетки
+    expect(portal.batches).toBe(5)
+  })
+
+  it('счётчики клеток спрашиваются только по непустым парам', async () => {
+    const state = useManagerReport()
+    // Направление 1: одна сделка, значит одна пара — клеток столько же, сколько стадий охвата.
+    await state.load({ categoryId: 1, scope: 'in-work' })
+    expect(state.report.value.total).toBe(1)
+    expect(portal.batches).toBe(5)
+  })
+})
+
+describe('useManagerReport: когда что-то пошло не так', () => {
+  it('ошибка портала показывается, а не превращается в нули', async () => {
+    portal.batchFails = true
+    const state = useManagerReport()
+    await state.load({ categoryId: 0, scope: 'in-work' })
+    expect(state.error.value).toContain('портал недоступен')
+    expect(state.pending.value).toBe(false)
+    expect(state.report.value.total).toBe(0)
+    // Отбор не считается применённым: на экране не должно быть подписи под числами, которых нет.
+    expect(state.source.value).toBe('mock')
+  })
+
+  it('под пустым отбором — пустой отчёт без единого остатка', async () => {
+    portal.deals = []
+    const state = useManagerReport()
+    await state.load({ categoryId: 0, scope: 'in-work' })
+    expect(state.error.value).toBeUndefined()
+    expect(state.report.value.total).toBe(0)
+    expect(state.report.value.offices).toEqual([])
+    expect(state.report.value.unlisted).toBe(0)
+  })
+
+  // Медленный ответ прошлого отбора приходит ПОСЛЕ быстрого ответа нового — и не должен его
+  // затирать: иначе на экране числа одного направления под подписью другого.
+  it('спросили первым, ответил последним — на экране всё равно свежий отбор', async () => {
+    portal.slowCategory = 0
+    const state = useManagerReport()
+    const slow = state.load({ categoryId: 0, scope: 'in-work' })
+    const fast = state.load({ categoryId: 1, scope: 'in-work' })
+    await Promise.all([fast, slow])
+    expect(state.filters.value.categoryId).toBe(1)
+    expect(state.report.value.total).toBe(1)
+  })
+})
+
+describe('useManagerReport: перечисление упёрлось в предел', () => {
+  it('менеджеров больше, чем отчёт перечисляет за проход — признак поднят', async () => {
+    // 501 сотрудник: цепочка (10 пакетов по 50) исчерпает предел и не дойдёт до последнего.
+    portal.deals = Array.from({ length: 501 }, (_, index) => deal(1000 + index, 10, index + 1, 'NEW'))
+    const state = useManagerReport()
+    await state.load({ categoryId: 0, scope: 'in-work' })
+    expect(state.truncatedManagers.value).toBe(true)
+    expect(state.truncatedOffices.value).toBe(false)
+    // Сделки не потеряны: то, что не разложено по строкам, видно остатком.
+    expect(state.report.value.total).toBe(501)
+    expect(state.report.value.unlisted).toBeGreaterThan(0)
+  }, 60_000)
+})
+
+describe('useManagerReport: стадии по кнопке', () => {
+  /** Много пар: 20 сотрудников × 5 стадий охвата даёт больше клеток, чем считается само. */
+  function crowd() {
+    portal.stages = Array.from({ length: 60 }, (_, index) => ({ STATUS_ID: `S${index}`, NAME: `Стадия ${index}`, SEMANTICS: null }))
+    portal.deals = Array.from({ length: 20 }, (_, index) => deal(2000 + index, 10, index + 1, `S${index % 60}`))
+  }
+
+  it('клеток слишком много — таблица без колонок и кнопка с оценкой времени', async () => {
+    crowd()
+    const state = useManagerReport()
+    await state.load({ categoryId: 0, scope: 'in-work' })
+    expect(state.stagesDeferred.value).toBe(true)
+    expect(state.stagesEstimateSeconds.value).toBeGreaterThan(0)
+    expect(state.report.value.stages).toEqual([])
+    // ⚠ Ни одной сделки при этом не должно оказаться в «прочих стадиях»: колонок не просили.
+    expect(state.report.value.otherStages).toBe(0)
+    expect(state.report.value.total).toBe(20)
+  })
+
+  it('кнопка досчитывает стадии, не спрашивая пары заново', async () => {
+    crowd()
+    const state = useManagerReport()
+    await state.load({ categoryId: 0, scope: 'in-work' })
+    const before = portal.batches
+    await state.startStages()
+    expect(state.stagesDeferred.value).toBe(false)
+    expect(state.report.value.stages.length).toBeGreaterThan(0)
+    expect(state.report.value.total).toBe(20)
+    // Досчёт — это ТОЛЬКО клетки: 20 строк × 60 стадий = 1200 вопросов, то есть 24 пакета.
+    // Ни справочники, ни цепочки, ни счётчики пар заново не спрашиваются.
+    expect(portal.batches - before).toBe(Math.ceil(20 * 60 / 50))
+  })
+})
+
+describe('экран отчёта на тех же данных портала', () => {
+  /**
+   * Дать странице домонтироваться и дождаться выборки: она идёт в `onMounted` и состоит из
+   * нескольких запросов подряд, поэтому одного `nextTick` мало — прокручиваем очередь задач.
+   */
+  async function flush(times = 40) {
+    for (let i = 0; i < times; i++) await new Promise(resolve => setTimeout(resolve, 0))
+    await nextTick()
+  }
+
+  it('рисует матрицу по живым данным, а не демо-набор', async () => {
+    const wrapper = await mountSuspended(ManagersPage)
+    await flush()
+    const text = wrapper.text()
+    expect(text).not.toContain('Это НЕ данные вашего портала')
+    expect(text).toContain('Минск')
+    expect(text).toContain('Иванов Иван')
+    expect(text).toContain('Итого по офису')
+  })
+
+  // Полный путь клика: число в таблице → запрос портала тем же условием → строки в слайдере.
+  // ⚠ Слайдер живёт в телепорте, вне дерева страницы, — читаем текст всего документа.
+  it('клик по числу открывает список сделок этой клетки', async () => {
+    document.body.innerHTML = ''
+    const wrapper = await mountSuspended(ManagersPage, { attachTo: document.body })
+    await flush()
+    const cell = wrapper.findAll('tbody button').find(button => button.attributes('title')?.includes('Иванов Иван'))
+    expect(cell).toBeTruthy()
+    await cell!.trigger('click')
+    await flush()
+    expect(document.body.textContent ?? '').toContain('Сделки: Минск · Иванов Иван')
+  })
+
+  // ⚠ На боевом портале «моя компания» не заполнена у 92 % сделок. Руководитель, увидев почти всё
+  // в одной строке, решит, что сломан ОТЧЁТ, — экран обязан объяснить, что дело в поле CRM.
+  it('когда «моя компания» почти нигде не заполнена — об этом сказано прямо', async () => {
+    portal.deals = [
+      deal(1, 10, 1, 'NEW'),
+      ...Array.from({ length: 9 }, (_, index) => deal(100 + index, OFFICE_UNSET, 1, 'NEW'))
+    ]
+    const wrapper = await mountSuspended(ManagersPage)
+    await flush()
+    expect(wrapper.text()).toContain('Поле «Моя компания» у сделок почти не заполнено')
+  })
+
+  it('под пустым отбором экран говорит словами, а не показывает пустую таблицу', async () => {
+    portal.deals = []
+    const wrapper = await mountSuspended(ManagersPage)
+    await flush()
+    expect(wrapper.text()).toContain('Под этим отбором сделок нет')
+  })
+
+  it('при ошибке портала экран не утверждает, что сделок нет', async () => {
+    portal.batchFails = true
+    const wrapper = await mountSuspended(ManagersPage)
+    await flush()
+    const text = wrapper.text()
+    expect(text).toContain('Не удалось прочитать данные портала')
+    expect(text).not.toContain('Под этим отбором сделок нет')
   })
 })

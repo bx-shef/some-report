@@ -8,11 +8,12 @@ import {
   distinctChainBatch,
   managerDealFilter,
   officeCountRequests,
+  officeStageCountRequests,
   pairCountRequests,
   readDistinctChain,
   stageListParams
 } from '~/utils/managerQuery'
-import { cellKey, officeKey, pairKey, totalKey } from '~/utils/managerLoad'
+import { cellKey, officeKey, officeStageKey, pairKey, totalKey } from '~/utils/managerLoad'
 
 /**
  * Запросы отчёта «Сделки по менеджерам». Ошибка здесь не роняет отчёт — она тихо меняет все
@@ -95,6 +96,14 @@ describe('счётчики', () => {
     expect(requests[2]!.filter).toEqual({ ...base, MYCOMPANY_ID: 0 })
   })
 
+  // Итог колонки — свой вопрос порталу: в сумму клеток не попали бы сделки без ответственного,
+  // и клик по итогу колонки открывал бы список длиннее числа над ним.
+  it('итоги колонок спрашиваются отдельно от клеток', () => {
+    const requests = officeStageCountRequests([10, 0], ['NEW'], base)
+    expect(requests.map(r => r.key)).toEqual([officeStageKey(10, 'NEW'), officeStageKey(0, 'NEW')])
+    expect(requests[0]!.filter).toEqual({ ...base, MYCOMPANY_ID: 10, STAGE_ID: 'NEW' })
+  })
+
   it('пары спрашиваются по всем офисам: менеджер бывает сразу в двух', () => {
     const requests = pairCountRequests([10, 20], [1, 2], base)
     expect(requests).toHaveLength(4)
@@ -121,6 +130,13 @@ describe('счётчики', () => {
   it('ответы пакета раскладываются по ключам ядра', () => {
     const { keyByCommand } = countBatch([{ key: totalKey(), filter: {} }, { key: officeKey(5), filter: {} }])
     expect(collectTotals({ n0: 30, n1: 12 }, keyByCommand)).toEqual({ [totalKey()]: 30, [officeKey(5)]: 12 })
+  })
+
+  // Команда осталась без ответа (портал ответил ошибкой на неё одну): ключ не появляется вовсе,
+  // и ядро читает его как ноль — а не как `NaN`, который расползся бы по всей матрице.
+  it('нечисловой ответ команды в счётчики не попадает', () => {
+    expect(collectTotals({ n0: Number.NaN, n1: 5 }, { n0: totalKey(), n1: officeKey(5) }))
+      .toEqual({ [officeKey(5)]: 5 })
   })
 
   it('счётчики нескольких пакетов складываются в один набор', () => {

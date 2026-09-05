@@ -13,6 +13,11 @@ import { formatCount, formatPercent } from '~/utils/format'
  *
  * ⚠ Таблица прокручивается ВНУТРИ карточки (`overflow-x-auto`), а не растягивает страницу: во
  * фрейме портала горизонтальный скролл всей страницы прячет часть отчёта под край окна.
+ *
+ * ⚠ Числа здесь — свои кнопки, а не `DrillNumber`: тому нужен ГОТОВЫЙ запрос списка, а его
+ * собирает страница (она знает отбор), поэтому компонент отдаёт наружу только «по какой клетке
+ * нажали». Общий у них вид — класс `.drill-number`, чтобы кликабельные числа в обоих отчётах не
+ * разъехались: часть подчёркнута, часть нет, и человек перестаёт понимать, где список есть.
  */
 const props = defineProps<{
   report: ManagerLoadReport
@@ -20,10 +25,19 @@ const props = defineProps<{
 
 const emit = defineEmits<{ drill: [ManagerCellRef] }>()
 
-/** Кому досталось больше всех в офисе — по нему меряются полосы строк. */
-function peak(office: ManagerLoadOffice): number {
-  return office.rows.reduce((max, row) => Math.max(max, row.total), 0)
-}
+/**
+ * Кому досталось больше всех в офисе — по нему меряются полосы строк.
+ *
+ * Считается один раз на офис, а не в каждой ячейке: строк в таблице десятки, и вызов из шаблона
+ * повторялся бы на каждую перерисовку — так же, как это уже сделано в блоке источников.
+ */
+const peaks = computed(() => {
+  const out: Record<number, number> = {}
+  for (const office of props.report.offices) {
+    out[office.officeId] = office.rows.reduce((max, row) => Math.max(max, row.total), 0)
+  }
+  return out
+})
 
 /** Клик по числу: заголовок списка повторяет то, по чему нажали. */
 function cell(office: ManagerLoadOffice, parts: { managerId?: number, managerName?: string, stageId?: string, stageName?: string, total: number }): ManagerCellRef {
@@ -94,7 +108,7 @@ const hasOther = computed(() => props.report.otherStages > 0)
                   {{ row.managerName }}
                   <MetricBar
                     class="mt-1"
-                    :value="peak(office) ? row.total / peak(office) : 0"
+                    :value="peaks[office.officeId] ? row.total / peaks[office.officeId]! : 0"
                     :label="`${row.managerName}: ${formatCount(row.total)}`"
                   />
                 </div>
@@ -146,12 +160,15 @@ const hasOther = computed(() => props.report.otherStages > 0)
               <td class="py-2 pr-3 opacity-70">
                 {{ UNLISTED_MANAGER_LABEL }}
               </td>
+              <!-- Стадия у этих сделок известна (итог колонки — счётчик портала), а
+                   ответственный нет: числа есть, но списка «тем же условием» за ними не собрать —
+                   «ответственный не из списка» фильтром REST не выражается. Поэтому не кнопки. -->
               <td
                 v-for="stage in report.stages"
                 :key="stage.id"
-                class="py-2 pr-3 text-right opacity-30"
+                class="py-2 pr-3 text-right tabular-nums opacity-70"
               >
-                —
+                {{ office.unlistedByStage[stage.id] ? formatCount(office.unlistedByStage[stage.id]!) : '—' }}
               </td>
               <td
                 v-if="hasOther"
@@ -216,6 +233,8 @@ const hasOther = computed(() => props.report.otherStages > 0)
         Строка «{{ UNLISTED_MANAGER_LABEL }}» — разница между итогом офиса и суммой строк:
         сделки без ответственного или у сотрудника, которого не нашлось среди ответственных
         (например, его сделки появились уже после того, как отчёт перечислил менеджеров).
+        Стадии у них известны — итог каждой колонки портал считает отдельно, — а списка по клику
+        за этими числами нет: «ответственный не из списка» фильтром не выразить.
       </p>
     </B24Card>
   </div>

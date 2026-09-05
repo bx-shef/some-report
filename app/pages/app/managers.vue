@@ -2,8 +2,8 @@
 import type { ManagerCellRef, ManagerFilters } from '~/types/managers'
 import { DEFAULT_MANAGER_FILTERS } from '~/composables/useManagerReport'
 import { managerDealFilter } from '~/utils/managerQuery'
-import { SCOPE_LABELS } from '~/utils/managerLoad'
-import { formatCount } from '~/utils/format'
+import { OFFICE_UNSET, SCOPE_LABELS } from '~/utils/managerLoad'
+import { formatCount, formatPercent } from '~/utils/format'
 
 /**
  * Отчёт «Сделки по менеджерам»: сколько сделок у каждого менеджера в каждом офисе и на какой
@@ -15,7 +15,8 @@ import { formatCount } from '~/utils/format'
  */
 const {
   report, categories, stages, dictionaries, filters: appliedFilters,
-  pending, step, error, truncated, isDemo, load
+  pending, step, error, truncatedManagers, truncatedOffices,
+  stagesDeferred, stagesEstimateSeconds, startStages, isDemo, load
 } = useManagerReport()
 
 const b24 = useB24()
@@ -47,12 +48,13 @@ onMounted(async () => {
   await fit()
 })
 
-// Смена отбора — новая выборка. Гонку ответов сторожит композабл.
+// Смена отбора — новая выборка. Гонку ответов сторожит композабл. Глубокого слежения не нужно:
+// панель всегда присваивает отбор ЦЕЛИКОМ, новым объектом.
 watch(filters, async () => {
   if (booting.value) return
   await load(filters.value)
   await fit()
-}, { deep: true })
+})
 
 /** Список за числом матрицы — тем же условием, что дало число. */
 function openCell(cell: ManagerCellRef): void {
@@ -68,8 +70,12 @@ const outsideNote = computed(() => {
   if (report.value.otherStages > 0) {
     notes.push(`Сделок на стадиях, которых нет в справочнике направления: ${formatCount(report.value.otherStages)} — стадию удалили из воронки, а сделки на ней остались.`)
   }
-  if (truncated.value) {
+  // Причины усечения разные, и подсказка человеку тоже разная: общий флаг назвал бы неверную.
+  if (truncatedManagers.value) {
     notes.push('Сотрудников в этом направлении больше, чем отчёт перечисляет за один проход: часть сделок ушла в строку «вне таблицы». Сузьте отбор — направлением, охватом или периодом.')
+  }
+  if (truncatedOffices.value) {
+    notes.push('«Моих компаний» у сделок больше, чем отчёт перечисляет за один проход: часть офисов в таблицу не попала, их сделки видны только в общем итоге.')
   }
   if (report.value.hiddenStages > 0) {
     notes.push(`Пустых стадий скрыто: ${report.value.hiddenStages} — в них нет ни одной сделки под этим отбором.`)
@@ -77,9 +83,35 @@ const outsideNote = computed(() => {
   return notes
 })
 
+/**
+ * Доля сделок без «моей компании».
+ *
+ * ⚠ На боевом портале заказчика это 92 % (замер `docs/PORTAL.md`), и молчать об этом нельзя:
+ * руководитель, увидев почти всё в одной строке, решит, что сломан ОТЧЁТ, а не что поле в CRM
+ * никто не заполняет. Это разные выводы, и второй — правда.
+ */
+const unsetOfficeShare = computed(() => {
+  const total = report.value.total
+  const unset = report.value.offices.find(office => office.officeId === OFFICE_UNSET)?.total ?? 0
+  return total > 0 ? unset / total : 0
+})
+
+const officeFieldNote = computed(() => {
+  if (pending.value || unsetOfficeShare.value < 0.5) return undefined
+  return `У ${formatPercent(unsetOfficeShare.value)} сделок этого отбора поле «Моя компания» не заполнено, поэтому разрез по офисам показывает только оставшуюся часть. Это свойство данных CRM, а не отчёта: чтобы разрез заработал, поле нужно заполнять — правилом в карточке сделки, роботом на создание или при импорте.`
+})
+
+/** Сколько ждать стадии, если считать их по кнопке. */
+const stagesEstimateText = computed(() => {
+  const seconds = stagesEstimateSeconds.value
+  return seconds >= 90 ? `около ${Math.round(seconds / 60)} мин` : `около ${Math.max(5, Math.round(seconds / 5) * 5)} с`
+})
+
 /** Пусто — не поломка: под отбором сделок может не быть, и это нужно сказать словами. */
 const emptyNote = computed(() => {
-  if (pending.value || report.value.total > 0) return undefined
+  // ⚠ При ошибке портала молчим: «сделок нет» — это утверждение о данных, а мы их не прочитали.
+  // Рядом стоит плашка ошибки, и два разных объяснения одной пустоты сбивают с толку.
+  if (pending.value || error.value || report.value.total > 0) return undefined
   const applied = appliedFilters.value
   const name = categories.value.find(category => category.id === applied.categoryId)?.name ?? `направление #${applied.categoryId}`
   const scope = SCOPE_LABELS[applied.scope].toLowerCase()
@@ -116,8 +148,8 @@ async function fit() {
           Загрузка…
         </p>
         <p class="pb-6 text-center text-sm opacity-70">
-          Считаем сделки портала по офисам, менеджерам и стадиям. Обычно это занимает около
-          пятнадцати секунд.
+          Считаем сделки портала по офисам, менеджерам и стадиям. На боевом портале это около
+          шестнадцати секунд.
         </p>
       </B24Card>
 
@@ -126,7 +158,7 @@ async function fit() {
           v-if="pending"
           class="text-sm opacity-70"
         >
-          {{ step ?? 'Считаем…' }} Обычно это занимает около пятнадцати секунд.
+          {{ step ?? 'Считаем…' }} На боевом портале это около шестнадцати секунд.
         </p>
 
         <B24Alert
@@ -185,11 +217,35 @@ async function fit() {
         </div>
 
         <B24Alert
+          v-if="officeFieldNote"
+          color="air-primary-warning"
+          title="Поле «Моя компания» у сделок почти не заполнено"
+          :description="officeFieldNote"
+        />
+
+        <B24Alert
           v-if="outsideNote.length"
           color="air-primary-warning"
           title="Что нужно знать про эти числа"
           :description="outsideNote.join(' ')"
         />
+
+        <!-- Стадий слишком много для одного прохода: считаем по кнопке, а не молча заставляем ждать. -->
+        <B24Card v-if="stagesDeferred">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <p class="text-sm">
+              Разбивка по стадиям не посчитана: под этим отбором это
+              {{ stagesEstimateText }} ожидания. В таблице пока итоги по менеджерам.
+            </p>
+            <B24Button
+              size="sm"
+              color="air-primary"
+              :label="pending ? 'Считаем…' : 'Посчитать по стадиям'"
+              :disabled="pending"
+              @click="startStages"
+            />
+          </div>
+        </B24Card>
 
         <ManagerMatrix
           :report="report"

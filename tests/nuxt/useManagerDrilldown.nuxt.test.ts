@@ -13,8 +13,10 @@ import type { ReportDictionaries } from '~/types/report'
  */
 const portal = vi.hoisted(() => ({
   calls: [] as Array<{ method: string, filter: Record<string, unknown> }>,
-  pending: [] as Array<(rows: unknown[]) => void>,
-  opened: [] as string[]
+  pending: [] as Array<(rows: unknown[] | Error) => void>,
+  opened: [] as string[],
+  /** Портал не открывает карточку: слайдер обязан сказать об этом, а не промолчать. */
+  openFails: false
 }))
 
 mockNuxtImport('useB24', () => () => ({
@@ -24,6 +26,7 @@ mockNuxtImport('useB24', () => () => ({
   getRequiredRights: () => [],
   fitWindow: async () => {},
   openPath: async (path: string) => {
+    if (portal.openFails) return false
     if (path) portal.opened.push(path)
     return Boolean(path)
   },
@@ -34,7 +37,9 @@ mockNuxtImport('useB24', () => () => ({
           make: ({ method, params }: { method: string, params: { filter: Record<string, unknown> } }) => {
             portal.calls.push({ method, filter: params.filter })
             return new Promise((resolve) => {
-              portal.pending.push(rows => resolve({ isSuccess: true, getData: () => ({ result: rows }), getErrorMessages: () => [] }))
+              portal.pending.push(rows => resolve(rows instanceof Error
+                ? { isSuccess: false, getData: () => undefined, getErrorMessages: () => [rows.message] }
+                : { isSuccess: true, getData: () => ({ result: rows }), getErrorMessages: () => [] }))
             })
           }
         }
@@ -47,6 +52,7 @@ beforeEach(() => {
   portal.calls = []
   portal.pending = []
   portal.opened = []
+  portal.openFails = false
 })
 
 const DICTIONARIES: ReportDictionaries = {
@@ -152,5 +158,52 @@ describe('useManagerDrilldown', () => {
     await nextTick()
     await drill.openRow(drill.rows.value[0]!)
     expect(portal.opened).toEqual(['/crm/deal/details/1/'])
+  })
+})
+
+describe('useManagerDrilldown: когда что-то пошло не так', () => {
+  it('ошибка страницы показывается, а повтор идёт с чистой плашкой', async () => {
+    const drill = live()
+    drill.show(drill.cellRequest('Сделки', {}, { officeId: 10 }, 4))
+    await nextTick()
+    portal.pending.shift()?.(new Error('портал недоступен'))
+    await nextTick()
+    expect(drill.error.value).toContain('портал недоступен')
+    expect(drill.pending.value).toBe(false)
+
+    void drill.loadMore()
+    await nextTick()
+    expect(drill.error.value).toBeUndefined()
+    answer(1)
+    await nextTick()
+    expect(drill.rows.value).toHaveLength(1)
+  })
+
+  // Клик, после которого ничего не произошло, читается как поломка отчёта — поэтому отказ
+  // портала открыть карточку показывается той же плашкой, что и ошибка страницы.
+  it('портал не открыл карточку — об этом сказано', async () => {
+    const drill = live()
+    drill.show(drill.cellRequest('Сделки', {}, { officeId: 10 }, 1))
+    await nextTick()
+    answer(1)
+    await nextTick()
+    portal.openFails = true
+    expect(await drill.openRow(drill.rows.value[0]!)).toBe(false)
+    expect(drill.error.value).toContain('Портал не открыл карточку')
+  })
+
+  // Нажали по другому числу, не дождавшись первого списка: опоздавшая страница не должна
+  // подмешаться к новому — иначе в списке окажутся записи из двух разных клеток.
+  it('нажали по другой клетке — опоздавшая страница выбрасывается', async () => {
+    const drill = live()
+    drill.show(drill.cellRequest('Первая', {}, { officeId: 10, stageId: 'NEW' }, 4))
+    await nextTick()
+    const late = portal.pending.shift()
+    drill.show(drill.cellRequest('Вторая', {}, { officeId: 20, stageId: '1' }, 2))
+    await nextTick()
+    late?.([{ ID: '999', TITLE: 'Из первого списка' }])
+    await nextTick()
+    expect(drill.rows.value.some(row => row.title === 'Из первого списка')).toBe(false)
+    expect(drill.request.value?.title).toBe('Вторая')
   })
 })
