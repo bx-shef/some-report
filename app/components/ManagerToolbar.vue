@@ -2,7 +2,6 @@
 import type { CategoryRef, DealScope, ManagerFilters, CompanyRef, StageRef } from '~/types/managers'
 import { COMPANY_UNSET, COMPANY_UNSET_FULL_LABEL, SCOPE_LABELS, stagesForScope } from '~/utils/managerLoad'
 import { formatDate } from '~/utils/format'
-import { PERIOD_PRESETS, matchPreset, resolvePreset, validatePeriod, type PeriodPresetId } from '~/utils/period'
 
 /**
  * Панель отчёта «Сделки по менеджерам»: направление, охват, «моя компания» и период создания.
@@ -90,73 +89,6 @@ function pickCompany(value: unknown): void {
   model.value = { ...model.value, companyId }
 }
 
-/** Какой готовый интервал сейчас выбран. Ручной ввод «01.09 — 30.09» подсветит «Текущий месяц». */
-const activePreset = computed(() => matchPreset(model.value.period, props.today))
-
-/** Человек нажал «Произвольный» — поле открыто, даже если даты пока совпадают с готовым интервалом. */
-const customOpen = ref(false)
-
-const isCustomActive = computed(() => customOpen.value || activePreset.value === 'custom')
-
-const customFrom = ref(model.value.period.from)
-const customTo = ref(model.value.period.to)
-
-function syncCustomToApplied(): void {
-  customFrom.value = model.value.period.from
-  customTo.value = model.value.period.to
-}
-
-watch(() => model.value.period, syncCustomToApplied)
-
-// Поле закрыли — недобранная половина выбора не должна ждать следующего открытия.
-watch(isCustomActive, (active) => {
-  if (!active) syncCustomToApplied()
-})
-
-/** Активна ли кнопка интервала. Одна функция для цвета и `aria-pressed`, чтобы им негде было разойтись. */
-function isPresetActive(id: PeriodPresetId): boolean {
-  return id === 'custom' ? isCustomActive.value : id === activePreset.value && !customOpen.value
-}
-
-/** Проблема периода, о которой нужно сказать до запроса. */
-const problem = ref<string | undefined>(undefined)
-
-function pickPreset(id: PeriodPresetId): void {
-  problem.value = undefined
-  if (id === 'custom') {
-    customOpen.value = true
-    return
-  }
-  customOpen.value = false
-  const bounds = resolvePreset(id, props.today)
-  if (!bounds) return
-  const issue = validatePeriod(bounds)
-  if (issue) {
-    problem.value = issue.message
-    return
-  }
-  model.value = { ...model.value, period: bounds }
-}
-
-/**
- * Проблема выбранного вручную периода.
- *
- * ⚠ Проверяем ДО запроса. Перевёрнутый период REST принимает без ошибки и возвращает пустой
- * список — отчёт показал бы нули, неотличимые от «за период сделок не заводили».
- */
-const customProblem = computed(() => {
-  if (!customFrom.value || !customTo.value) return undefined
-  return validatePeriod({ from: customFrom.value, to: customTo.value })
-})
-
-// Обе границы выбраны и период годный — применяем. Одна граница — человек ещё выбирает.
-watch([customFrom, customTo], () => {
-  if (!isCustomActive.value) return
-  if (!customFrom.value || !customTo.value || customProblem.value) return
-  if (customFrom.value === model.value.period.from && customTo.value === model.value.period.to) return
-  model.value = { ...model.value, period: { from: customFrom.value, to: customTo.value } }
-})
-
 /** Подпись под панелью: по чему именно посчитаны числа на экране. */
 const appliedText = computed(() => {
   const applied = props.appliedFilters
@@ -240,54 +172,14 @@ const appliedText = computed(() => {
       />
     </div>
 
-    <!-- В PDF-снимок кнопки периода не попадают (`data-export-exclude`): период там — подписью. -->
-    <div
-      role="group"
-      aria-label="Период создания сделок"
-      class="flex flex-wrap items-center gap-2"
-      data-export-exclude
-    >
-      <span class="text-xs opacity-60">Созданы:</span>
-      <button
-        v-for="preset in PERIOD_PRESETS"
-        :key="preset.id"
-        type="button"
-        class="rounded-lg border border-[color:var(--chart-track)] px-2.5 py-1 text-sm transition-colors"
-        :class="isPresetActive(preset.id)
-          ? 'bg-[color:var(--chart-1)] text-white'
-          : 'hover:bg-[color:var(--chart-track)]'"
-        :aria-pressed="isPresetActive(preset.id)"
-        :disabled="disabled"
-        @click="pickPreset(preset.id)"
-      >
-        {{ preset.label }}
-      </button>
-    </div>
-
-    <B24Alert
-      v-if="problem"
-      color="air-primary-alert"
-      title="Период выбран неверно"
-      :description="problem"
+    <PeriodPicker
+      :period="model.period"
+      :today="today"
+      :disabled="disabled"
+      caption="Созданы:"
+      group-label="Период создания сделок"
+      @update:period="bounds => model = { ...model, period: bounds }"
     />
-
-    <div
-      v-if="isCustomActive"
-      class="space-y-2"
-      data-export-exclude
-    >
-      <PeriodField
-        v-model:from="customFrom"
-        v-model:to="customTo"
-        :today="today"
-      />
-      <B24Alert
-        v-if="customProblem"
-        color="air-primary-alert"
-        title="Период выбран неверно"
-        :description="customProblem.message"
-      />
-    </div>
 
     <p
       v-if="appliedText"
