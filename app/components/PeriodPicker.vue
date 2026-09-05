@@ -56,7 +56,7 @@ const {
         type="button"
         class="rounded-lg border border-[color:var(--chart-track)] px-2.5 py-1 text-sm transition-colors"
         :class="isPresetActive(preset.id)
-          ? 'bg-[color:var(--chart-1)] text-white'
+          ? 'bg-[color:var(--chart-1)] text-[color:var(--chart-1-ink)]'
           : 'hover:bg-[color:var(--chart-track)]'"
         :aria-pressed="isPresetActive(preset.id)"
         :disabled="disabled"

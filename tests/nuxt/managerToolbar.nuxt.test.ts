@@ -110,6 +110,52 @@ describe('ManagerToolbar', () => {
     expect(companyButton(wrapper, 'Гомель').attributes('aria-pressed')).toBe('false')
   })
 
+  /**
+   * ⚠ Компанию человек может не выбирать вовсе — тогда её выбирает сам отчёт (самую крупную) и
+   * присылает в `appliedFilters`. Подсвечена должна быть ОНА: иначе при первом открытии на экране
+   * конкретная компания, а в панели не нажата ни одна кнопка.
+   */
+  it('пока человек не выбирал, подсвечена та компания, что показана на экране', async () => {
+    const wrapper = await mount({
+      modelValue: { categoryId: 0, scope: 'in-work', period: PERIOD },
+      appliedFilters: { ...FILTERS, companyId: 20 }
+    })
+    expect(companyButton(wrapper, 'Гомель').attributes('aria-pressed')).toBe('true')
+    expect(companyButton(wrapper, 'Минск').attributes('aria-pressed')).toBe('false')
+  })
+
+  /**
+   * ⚠ И нажатие на неё же не считается сменой отбора: это полная выборка отчёта, секунды
+   * запросов к порталу ради того же самого экрана.
+   */
+  it('нажатие на уже показанную компанию в портал не уходит', async () => {
+    const wrapper = await mount({
+      modelValue: { categoryId: 0, scope: 'in-work', period: PERIOD },
+      appliedFilters: { ...FILTERS, companyId: 20 }
+    })
+    await companyButton(wrapper, 'Гомель').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+  })
+
+  /**
+   * ⚠ Выбор человека важнее применённого: пока идёт выборка, подсвечена должна быть та компания,
+   * которую он только что нажал, а не та, что ещё на экране.
+   */
+  it('во время выборки подсвечена только что выбранная компания', async () => {
+    const wrapper = await mount({
+      modelValue: { ...FILTERS, companyId: 20 },
+      appliedFilters: FILTERS,
+      disabled: true
+    })
+    expect(companyButton(wrapper, 'Гомель').attributes('aria-pressed')).toBe('true')
+  })
+
+  // Ноль сделок — это ЧИСЛО на кнопке, а не пропуск: пустая компания остаётся видимой и выбираемой.
+  it('компания без сделок показывает ноль, а не пустое место', async () => {
+    const wrapper = await mount({ companyTotals: { ...COMPANY_TOTALS, 20: 0 } })
+    expect(companyButton(wrapper, 'Гомель').text()).toBe('Гомель0')
+  })
+
   it('«за всё время» из панели убрано — выбирать можно только конкретный период', async () => {
     const text = (await mount()).text()
     expect(text).not.toContain('За всё время')

@@ -78,9 +78,23 @@ function pickScope(value: unknown): void {
  * отчёта, секунды запросов, ради того же самого экрана.
  */
 function pickCompany(companyId: number): void {
-  if (props.disabled || model.value.companyId === companyId) return
+  if (props.disabled || selectedCompany.value === companyId) return
   model.value = { ...model.value, companyId }
 }
+
+/**
+ * Какая кнопка подсвечена.
+ *
+ * ⚠ Не `model.companyId`, а «выбранная человеком ИЛИ применённая отчётом». Компанию можно не
+ * выбирать вовсе — тогда её выбирает отчёт (самую крупную под отбором) и присылает в
+ * `appliedFilters`. По одному `model` не была бы подсвечена ни одна кнопка при том, что на экране
+ * конкретная компания, а первое нажатие на неё же считалось бы сменой отбора и уходило бы в
+ * портал за тем же самым экраном.
+ *
+ * ⚠ Порядок именно такой: выбор человека важнее применённого. Иначе, пока идёт выборка, кнопка
+ * оставалась бы подсвеченной на прошлой компании — той, которую уже не показывают.
+ */
+const selectedCompany = computed(() => model.value.companyId ?? props.appliedFilters?.companyId)
 
 /** Подпись под панелью: по чему именно посчитаны числа на экране. */
 const appliedText = computed(() => {
@@ -166,10 +180,10 @@ const appliedText = computed(() => {
         :key="company.id"
         type="button"
         class="rounded-lg border border-[color:var(--chart-track)] px-2.5 py-1 text-sm transition-colors"
-        :class="model.companyId === company.id
-          ? 'bg-[color:var(--chart-1)] text-white'
+        :class="selectedCompany === company.id
+          ? 'bg-[color:var(--chart-1)] text-[color:var(--chart-1-ink)]'
           : 'hover:bg-[color:var(--chart-track)]'"
-        :aria-pressed="model.companyId === company.id"
+        :aria-pressed="selectedCompany === company.id"
         :disabled="disabled"
         @click="pickCompany(company.id)"
       >

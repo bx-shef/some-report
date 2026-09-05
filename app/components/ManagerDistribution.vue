@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ManagerCellRef, ManagerLoadReport } from '~/types/managers'
-import { COMPANY_UNSET, companyFullLabel } from '~/utils/managerLoad'
-import { CHART_MANAGERS, managerChart } from '~/utils/managerChart'
+import { COMPANY_UNSET, companyFullLabel, pairKey } from '~/utils/managerLoad'
+import { CHART_MANAGERS, CHART_SLOTS, managerChart } from '~/utils/managerChart'
 import { formatCount, formatPercent } from '~/utils/format'
 
 /**
@@ -31,25 +31,42 @@ const props = defineProps<{
 const emit = defineEmits<{ drill: [ManagerCellRef] }>()
 
 /**
- * Порядок слотов палитры — подобран перебором так, чтобы СОСЕДНИЕ по кругу сектора были различимы,
- * в том числе при дальтонизме (худшая соседняя пара ΔE 33.5 при пороге 8). Не менять порядок, не
- * перепроверив: разбор и значения — в `app/assets/css/main.css`.
+ * Компания на экране: фильтр показывает одну, ядро отдаёт её же единственной группой.
+ *
+ * ⚠ Инвариант «компания ровно одна» держит `useManagerReport` (`companyIds = [companyId]`), а не
+ * тип: `ManagerLoadReport.companies` остался массивом, потому что ядро и матрица умеют больше
+ * одной. Вернёте сюда несколько — этот блок молча покажет первую.
  */
-const SLOTS = [1, 2, 3, 9, 7, 5, 6, 4, 11, 10, 12, 8]
-
-/** Компания на экране: фильтр показывает одну, ядро отдаёт её же единственной группой. */
 const company = computed(() => props.report.companies[0])
 
 const chart = computed(() => managerChart(props.report, company.value))
 
 /** Цвет сектора и цвет подписи на нём — по месту менеджера в кольце. */
 function slot(index: number, ink = false): string {
-  const number = SLOTS[index % SLOTS.length]!
+  const number = CHART_SLOTS[index % CHART_SLOTS.length]!
   return ink ? `var(--chart-${number}-ink)` : `var(--chart-${number})`
 }
 
-const colorByRoot = computed(() => Object.fromEntries(chart.value.nodes.map((node, index) => [node.key, slot(index)])))
-const inkByRoot = computed(() => Object.fromEntries(chart.value.nodes.map((node, index) => [node.key, slot(index, true)])))
+/**
+ * Цвета корневых секторов.
+ *
+ * ⚠ «Остальные» и «Без ответственного» красятся НЕ палитрой. Слотов ровно столько же, сколько
+ * менеджеров в кольце, и по модулю тринадцатый сектор получил бы цвет первого — встав с ним
+ * рядом, потому что круг замыкается. Отличает их отсутствие ссылки на список: сектор, за которым
+ * нет списка, — не человек.
+ */
+function isService(key: string): boolean {
+  return !(key in chart.value.refs)
+}
+
+const colorByRoot = computed(() => Object.fromEntries(chart.value.nodes.map((node, index) => [
+  node.key,
+  isService(node.key) ? (node.key.endsWith('|rest') ? 'var(--chart-muted-strong)' : 'var(--chart-muted)') : slot(index)
+])))
+const inkByRoot = computed(() => Object.fromEntries(chart.value.nodes.map((node, index) => [
+  node.key,
+  isService(node.key) ? 'var(--chart-muted-ink)' : slot(index, true)
+])))
 
 /**
  * Легенда — ВСЕ менеджеры компании с числами и долями, а не только попавшие в кольцо.
@@ -59,17 +76,22 @@ const inkByRoot = computed(() => Object.fromEntries(chart.value.nodes.map((node,
  * долю и шёл искать имена в таблицу, ради которой диаграмма и рисуется.
  */
 const legend = computed(() => {
-  const rows = company.value?.rows ?? []
-  const total = company.value?.total ?? 0
-  return rows.map((row, index) => ({
+  const current = company.value
+  return (current?.rows ?? []).map((row, index) => ({
     key: `${row.managerId}`,
     label: row.managerName,
     value: row.total,
-    share: total > 0 ? row.total / total : 0,
+    // ⚠ Доля берётся из ядра, а не считается здесь. Знаменатель у неё непростой (итог компании —
+    // отдельный счётчик портала, а не сумма строк), и посчитанная в шаблоне доля разошлась бы с
+    // таблицей по соседству ровно тогда, когда этого никто не ждёт.
+    share: row.share,
     // Цвет — только у тех, кто нарисован в кольце: у остальных его в диаграмме нет, и рисовать
     // им квадратик значило бы обещать сектор, которого нет.
     color: index < CHART_MANAGERS ? slot(index) : undefined,
-    ref: chart.value.refs[chart.value.nodes[index]?.key ?? '']
+    // ⚠ Ссылка ищется ПО КЛЮЧУ, а не по номеру строки: в кольце первые двенадцать, а в легенде
+    // все, и совпадение по индексу обрывалось бы на тринадцатом — числа легенды переставали бы
+    // открывать список, хотя те же числа в таблице открывают.
+    ref: current ? chart.value.refs[pairKey(current.companyId, row.managerId)] : undefined
   }))
 })
 
@@ -78,8 +100,15 @@ function pick(key: string): void {
   if (ref) emit('drill', ref)
 }
 
-/** За каждым сектором есть список — кроме свёрнутого хвоста и сделок без ответственного. */
-const pickable = computed(() => Object.keys(chart.value.refs))
+/**
+ * За каждым сектором есть список — кроме свёрнутого хвоста и сделок без ответственного.
+ *
+ * ⚠ Считается по НАРИСОВАННЫМ узлам, а не по всем ссылкам: в `refs` лежат и менеджеры за
+ * пределами кольца (их числа кликабельны в легенде), а сектора у них нет.
+ */
+const pickable = computed(() => chart.value.nodes
+  .flatMap(node => [node.key, ...(node.children ?? []).map(child => child.key)])
+  .filter(key => key in chart.value.refs))
 
 const title = computed(() => {
   const current = company.value

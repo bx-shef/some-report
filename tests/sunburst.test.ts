@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_SUNBURST, sunburstArcs, sunburstDepth, type SunburstNode } from '~/utils/sunburst'
+import { DEFAULT_SUNBURST, sunburstArcs, sunburstLabel, sunburstDepth, type SunburstNode } from '~/utils/sunburst'
 
 /**
  * Геометрия многокольцевой диаграммы. Проверяем ровно то, что ломается молча: доли, вложенность
@@ -122,5 +122,87 @@ describe('sunburstArcs', () => {
     ], { ...DEFAULT_SUNBURST, gapDegrees: 6, minDegrees: 0.5 })
     expect(arcs.map(arc => arc.key)).toEqual(['a', 'b'])
     expect(arcs[1]!.path).not.toContain('NaN')
+  })
+})
+
+/**
+ * Подписи прямо в секторах — то, ради чего кольца сделаны толстыми. Геометрия отдаёт место, а
+ * `sunburstLabel` решает, влезет ли туда строка: обе части чистые и обе под тестом, потому что
+ * решение «влезет» в шаблоне компонента не проверялось бы ничем.
+ */
+describe('подписи секторов', () => {
+  const HALVES = [
+    { key: 'right', label: 'Правая', value: 1 },
+    { key: 'left', label: 'Левая', value: 1 }
+  ]
+
+  it('короткая подпись берётся у узла, а без неё — полная', () => {
+    const arcs = sunburstArcs([
+      { key: 'a', label: 'Авдеева Мария', short: 'Авдеева М.', value: 1 },
+      { key: 'b', label: 'Новая', value: 1 }
+    ])
+    expect(arcs.map(arc => arc.short)).toEqual(['Авдеева М.', 'Новая'])
+  })
+
+  /**
+   * ⚠ Подпись НИКОГДА не встаёт вверх ногами. Вдоль радиуса её можно повернуть двумя способами,
+   * и в левой половине круга «естественный» поворот даёт перевёрнутый текст — читается он не
+   * лучше, чем его отсутствие. Проверяем свойство, а не конкретные градусы: смысл в том, что
+   * наклон нормализуется в (−90°, 90°], то есть буквы всегда стоят на ногах.
+   */
+  it('подпись не встаёт вверх ногами ни в одной части круга', () => {
+    const many = Array.from({ length: 16 }, (_, i) => ({ key: `k${i}`, label: `Сектор ${i}`, value: 1 }))
+    for (const arc of sunburstArcs(many)) {
+      const tilt = ((arc.labelAt.rotate % 360) + 540) % 360 - 180
+      expect(Math.abs(tilt), `сектор ${arc.key} наклонён на ${arc.labelAt.rotate}°`).toBeLessThanOrEqual(90)
+    }
+  })
+
+  it('место под подписью: вдоль радиуса — толщина кольца', () => {
+    const arcs = sunburstArcs(HALVES)
+    expect(arcs[0]!.labelAt.along).toBe(DEFAULT_SUNBURST.ringThickness)
+  })
+
+  /**
+   * ⚠ Поперёк меряем по ВНУТРЕННЕЙ кромке дуги и по ширине за вычетом зазора — по самому узкому
+   * её месту. Мерка «по середине кольца» разрешала бы подпись там, где её нижний край уже лезет
+   * на соседний сектор: на первом кольце внутренний радиус 11 против 20,25 по середине.
+   */
+  it('место поперёк меряется по внутренней кромке, а не по середине кольца', () => {
+    const [arc] = sunburstArcs(HALVES)
+    const gap = DEFAULT_SUNBURST.gapDegrees
+    expect(arc!.labelAt.across).toBeCloseTo(((180 - gap) * Math.PI / 180) * DEFAULT_SUNBURST.innerRadius, 5)
+  })
+
+  it('единственный корень занимает круг целиком и подписан внизу', () => {
+    const [arc] = sunburstArcs([{ key: 'one', label: 'Одна', value: 7 }])
+    const midRadius = DEFAULT_SUNBURST.innerRadius + DEFAULT_SUNBURST.ringThickness / 2
+    expect(arc!.labelAt.x).toBeCloseTo(50, 5)
+    expect(arc!.labelAt.y).toBeCloseTo(50 + midRadius, 5)
+  })
+})
+
+describe('sunburstLabel', () => {
+  const wide = { short: 'Авдеева М.', labelAt: { along: 18.5, across: 30 } }
+
+  it('широкая дуга — подпись целиком', () => {
+    expect(sunburstLabel(wide, 2.9)).toBe('Авдеева М.')
+  })
+
+  /**
+   * ⚠ Текст, вылезший на соседний сектор, ХУЖЕ пустого сектора: он подписывает чужие сделки
+   * чужим именем. Поэтому узкая дуга остаётся без подписи вовсе.
+   */
+  it('дуга у́же строки остаётся без подписи', () => {
+    expect(sunburstLabel({ ...wide, labelAt: { along: 18.5, across: 3 } }, 2.9)).toBeUndefined()
+  })
+
+  it('тонкое кольцо, куда влезло бы две буквы, тоже без подписи', () => {
+    expect(sunburstLabel({ ...wide, labelAt: { along: 5, across: 30 } }, 2.9)).toBeUndefined()
+  })
+
+  it('длинное имя обрезается многоточием по ширине кольца', () => {
+    const label = sunburstLabel({ short: 'Барановский И.', labelAt: { along: 12, across: 30 } }, 2.9)
+    expect(label).toBe('Баран…')
   })
 })

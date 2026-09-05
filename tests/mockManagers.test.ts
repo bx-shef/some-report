@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildMockManagerReport,
+  mockCompanyTotals,
   pickLargestMockCompany,
   filterMockDeals,
+  MOCK_COMPANIES,
   MOCK_CATEGORIES,
   MOCK_STAGES,
   mockManagerDeals,
@@ -116,5 +118,55 @@ describe('демо-набор', () => {
     const report = buildMockManagerReport(filters, TODAY)
     expect(report.companies).toHaveLength(1)
     expect(report.companies[0]!.companyId).toBe(pickLargestMockCompany(deals, filters))
+  })
+})
+
+/**
+ * Числа на кнопках фильтра «Моя компания» и выбор компании, которую отчёт открывает сам.
+ *
+ * ⚠ Обе функции держат ИНТЕРФЕЙС предпросмотра: без них демо-страница показывала бы кнопки без
+ * чисел и ни одной подсвеченной — то есть учила бы человека экрану, которого в портале нет.
+ */
+describe('кнопки фильтра «Моя компания» в предпросмотре', () => {
+  const TODAY = new Date(2026, 8, 15)
+  const BASE = { categoryId: 0, scope: 'all' as const, period: { from: '2026-09-01', to: '2026-09-30' } }
+
+  it('число на кнопке — это ровно столько сделок, сколько покажет сама кнопка', () => {
+    const deals = mockManagerDeals(TODAY)
+    const totals = mockCompanyTotals(deals, BASE)
+    // Ключ есть у каждой компании набора, включая «Без моей компании»: ноль там — ЗНАЧЕНИЕ.
+    expect(Object.keys(totals).map(Number).sort((a, b) => a - b))
+      .toEqual(MOCK_COMPANIES.map(company => company.id).sort((a, b) => a - b))
+    for (const company of MOCK_COMPANIES) {
+      expect(totals[company.id], company.name)
+        .toBe(filterMockDeals(deals, { ...BASE, companyId: company.id }).length)
+    }
+  })
+
+  it('сумма кнопок равна всем сделкам отбора: ни одна не потерялась и ни одна не сосчитана дважды', () => {
+    const deals = mockManagerDeals(TODAY)
+    const totals = mockCompanyTotals(deals, BASE)
+    expect(Object.values(totals).reduce((sum, value) => sum + value, 0))
+      .toBe(filterMockDeals(deals, BASE).length)
+  })
+
+  it('сам отчёт открывает самую крупную компанию', () => {
+    const deals = mockManagerDeals(TODAY)
+    const totals = mockCompanyTotals(deals, BASE)
+    const picked = pickLargestMockCompany(deals, BASE)
+    for (const company of MOCK_COMPANIES) {
+      expect(totals[picked]!).toBeGreaterThanOrEqual(totals[company.id]!)
+    }
+  })
+
+  /**
+   * ⚠ Пустой отбор — норма этого отчёта, а не сбой: период выбирают вперёд, в него ещё ничего не
+   * создано. Компанию всё равно надо назвать, иначе экрану нечего показывать и нечего подсветить.
+   */
+  it('под пустым отбором компания всё равно выбирается', () => {
+    const deals = mockManagerDeals(TODAY)
+    const empty = { ...BASE, period: { from: '2027-01-01', to: '2027-01-31' } }
+    expect(Object.values(mockCompanyTotals(deals, empty))).toEqual([0, 0, 0])
+    expect(MOCK_COMPANIES.some(company => company.id === pickLargestMockCompany(deals, empty))).toBe(true)
   })
 })

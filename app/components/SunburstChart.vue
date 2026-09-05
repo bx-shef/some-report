@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { DEFAULT_SUNBURST, sunburstArcs, type SunburstNode } from '~/utils/sunburst'
+import { DEFAULT_SUNBURST, sunburstArcs, sunburstLabel, type SunburstNode } from '~/utils/sunburst'
 
 /**
  * Многокольцевая диаграмма на голом SVG: внутреннее кольцо — корни, наружу — их дети.
@@ -16,7 +16,13 @@ const props = withDefaults(defineProps<{
   nodes: SunburstNode[]
   /** Цвета корней по ключу — палитру задаёт вызывающая сторона, у диаграммы своей нет. */
   colorByRoot: Record<string, string>
-  /** Цвет подписи на секторе этого корня: белый на тёмном, тёмный на светлом (`--chart-N-ink`). */
+  /**
+   * Цвет подписи на секторе этого корня: белый на тёмном, тёмный на светлом (`--chart-N-ink`).
+   *
+   * ⚠ Действует только на ВНУТРЕННЕМ кольце. Внешние рисуются полупрозрачными и подмешивают фон
+   * карточки, отчего `--chart-N-ink` падает до 2,7:1; там подпись пишется одним на тему
+   * `--chart-ink-veiled` — смешение всегда идёт в сторону фона, поэтому он и работает.
+   */
   inkByRoot: Record<string, string>
   /**
    * Ключи секторов, за которыми есть список.
@@ -42,7 +48,19 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{ pick: [string] }>()
 
-const arcs = computed(() => sunburstArcs(props.nodes, DEFAULT_SUNBURST))
+/** Высота подписи в единицах viewBox: 100 единиц — это `size` пикселей на экране. */
+const FONT = 2.9
+
+/**
+ * Дуги вместе с готовыми подписями.
+ *
+ * Подпись считается ОДИН раз на сектор, а не в `v-if` и ещё раз в интерполяции: секторов до
+ * четырёх десятков, и перерисовка гоняла бы `sunburstLabel` вдвое чаще без всякой нужды.
+ */
+const arcs = computed(() => sunburstArcs(props.nodes, DEFAULT_SUNBURST).map(arc => ({
+  ...arc,
+  text: sunburstLabel(arc, FONT)
+})))
 
 const pickableKeys = computed(() => new Set(props.pickable))
 
@@ -58,24 +76,6 @@ function pick(key: string): void {
  */
 function ringOpacity(depth: number): number {
   return Math.max(0.55, 1 - depth * 0.3)
-}
-
-/** Высота подписи в единицах viewBox: 100 единиц — это `size` пикселей на экране. */
-const FONT = 2.9
-
-/**
- * Подпись сектора — или её отсутствие.
- *
- * ⚠ Решение «влезет ли» принимается ЗДЕСЬ, а не в геометрии: только компонент знает про шрифт.
- * Дуга у́же строки — подписи нет вовсе (текст поверх соседа хуже пустого сектора), а слишком
- * длинное имя обрезается по ширине кольца. Ширину символа берём как 0,52 высоты — среднее по
- * кириллице в системном шрифте; ошибка в полсимвола погоды не делает, потому что рядом легенда.
- */
-function labelOf(arc: { short: string, labelAt: { along: number, across: number } }): string | undefined {
-  if (arc.labelAt.across < FONT * 1.25) return undefined
-  const fits = Math.floor((arc.labelAt.along - 2.5) / (FONT * 0.52))
-  if (fits < 3) return undefined
-  return arc.short.length > fits ? `${arc.short.slice(0, Math.max(1, fits - 1))}…` : arc.short
 }
 </script>
 
@@ -123,18 +123,23 @@ function labelOf(arc: { short: string, labelAt: { along: number, across: number 
           <title>{{ arc.label }}: {{ arc.value }}</title>
         </path>
         <!-- ⚠ Подпись не перехватывает мышь (`pointer-events-none`): иначе клик по имени менеджера
-             не открывал бы список, хотя визуально человек нажал ровно на сектор. -->
+             не открывал бы список, хотя визуально человек нажал ровно на сектор.
+
+             ⚠ И не читается скринридером (`aria-hidden`): то же самое уже сказано в `aria-label`
+             сектора и в `<title>`, вместе с числом. Без этого имя менеджера произносилось бы
+             дважды подряд — один раз как название кнопки, второй как текст рядом с ней. -->
         <text
-          v-if="labelOf(arc)"
+          v-if="arc.text"
           :x="arc.labelAt.x"
           :y="arc.labelAt.y"
           :transform="`rotate(${arc.labelAt.rotate} ${arc.labelAt.x} ${arc.labelAt.y})`"
           :font-size="FONT"
-          :fill="inkByRoot[arc.rootKey] ?? 'var(--chart-1-ink)'"
+          :fill="arc.depth === 0 ? (inkByRoot[arc.rootKey] ?? 'var(--chart-1-ink)') : 'var(--chart-ink-veiled)'"
           text-anchor="middle"
           dominant-baseline="central"
+          aria-hidden="true"
           class="pointer-events-none select-none"
-        >{{ labelOf(arc) }}</text>
+        >{{ arc.text }}</text>
       </g>
     </svg>
     <div

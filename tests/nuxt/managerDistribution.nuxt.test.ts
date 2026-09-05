@@ -2,8 +2,8 @@
 import { describe, expect, it } from 'vitest'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import ManagerDistribution from '~/components/ManagerDistribution.vue'
-import { cellKey, pairKey } from '~/utils/managerLoad'
-import { shortManagerName } from '~/utils/managerChart'
+import { cellKey, COMPANY_UNSET, COMPANY_UNSET_FULL_LABEL, pairKey } from '~/utils/managerLoad'
+import { CHART_MANAGERS, shortManagerName } from '~/utils/managerChart'
 import { buildFixtureReport } from './managerFixtures'
 
 /**
@@ -149,5 +149,81 @@ describe('ManagerDistribution', () => {
     })
     expect(wrapper.findAll('svg path')).toHaveLength(0)
     expect(wrapper.text()).toContain('Под этим отбором сделок нет')
+  })
+
+  /**
+   * ⚠ Группа без «моей компании» — такая же компания, но подписей у неё ДВЕ. В заголовке блока
+   * стоит «Без моей компании»: рядом нет слов про «мою компанию», и короткое «Не указана»
+   * читалось бы как «что не указана?».
+   */
+  it('группу без «моей компании» подписывает полным именем и объясняет, что это', async () => {
+    const unset = FULL.companies.find(company => company.companyId === COMPANY_UNSET)!
+    const wrapper = await mountSuspended(ManagerDistribution, {
+      props: {
+        report: { ...FULL, companies: [unset], total: unset.total, unlisted: unset.unlisted, managers: unset.rows.length, companyCount: 1 },
+        totalStages: 6,
+        scopeLabel: 'В работе'
+      }
+    })
+    expect(wrapper.text()).toContain(`Распределение: ${COMPANY_UNSET_FULL_LABEL}`)
+    expect(wrapper.text()).toContain('поле «Моя компания» у этих сделок не заполнено')
+  })
+
+  /**
+   * Кольцо показывает первых, легенда — ВСЕХ, и её числа обязаны открывать список так же, как
+   * числа таблицы.
+   *
+   * ⚠ Раньше легенда искала ссылку по номеру строки и на тринадцатом менеджере молча попадала в
+   * сектор «Остальные», у которого списка нет: строки переставали быть кнопками, хотя те же
+   * числа в таблице открывались.
+   */
+  it('числа легенды кликабельны и у менеджеров за пределами кольца', async () => {
+    const rows = Array.from({ length: CHART_MANAGERS + 2 }, (_, index) => ({
+      managerId: index + 1,
+      managerName: `Сотрудник ${index + 1}`,
+      byStage: { NEW: 1 },
+      otherStages: 0,
+      total: 1,
+      share: 1 / (CHART_MANAGERS + 2)
+    }))
+    const company = { ...COMPANY, rows, total: rows.length, unlisted: 0, unlistedByStage: {} }
+    const wrapper = await mountSuspended(ManagerDistribution, {
+      props: {
+        report: { ...REPORT, companies: [company], total: company.total, unlisted: 0, managers: rows.length },
+        totalStages: 6,
+        scopeLabel: 'В работе'
+      }
+    })
+    const last = rows.at(-1)!
+    const button = wrapper.findAll('button').find(node => node.attributes('title') === `Открыть список: ${last.managerName}`)
+    expect(button, 'у последнего менеджера легенды нет кнопки').toBeTruthy()
+    await button!.trigger('click')
+    expect(wrapper.emitted('drill')?.at(-1)?.[0]).toMatchObject({ managerId: last.managerId, companyId: company.companyId })
+  })
+
+  /**
+   * ⚠ «Остальные» и «Без ответственного» не красятся палитрой: слотов ровно столько же, сколько
+   * менеджеров в кольце, и по кругу тринадцатый сектор встал бы рядом с первым в его же цвете.
+   */
+  it('служебные сектора закрашены не палитрой', async () => {
+    const rows = Array.from({ length: CHART_MANAGERS + 2 }, (_, index) => ({
+      managerId: index + 1,
+      managerName: `Сотрудник ${index + 1}`,
+      byStage: { NEW: 1 },
+      otherStages: 0,
+      total: 1,
+      share: 0
+    }))
+    const company = { ...COMPANY, rows, total: rows.length + 3, unlisted: 3, unlistedByStage: { NEW: 3 } }
+    const wrapper = await mountSuspended(ManagerDistribution, {
+      props: {
+        report: { ...REPORT, companies: [company], total: company.total, unlisted: 3, managers: rows.length },
+        totalStages: 6,
+        scopeLabel: 'В работе'
+      }
+    })
+    const fills = wrapper.findAll('svg path').map(node => node.attributes('fill'))
+    expect(fills).toContain('var(--chart-muted)')
+    expect(fills).toContain('var(--chart-muted-strong)')
   })
 })

@@ -11,7 +11,8 @@ import {
   COMPANY_UNSET_LABEL,
   pairKey,
   stageCountSeconds,
-  stagesForScope
+  stagesForScope,
+  totalKey
 } from '~/utils/managerLoad'
 import {
   cellCountRequests,
@@ -407,13 +408,18 @@ export function useManagerReport(options: { today?: Date } = {}) {
       // Итог отбора, итоги колонок и пары «компания + менеджер» — одним заходом. Итоги колонок
       // спрашиваются отдельно, а не суммируются из клеток: в сумму не попали бы сделки без
       // ответственного, и клик по итогу колонки открывал бы список длиннее числа над ним.
+      //
+      // ⚠ Итог компании порталу НЕ задаётся: компания в отборе одна, и `MYCOMPANY_ID` уже стоит
+      // в `pickedBase` — вопрос «сколько всего» и вопрос «сколько у этой компании» стали одним и
+      // тем же фильтром. Отдельный счётчик был бы вторым проходом портала по тому же множеству.
       const pairsBatch = countBatch([
-        ...companyCountRequests(companyIds, pickedBase),
+        { key: totalKey(), filter: { ...pickedBase } },
         ...companyStageCountRequests(companyIds, scopeStages.map(stage => stage.id), pickedBase),
         ...pairCountRequests(companyIds, managerChain.ids, pickedBase)
       ])
       collectTotals(await batchTotals(pairsBatch.commands), pairsBatch.keyByCommand, totals)
       if (stale()) return
+      totals[companyKey(companyId)] = totals[totalKey()] ?? 0
 
       // Вопросы по стадиям — только для пар, у которых сделки есть. Пустые пары дали бы столько
       // же вопросов, сколько непустые, и на пустом направлении отчёт ждал бы минуту впустую.
@@ -443,6 +449,7 @@ export function useManagerReport(options: { today?: Date } = {}) {
 
       const nameOf = (id: number): string =>
         id === COMPANY_UNSET ? COMPANY_UNSET_LABEL : (companyNames[id] ?? `Компания #${id}`)
+
       const companies: CompanyRef[] = companyIds.map(id => ({ id, name: nameOf(id) }))
       const managers: ManagerRef[] = managerChain.ids.map(id => ({ id, name: users[String(id)] ?? `Сотрудник #${id}` }))
 
@@ -453,14 +460,20 @@ export function useManagerReport(options: { today?: Date } = {}) {
       stages.value = allStages
       // Кнопки: крупные компании первыми, при равенстве — по имени. Порядок по идентификатору
       // выглядел бы случайным: у портала он про время создания компании, а не про её вес.
-      companyOptions.value = knownCompanyIds
+      //
+      // ⚠ Выбранная компания остаётся кнопкой, даже если под новым отбором сделок у неё нет:
+      // перечисление идёт ПО СДЕЛКАМ, и пустая компания в нём не находится. Без этой строки
+      // человек, сменивший период, терял бы кнопку своего же выбора — отчёт показывал бы «сделок
+      // нет» и ни одной подсвеченной кнопки, а вернуться было бы нечем.
+      const buttonIds = knownCompanyIds.includes(companyId) ? knownCompanyIds : [...knownCompanyIds, companyId]
+      companyOptions.value = buttonIds
         .map(id => ({ id, name: nameOf(id) }))
         .sort((a, b) =>
           (totalsByCompany[b.id] ?? 0) - (totalsByCompany[a.id] ?? 0)
           || a.name.localeCompare(b.name, 'ru')
           || a.id - b.id
         )
-      companyTotals.value = totalsByCompany
+      companyTotals.value = { ...totalsByCompany, [companyId]: totalsByCompany[companyId] ?? 0 }
       dictionaries.value = {
         sources: statusNames(books.sources ?? []),
         junkReasons: {},

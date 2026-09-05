@@ -240,6 +240,19 @@ describe('useManagerReport: живая выборка', () => {
     expect(state.report.value.total).toBe(0)
   })
 
+  /**
+   * ⚠ Компании перечисляются ПО СДЕЛКАМ, поэтому пустая в перечисление не попадает. Без отдельной
+   * заботы человек, сменивший период, терял бы кнопку собственного выбора: на экране «сделок
+   * нет», в панели ни одной подсвеченной кнопки, и вернуться нечем.
+   */
+  it('выбранная компания остаётся кнопкой фильтра, даже когда сделок у неё нет', async () => {
+    portal.deals = [deal(1, 10, 1, 'NEW')]
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD, companyId: 20 })
+    expect(state.companyOptions.value.map(company => company.id)).toContain(20)
+    expect(state.companyTotals.value[20]).toBe(0)
+  })
+
   it('колонки — только стадии охвата, успешная стадия в «в работе» не попадает', async () => {
     const state = useManagerReport({ today: TODAY })
     await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
