@@ -1,6 +1,6 @@
 // @vitest-environment nuxt
-import { describe, expect, it } from 'vitest'
-import { ref } from 'vue'
+import { afterEach, describe, expect, it } from 'vitest'
+import { effectScope, ref, type EffectScope } from 'vue'
 import { usePeriodPicker } from '~/composables/usePeriodPicker'
 import type { ReportPeriod } from '~/types/report'
 
@@ -15,26 +15,39 @@ import type { ReportPeriod } from '~/types/report'
 const TODAY = new Date(2026, 8, 15)
 const MONTH: ReportPeriod = { from: '2026-09-01', to: '2026-09-30' }
 
-/** Панель «как настоящая»: период снаружи, применение — присваиванием. */
-function picker(start: ReportPeriod = MONTH, maxDays?: number) {
+/**
+ * Панель «как настоящая»: период снаружи, применение — присваиванием.
+ *
+ * ⚠ Наблюдатели заводятся внутри `effectScope`, как в компоненте: без него они пережили бы тест и
+ * продолжали срабатывать в следующем — то есть проверялась бы не та форма, в которой композабл
+ * живёт в панели.
+ */
+const scopes: EffectScope[] = []
+
+afterEach(() => {
+  while (scopes.length) scopes.pop()!.stop()
+})
+
+function picker(start: ReportPeriod = MONTH, disabled = ref(false)) {
   const period = ref<ReportPeriod>(start)
   const applied: ReportPeriod[] = []
-  const api = usePeriodPicker({
+  const scope = effectScope()
+  scopes.push(scope)
+  const api = scope.run(() => usePeriodPicker({
     period,
     today: TODAY,
-    ...(maxDays === undefined ? {} : { maxDays }),
+    disabled,
     apply: (bounds) => {
       applied.push(bounds)
       period.value = bounds
     }
-  })
-  return { ...api, period, applied }
+  }))!
+  return { ...api, period, applied, disabled }
 }
 
 describe('usePeriodPicker: готовые интервалы', () => {
   it('подсвечивает интервал, совпавший с текущим периодом', () => {
     const p = picker()
-    expect(p.activePreset.value).toBe('this-month')
     expect(p.isPresetActive('this-month')).toBe(true)
     expect(p.isPresetActive('prev-month')).toBe(false)
   })
@@ -48,12 +61,12 @@ describe('usePeriodPicker: готовые интервалы', () => {
   // Ручной ввод «01.09 — 30.09» обязан подсветить «Текущий месяц»: иначе человек видит, что
   // система не понимает того, что он только что выбрал.
   it('произвольные даты, совпавшие с интервалом, подсвечивают его', () => {
-    expect(picker({ from: '2026-09-01', to: '2026-09-30' }).activePreset.value).toBe('this-month')
-    expect(picker({ from: '2026-09-03', to: '2026-09-17' }).activePreset.value).toBe('custom')
+    expect(picker({ from: '2026-09-01', to: '2026-09-30' }).isPresetActive('this-month')).toBe(true)
+    expect(picker({ from: '2026-09-03', to: '2026-09-17' }).isPresetActive('custom')).toBe(true)
   })
 
-  // Самый длинный готовый интервал в общий предел укладывается — панель не должна отказывать
-  // человеку в том, что сама же ему предлагает.
+  // Самый длинный готовый интервал в общий предел (366 дней) укладывается — панель не должна
+  // отказывать человеку в том, что сама же ему предлагает.
   it('«текущий год» проходит проверку и применяется', () => {
     const p = picker()
     p.pickPreset('this-year')
@@ -62,24 +75,46 @@ describe('usePeriodPicker: готовые интервалы', () => {
   })
 
   /**
-   * ⚠ Готовые интервалы проходят ту же проверку, что и ручные. Сегодня ни один в предел не
-   * упирается, но без проверки новый интервал обходил бы его одним нажатием — и человек ждал бы
-   * минуты, не понимая почему. Предел здесь задан явно, чтобы эта ветка вообще проверялась.
+   * ⚠ Нажатие на уже подсвеченную кнопку (и двойной клик) в портал НЕ уходит.
+   *
+   * Стоит такое нажатие полной выборки отчёта — на боевом портале это шестнадцать секунд запросов
+   * и лишняя запись отбора в настройки. Проверка «тот же период» была у ручного ввода и не была у
+   * кнопок; найдено ревью.
    */
-  it('интервал длиннее предела не применяется, а объясняется', () => {
-    const p = picker(MONTH, 10)
-    p.pickPreset('prev-month')
+  it('повторное нажатие того же интервала ничего не применяет', () => {
+    const p = picker()
+    p.pickPreset('this-month')
+    p.pickPreset('this-month')
     expect(p.applied).toEqual([])
-    expect(p.problem.value).toContain('10 дней')
   })
 
-  it('следующий выбор снимает прежнюю жалобу', () => {
-    const p = picker(MONTH, 10)
+  it('нажатие соседнего интервала после того же — применяется', () => {
+    const p = picker()
+    p.pickPreset('this-month')
     p.pickPreset('prev-month')
-    expect(p.problem.value).toBeDefined()
-    p.pickPreset('today')
-    expect(p.problem.value).toBeUndefined()
-    expect(p.applied).toEqual([{ from: '2026-09-15', to: '2026-09-15' }])
+    expect(p.applied).toEqual([{ from: '2026-08-01', to: '2026-08-31' }])
+  })
+})
+
+describe('usePeriodPicker: во время выборки', () => {
+  // Каждая смена периода — секунды запросов к порталу; пока идёт выборка, менять его нельзя.
+  it('кнопки интервалов ничего не применяют', () => {
+    const p = picker(MONTH, ref(true))
+    p.pickPreset('prev-month')
+    expect(p.applied).toEqual([])
+  })
+
+  /**
+   * ⚠ И календарь тоже. Атрибутом его не закрыть — у поля дат b24ui нет `disabled`, — поэтому
+   * запрет живёт в самой логике: иначе человек менял бы период посреди выборки, и портал получал
+   * бы вторую такую же следом.
+   */
+  it('произвольные даты во время выборки не применяются', async () => {
+    const p = picker(MONTH, ref(true))
+    p.customFrom.value = '2026-09-05'
+    p.customTo.value = '2026-09-10'
+    await nextTick()
+    expect(p.applied).toEqual([])
   })
 })
 
@@ -94,10 +129,37 @@ describe('usePeriodPicker: произвольный период', () => {
     expect(p.isPresetActive('this-month')).toBe(false)
   })
 
+  /**
+   * ⚠ Кнопка помечена `aria-pressed`, то есть обещает нажатое и отжатое состояние. Раньше
+   * повторное нажатие ничего не делало, и закрыть календарь можно было только выбрав другой
+   * интервал — со скринридера это выглядит как сломанный переключатель.
+   */
+  it('повторное нажатие «Произвольного» закрывает поле', () => {
+    const p = picker()
+    p.pickPreset('custom')
+    p.pickPreset('custom')
+    expect(p.isCustomActive.value).toBe(false)
+    expect(p.applied).toEqual([])
+  })
+
   // Нестандартный период, пришедший снаружи (например, восстановленный из настроек портала),
   // открывает поле сам: иначе календарь показывал бы даты, которые нельзя поправить.
   it('нестандартный период снаружи открывает поле', () => {
     expect(picker({ from: '2026-09-03', to: '2026-09-17' }).isCustomActive.value).toBe(true)
+  })
+
+  /**
+   * ⚠ Поле, открывшееся САМО, не должно схлопнуться под рукой. Человек правит нестандартный
+   * период, выбранный диапазон случайно совпадает с готовым интервалом — и календарь исчезал бы
+   * посреди выбора, а вернуть его можно было только нажав «Произвольный».
+   */
+  it('поле остаётся открытым, когда выбранное совпало с готовым интервалом', async () => {
+    const p = picker({ from: '2026-09-03', to: '2026-09-17' })
+    p.customFrom.value = '2026-09-01'
+    p.customTo.value = '2026-09-30'
+    await nextTick()
+    expect(p.applied).toEqual([{ from: '2026-09-01', to: '2026-09-30' }])
+    expect(p.isCustomActive.value).toBe(true)
   })
 
   it('обе границы выбраны — период применяется', async () => {
@@ -144,22 +206,32 @@ describe('usePeriodPicker: произвольный период', () => {
     expect([p.customFrom.value, p.customTo.value]).toEqual(['2026-08-01', '2026-08-31'])
   })
 
-  // Период сменился снаружи (кнопка в другой части панели, восстановленный отбор) — поля идут за
-  // ним, иначе календарь показывал бы прошлый выбор.
-  it('период, пришедший снаружи, подтягивает поля', async () => {
+  /**
+   * Период сменился снаружи (кнопка панели, восстановленный отбор) — поля идут за ним, иначе
+   * календарь показывал бы прошлый выбор.
+   *
+   * ⚠ И обратно в портал этот же период НЕ уходит: подтягивание полей меняет их, наблюдатель
+   * срабатывает, и без проверки «тот же период» отчёт пересчитывался бы сам по себе.
+   */
+  it('период, пришедший снаружи, подтягивает поля и не уходит обратно', async () => {
     const p = picker()
     p.period.value = { from: '2026-07-01', to: '2026-07-31' }
     await nextTick()
     expect([p.customFrom.value, p.customTo.value]).toEqual(['2026-07-01', '2026-07-31'])
+    expect(p.applied).toEqual([])
   })
 
-  // Повторное применение тех же границ — лишний запрос к порталу на десяток секунд.
+  // Повторный выбор тех же границ руками — лишний запрос к порталу на десяток секунд.
   it('те же границы второй раз не применяются', async () => {
     const p = picker()
     p.pickPreset('custom')
-    p.customFrom.value = MONTH.from
-    p.customTo.value = MONTH.to
+    p.customFrom.value = '2026-09-05'
+    p.customTo.value = '2026-09-10'
     await nextTick()
-    expect(p.applied).toEqual([])
+    expect(p.applied).toHaveLength(1)
+    p.customFrom.value = '2026-09-05'
+    p.customTo.value = '2026-09-10'
+    await nextTick()
+    expect(p.applied).toHaveLength(1)
   })
 })

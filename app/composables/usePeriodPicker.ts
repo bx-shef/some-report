@@ -1,6 +1,6 @@
 import type { MaybeRefOrGetter } from 'vue'
 import type { ReportPeriod } from '~/types/report'
-import { PERIOD_PRESETS, matchPreset, resolvePreset, validatePeriod, type PeriodPresetId } from '~/utils/period'
+import { PERIOD_PRESETS, matchPreset, resolvePreset, samePeriod, validatePeriod, type PeriodPresetId } from '~/utils/period'
 
 /**
  * Выбор периода: готовые интервалы, режим «Произвольный» и проверка до запроса.
@@ -11,9 +11,11 @@ import { PERIOD_PRESETS, matchPreset, resolvePreset, validatePeriod, type Period
  * разные границы под одинаковыми кнопками — расхождение, которое видно только при сверке двух
  * отчётов между собой, то есть не видно никогда.
  *
- * ⚠ Своего состояния «текущий период» здесь НЕТ. Источник истины остаётся снаружи (проп или
- * модель панели), а композабл только читает его и зовёт `apply`. Иначе появилось бы второе место,
- * где живёт период, и рассинхрон был бы вопросом времени.
+ * ⚠ Своего состояния «текущий период» здесь НЕТ. Источник истины остаётся снаружи (проп панели),
+ * а композабл только читает его и зовёт `apply`. Иначе появилось бы второе место, где живёт
+ * период, и рассинхрон был бы вопросом времени.
+ *
+ * Разметку к этой механике держит `PeriodPicker.vue` — он же и единственный, кто зовёт композабл.
  */
 export function usePeriodPicker(options: {
   /** Выбранный период — источник истины снаружи. */
@@ -23,17 +25,17 @@ export function usePeriodPicker(options: {
   /** Как применить новый период. Панель решает сама: эмитом или присвоением в свою модель. */
   apply: (period: ReportPeriod) => void
   /**
-   * Предел длины периода в днях. Умолчание — общее для отчётов (366, см. `validatePeriod`).
+   * Идёт выборка — период не меняют.
    *
-   * ⚠ Параметр, а не константа, ровно по одной причине: сегодня ни один готовый интервал в него
-   * не упирается (самый длинный — «текущий год», 365–366 дней), и ветка «интервал слишком
-   * длинный» иначе не проверялась бы вовсе. Появится интервал длиннее или другой предел у
-   * второго отчёта — менять придётся одну строку в панели, а не логику здесь.
+   * ⚠ Проверка живёт ЗДЕСЬ, а не только в разметке кнопок. Календарь произвольных дат отключить
+   * атрибутом нельзя (у поля b24ui нет такого свойства), и без этой проверки человек менял бы
+   * период посреди шестнадцатисекундной выборки — портал получал бы вторую такую же следом.
    */
-  maxDays?: number
+  disabled?: MaybeRefOrGetter<boolean>
 }) {
   const period = computed(() => toValue(options.period))
   const today = computed(() => toValue(options.today))
+  const disabled = computed(() => Boolean(toValue(options.disabled)))
 
   /** Какой готовый интервал сейчас выбран. Ручной ввод «01.09 — 30.09» подсветит «Текущий месяц». */
   const activePreset = computed(() => matchPreset(period.value, today.value))
@@ -74,17 +76,28 @@ export function usePeriodPicker(options: {
   const problem = ref<string | undefined>(undefined)
 
   function pickPreset(id: PeriodPresetId): void {
+    if (disabled.value) return
     problem.value = undefined
     if (id === 'custom') {
-      customOpen.value = true
+      // ⚠ Именно ПЕРЕКЛЮЧАТЕЛЬ. Кнопка помечена `aria-pressed`, то есть обещает нажатое и
+      // отжатое состояние; при `customOpen = true` повторное нажатие ничего не делало, и закрыть
+      // календарь можно было только выбрав другой интервал — со скринридера это выглядит как
+      // сломанный переключатель.
+      customOpen.value = !customOpen.value
       return
     }
     customOpen.value = false
     const bounds = resolvePreset(id, today.value)
     if (!bounds) return
-    // ⚠ Готовые интервалы проходят ту же проверку, что и ручные: «текущий год» — это до 366 дней
-    // выборки, и без проверки он обходил бы предел одним нажатием.
-    const issue = validatePeriod(bounds, options.maxDays)
+    // ⚠ Тот же период второй раз в портал НЕ уходит. Нажатие на уже подсвеченную кнопку — обычное
+    // дело (и двойной клик тоже), а стоит оно полной выборки отчёта: шестнадцать секунд запросов
+    // и лишняя запись отбора в настройки портала.
+    if (samePeriod(bounds, period.value)) return
+    // ⚠ Готовые интервалы проходят ту же проверку, что и ручные. Сегодня ни один в предел не
+    // упирается («текущий год» — 365–366 дней при пределе 366), но интервал длиннее добавят
+    // однажды, и он обошёл бы предел одним нажатием — а человек ждал бы минуты, не понимая, чем
+    // он это заслужил.
+    const issue = validatePeriod(bounds)
     if (issue) {
       problem.value = issue.message
       return
@@ -101,21 +114,25 @@ export function usePeriodPicker(options: {
    */
   const customProblem = computed(() => {
     if (!customFrom.value || !customTo.value) return undefined
-    return validatePeriod({ from: customFrom.value, to: customTo.value }, options.maxDays)
+    return validatePeriod({ from: customFrom.value, to: customTo.value })
   })
 
   // Обе границы выбраны и период годный — применяем. Одна граница — человек ещё выбирает.
   watch([customFrom, customTo], () => {
-    if (!isCustomActive.value) return
+    if (disabled.value || !isCustomActive.value) return
     if (!customFrom.value || !customTo.value || customProblem.value) return
-    if (customFrom.value === period.value.from && customTo.value === period.value.to) return
-    options.apply({ from: customFrom.value, to: customTo.value })
+    const picked = { from: customFrom.value, to: customTo.value }
+    if (samePeriod(picked, period.value)) return
+    // ⚠ Закрепляем режим за человеком. Поле могло открыться САМО — от нестандартного периода,
+    // восстановленного из настроек портала, — и как только выбранный диапазон совпал бы с готовым
+    // интервалом, оно схлопнулось бы прямо под рукой, посреди выбора.
+    customOpen.value = true
+    options.apply(picked)
   })
 
   return {
-    /** Список интервалов — панели рисуют по нему кнопки, порядок задан в `period.ts`. */
+    /** Список интервалов — разметка рисует по нему кнопки, порядок задан в `period.ts`. */
     presets: PERIOD_PRESETS,
-    activePreset,
     isCustomActive,
     isPresetActive,
     customFrom,

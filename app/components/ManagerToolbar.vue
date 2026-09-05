@@ -89,21 +89,6 @@ function pickCompany(value: unknown): void {
   model.value = { ...model.value, companyId }
 }
 
-/**
- * Выбор периода — общий композабл, тот же, что в панели отчёта по лидам. Разное у панелей одно:
- * здесь период живёт ВНУТРИ отбора, поэтому применяется присваиванием целого отбора, а не
- * событием. Отбор присваивается ЦЕЛИКОМ и новым объектом — так его слушает страница.
- */
-const {
-  presets, isPresetActive, isCustomActive, customFrom, customTo, problem, customProblem, pickPreset
-} = usePeriodPicker({
-  period: () => model.value.period,
-  today: () => props.today,
-  apply: (bounds) => {
-    model.value = { ...model.value, period: bounds }
-  }
-})
-
 /** Подпись под панелью: по чему именно посчитаны числа на экране. */
 const appliedText = computed(() => {
   const applied = props.appliedFilters
@@ -187,54 +172,14 @@ const appliedText = computed(() => {
       />
     </div>
 
-    <!-- В PDF-снимок кнопки периода не попадают (`data-export-exclude`): период там — подписью. -->
-    <div
-      role="group"
-      aria-label="Период создания сделок"
-      class="flex flex-wrap items-center gap-2"
-      data-export-exclude
-    >
-      <span class="text-xs opacity-60">Созданы:</span>
-      <button
-        v-for="preset in presets"
-        :key="preset.id"
-        type="button"
-        class="rounded-lg border border-[color:var(--chart-track)] px-2.5 py-1 text-sm transition-colors"
-        :class="isPresetActive(preset.id)
-          ? 'bg-[color:var(--chart-1)] text-white'
-          : 'hover:bg-[color:var(--chart-track)]'"
-        :aria-pressed="isPresetActive(preset.id)"
-        :disabled="disabled"
-        @click="pickPreset(preset.id)"
-      >
-        {{ preset.label }}
-      </button>
-    </div>
-
-    <B24Alert
-      v-if="problem"
-      color="air-primary-alert"
-      title="Период выбран неверно"
-      :description="problem"
+    <PeriodPicker
+      :period="model.period"
+      :today="today"
+      :disabled="disabled"
+      caption="Созданы:"
+      group-label="Период создания сделок"
+      @update:period="bounds => model = { ...model, period: bounds }"
     />
-
-    <div
-      v-if="isCustomActive"
-      class="space-y-2"
-      data-export-exclude
-    >
-      <PeriodField
-        v-model:from="customFrom"
-        v-model:to="customTo"
-        :today="today"
-      />
-      <B24Alert
-        v-if="customProblem"
-        color="air-primary-alert"
-        title="Период выбран неверно"
-        :description="customProblem.message"
-      />
-    </div>
 
     <p
       v-if="appliedText"
