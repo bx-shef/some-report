@@ -22,13 +22,18 @@ export interface DrillRequest {
   entity: DrillEntity
   /** Как подписано число, по которому нажали, — заголовок слайдера. */
   title: string
-  /** Условие поверх периода и фильтров отчёта: стадия, семантика, источник. */
-  extra: Record<string, string | string[]>
   /**
-   * Сделки: из лидов (как в воронке — период по дате создания, фильтры отчёта действуют) или
-   * без лида (блок 7: по дате закрытия, `LEAD_ID` пуст, только успешные, фильтры не действуют).
+   * Условие поверх периода и фильтров отчёта: стадия, семантика, источник. У `dealScope: 'plain'`
+   * это ПОЛНЫЙ фильтр списка — там отчёт строит его сам, целиком (матрица менеджеров).
    */
-  dealScope?: 'from-leads' | 'unlinked'
+  extra: Record<string, string | string[] | number>
+  /**
+   * Сделки: из лидов (как в воронке — период по дате создания, фильтры отчёта действуют),
+   * без лида (блок 7: по дате закрытия, `LEAD_ID` пуст, только успешные, фильтры не действуют)
+   * или `plain` — фильтр целиком в `extra`, ни периода отчёта по лидам, ни его фильтров
+   * (отчёт «Сделки по менеджерам»: там свой отбор — направление, охват, офис, менеджер, стадия).
+   */
+  dealScope?: 'from-leads' | 'unlinked' | 'plain'
   /** Число, по которому нажали, — чтобы слайдер говорил «показано M из N», не долистывая до конца. */
   total?: number
 }
@@ -144,6 +149,15 @@ export interface DrillListParams {
   empty: boolean
 }
 
+/**
+ * Список сделок по ГОТОВОМУ фильтру (`dealScope: 'plain'`): его целиком строит отчёт «Сделки по
+ * менеджерам» — направление, охват, офис, менеджер, стадия. Ни периода отчёта по лидам, ни его
+ * фильтров здесь нет и быть не должно.
+ */
+export function plainDealListParams(request: DrillRequest): DrillListParams {
+  return { method: 'crm.deal.list', select: [...DRILL_DEAL_SELECT], filter: { ...request.extra }, byLeadIds: false, empty: false }
+}
+
 /** Условие числа и фильтр отчёта пишут в одно поле разные значения — такого множества нет. */
 function conflicts(base: Record<string, unknown>, extra: DrillRequest['extra']): boolean {
   return Object.entries(extra).some(([key, value]) => key in base && JSON.stringify(base[key]) !== JSON.stringify(value))
@@ -159,6 +173,9 @@ export function drillListParams(request: DrillRequest, period: ReportPeriod, fil
     const base = { ...periodFilter(period), ...leadRestFilter(filters) }
     return { method: 'crm.lead.list', select: [...DRILL_LEAD_SELECT], filter: { ...base, ...request.extra }, byLeadIds: false, empty: conflicts(base, request.extra) }
   }
+  // Полный фильтр пришёл готовым: период и фильтры отчёта по лидам к нему не применяются —
+  // у отчёта «Сделки по менеджерам» свой отбор, и смешать их значило бы показать не тот список.
+  if (request.dealScope === 'plain') return plainDealListParams(request)
   if (request.dealScope === 'unlinked') {
     return { method: 'crm.deal.list', select: [...DRILL_DEAL_SELECT], filter: { ...unlinkedWonDealsParams(period).filter, ...request.extra }, byLeadIds: false, empty: false }
   }
@@ -218,6 +235,9 @@ export function dealDrillRow(row: B24DrillDealRow, dictionaries: ReportDictionar
   const id = toId(row.ID)
   const stage = toText(row.STAGE_ID)
   const reasonKey = keyByCode[stage]
+  // Имя стадии знает только тот отчёт, у которого есть справочник выбранного направления
+  // («Сделки по менеджерам»). У отчёта по лидам его нет — там печатается код, как и раньше.
+  const stageName = dictionaries.dealStages?.[stage]
   const source = toText(row.SOURCE_ID)
   const when = toText(scope === 'unlinked' ? row.CLOSEDATE : row.DATE_CREATE)
   const amount = Number(row.OPPORTUNITY)
@@ -226,7 +246,7 @@ export function dealDrillRow(row: B24DrillDealRow, dictionaries: ReportDictionar
     id,
     title: toText(row.TITLE) || `Сделка #${id}`,
     ...(when ? { when } : {}),
-    ...(stage ? { stage: reasonKey ? lossReasonLabel(dictionaries, reasonKey) : stage } : {}),
+    ...(stage ? { stage: reasonKey ? lossReasonLabel(dictionaries, reasonKey) : (stageName ?? stage) } : {}),
     ...(source ? { source: sourceLabel(dictionaries, source) } : {}),
     ...(manager ? { manager } : {}),
     ...(Number.isFinite(amount) ? { amount } : {}),
@@ -235,9 +255,11 @@ export function dealDrillRow(row: B24DrillDealRow, dictionaries: ReportDictionar
   }
 }
 
-function matchesCondition(value: string, condition: string | string[] | undefined, negate = false): boolean {
+function matchesCondition(value: string, condition: string | string[] | number | undefined, negate = false): boolean {
   if (condition === undefined) return true
-  const hit = Array.isArray(condition) ? condition.includes(value) : condition === value
+  // Числа приводим к строке: в фильтре REST `MYCOMPANY_ID: 10` и `'10'` — одно и то же (по сети
+  // всё равно уходит текст), и демо-набор обязан сравнивать их так же.
+  const hit = Array.isArray(condition) ? condition.map(String).includes(value) : String(condition) === value
   return negate ? !hit : hit
 }
 
@@ -255,8 +277,9 @@ export function demoDrillRows(request: DrillRequest, dataset: ReportDataset, fil
         // «Успех» в демо — сконвертированный (со сделкой), как `isQualified` в ядре: «потерян» —
         // стадия успеха без сделки, в «квалифицировано» он не входит, и список не должен.
         const semantic = item.outcome === 'junk' ? 'F' : item.outcome === 'converted' ? 'S' : 'P'
-        const wanted = extra.STATUS_ID === undefined ? [] : [extra.STATUS_ID].flat()
-        const unwanted = extra['!STATUS_ID'] === undefined ? [] : [extra['!STATUS_ID']].flat()
+        // Коды стадий приводим к строке: в фильтре REST число и строка — одно и то же.
+        const wanted = extra.STATUS_ID === undefined ? [] : [extra.STATUS_ID].flat().map(String)
+        const unwanted = extra['!STATUS_ID'] === undefined ? [] : [extra['!STATUS_ID']].flat().map(String)
         return matchesCondition(semantic, extra.STATUS_SEMANTIC_ID)
           && (!wanted.length || wanted.some(code => demoLeadHasStatus(item, code)))
           && !unwanted.some(code => demoLeadHasStatus(item, code))

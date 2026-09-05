@@ -36,13 +36,25 @@ export const PLACEMENT_ANALYTICS_MENU = 'CRM_ANALYTICS_MENU'
  */
 export const PLACEMENT_ANALYTICS_TOOLBAR = 'CRM_ANALYTICS_TOOLBAR'
 
-/** Путь внутри приложения, который открывает портал по нажатию на пункт. */
+/**
+ * Путь внутри приложения, который открывает портал по нажатию на пункт, — ГЛАВНАЯ приложения с
+ * выбором отчёта. Сами отчёты лежат под ней (`/app/leads`, `/app/managers`, см.
+ * `app/config/routes.ts`), и менять этот путь нельзя, не перерегистрировав плейсменты на всех
+ * установленных порталах.
+ */
 export const PLACEMENT_HANDLER_PATH = '/app'
 
-/** Что регистрируем при установке: код точки + заголовок пункта. */
+/**
+ * Что регистрируем при установке: код точки + заголовок пункта.
+ *
+ * ⚠ Заголовок — «Отчёты по CRM», а не название одного отчёта: пункт открывает главную приложения,
+ * с которой человек выбирает отчёт, и их уже два. Заголовок применяется на `placement.bind`,
+ * то есть при УСТАНОВКЕ: на уже установленных порталах пункт останется старым, пока приложение
+ * не переустановят. Это не дефект выката — см. `docs/EMBEDDING.md`.
+ */
 export const PLACEMENTS = [
-  { code: PLACEMENT_ANALYTICS_MENU, title: 'Аналитика по лидам' },
-  { code: PLACEMENT_ANALYTICS_TOOLBAR, title: 'Аналитика по лидам' }
+  { code: PLACEMENT_ANALYTICS_MENU, title: 'Отчёты по CRM' },
+  { code: PLACEMENT_ANALYTICS_TOOLBAR, title: 'Отчёты по CRM' }
 ] as const
 
 /**

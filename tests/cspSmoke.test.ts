@@ -3,7 +3,7 @@ import { request } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { PRERENDER_ROUTES, SERVICE_ROUTES } from '../app/config/routes'
+import { PORTAL_HANDLER_ROUTES, PRERENDER_ROUTES } from '../app/config/routes'
 import { HASH_PLACEHOLDER, buildHashDirective, extractInlineScripts, missingHashes } from '../scripts/cspHashes'
 import { ORIGINS_PLACEHOLDER, PAGES, cspProblems, directiveValue, extractCspHeader, isCspViolation, markersInMarkup, parseOrigin, postPaths, routeOf, serve, substituteOrigins, uncoveredRoutes } from '../scripts/cspSmoke'
 
@@ -132,8 +132,9 @@ describe('parseOrigin', () => {
 
 describe('postPaths', () => {
   // Портал открывает обработчики POST-запросом; без `error_page 405 =200` виджет пуст.
+  // Страницы отчётов сюда не входят: на них переходят ссылкой уже внутри приложения.
   it('обработчики плейсмента и установки, каталогами', () => {
-    expect(postPaths(SERVICE_ROUTES)).toEqual(['/app/', '/install/'])
+    expect(postPaths(PORTAL_HANDLER_ROUTES)).toEqual(['/app/', '/install/'])
   })
 })
 

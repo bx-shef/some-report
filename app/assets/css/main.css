@@ -81,3 +81,26 @@
   overflow: visible !important;
 }
 
+
+/**
+ * Число, за которым открывается список записей портала.
+ *
+ * Класс, а не набор utility-классов в шаблоне: таких чисел на экране десятки, и они живут в
+ * ДВУХ отчётах. Разъехавшись, они читались бы как разные элементы — часть кликабельная, часть
+ * «просто подчёркнутая», и человек перестал бы понимать, где список есть, а где его нет.
+ */
+.drill-number {
+  cursor: pointer;
+  border-radius: 0.25rem;
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 4px;
+}
+
+.drill-number:hover {
+  color: var(--chart-1);
+}
+
+.drill-number:focus-visible {
+  outline: 2px solid var(--chart-1);
+}

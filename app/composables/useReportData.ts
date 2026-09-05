@@ -1,12 +1,11 @@
 import { mergeReasons } from '~/utils/reasonMerge'
 import type { ConversionBase, ReportDataset, ReportFilters, ReportMetrics, ReportPeriod } from '~/types/report'
-import type { AdapterWarnings, B24CurrencyRow, B24LeadRow, B24StatusRow, B24DealRow, B24UserRow } from '~/utils/b24Adapter'
+import type { AdapterWarnings, B24CurrencyRow, B24LeadRow, B24StatusRow, B24DealRow } from '~/utils/b24Adapter'
 import {
   adaptDeals,
   adaptDealsContext,
   adaptLeadCounts,
   adaptUnlinkedWonDeals,
-  adaptUsers,
   openLeadStatusIds,
   baseCurrency,
   lossStages,
@@ -21,13 +20,11 @@ import {
   dictionaryBatch,
   latestLeadParams,
   leadCountBatch,
-  type BatchCommand,
   leadCreatedInStageParams,
   leadHistoryLeadParams,
   leadHistoryParams,
   leadIdsParams,
-  unlinkedWonDealsParams,
-  userListParams
+  unlinkedWonDealsParams
 } from '~/utils/b24Query'
 import { buildReport, buildReportFromAggregate, mergeProcessing, processingMetrics } from '~/utils/metrics'
 import { leadsFromHistory, type B24LeadHistoryRow, type B24StageHistoryRow } from '~/utils/leadHistory'
@@ -179,6 +176,9 @@ export function useReportData() {
   })
 
   const b24 = useB24()
+  /** Пакеты и сотрудники — общая механика обоих отчётов, см. одноимённые композаблы. */
+  const { batchRows, batchTotals } = useB24Batch()
+  const { fetchUsers } = useB24Users()
 
   /**
    * Номер последней запрошенной выборки.
@@ -254,44 +254,6 @@ export function useReportData() {
     return rows
   }
 
-  /**
-   * Пакет команд → результат каждой по её ключу.
-   *
-   * ⚠ Команды режутся по 50: это предел одного пакета у портала, а именованные команды SDK умеет
-   * только в `batch`, не в `batchByChunk`. Число источников у клиента задаёт размер пакета
-   * счётчиков, и 14 источников — это ровно 50 команд; пятнадцатый молча вылетел бы за предел.
-   */
-  async function batchResults<T>(commands: Record<string, BatchCommand>): Promise<Record<string, { data: T | undefined, total: number }>> {
-    const entries = Object.entries(commands)
-    const out: Record<string, { data: T | undefined, total: number }> = {}
-    for (let i = 0; i < entries.length; i += 50) {
-      const chunk = Object.fromEntries(entries.slice(i, i + 50))
-      const result = await b24.getOrThrow().actions.v2.batch.make<T>({
-        calls: chunk,
-        options: { isHaltOnError: false, returnAjaxResult: true }
-      })
-      if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
-      const data = result.getData()
-      if (typeof data !== 'object' || data === null) continue
-      for (const [key, ajax] of Object.entries(data as Record<string, { getData?: () => { result?: T } | undefined, getTotal?: () => number }>)) {
-        out[key] = { data: ajax.getData?.()?.result, total: ajax.getTotal?.() ?? 0 }
-      }
-    }
-    return out
-  }
-
-  /** Только `total` каждой команды — для счётчиков. */
-  async function batchTotals(commands: Record<string, BatchCommand>): Promise<Record<string, number>> {
-    const results = await batchResults<unknown>(commands)
-    return Object.fromEntries(Object.entries(results).map(([key, value]) => [key, value.total]))
-  }
-
-  /** Только строки каждой команды — для справочников. */
-  async function batchRows<T>(commands: Record<string, BatchCommand>): Promise<Record<string, T[]>> {
-    const results = await batchResults<T[]>(commands)
-    return Object.fromEntries(Object.entries(results).map(([key, value]) => [key, Array.isArray(value.data) ? value.data : []]))
-  }
-
   /** Идентификаторы направлений сделок. Ошибка — пустой список: тогда прочитаем хотя бы направление по умолчанию. */
   async function fetchCategoryIds(): Promise<number[]> {
     try {
@@ -322,47 +284,6 @@ export function useReportData() {
     } catch {
       return undefined
     }
-  }
-
-  /** Сотрудники портала — читаются один раз на открытие отчёта, см. `fetchUsers`. */
-  let usersCache: Promise<Record<string, string>> | undefined
-
-  /**
-   * Список сотрудников для фильтра по менеджеру — страницами `user.get` (право `user_brief`).
-   *
-   * ⚠ Ошибка здесь — не ошибка отчёта: числа от списка не зависят, без него закрыт только выбор
-   * менеджера, и панель говорит об этом. Поэтому глушим и отдаём то, что успели прочитать.
-   * Повторно за открытие отчёта не спрашиваем — сотрудники за минуту не меняются.
-   */
-  function fetchUsers(): Promise<Record<string, string>> {
-    if (usersCache) return usersCache
-    const attempt = (async () => {
-      const rows: B24UserRow[] = []
-      let complete = false
-      try {
-        // Страницы по 50: сотрудников сотни, не тысячи. Предел страниц — от бесконечного `next`.
-        for (let start = 0, pages = 0; pages < 100; pages++) {
-          const result = await b24.getOrThrow().actions.v2.call.make<B24UserRow[]>({ method: 'user.get', params: userListParams(start) })
-          if (!result.isSuccess) break
-          const data = result.getData() as { result?: unknown, next?: unknown } | undefined
-          if (!Array.isArray(data?.result)) break
-          rows.push(...(data.result as B24UserRow[]))
-          if (typeof data.next !== 'number' || data.result.length === 0) {
-            complete = true
-            break
-          }
-          start = data.next
-        }
-      } catch {
-        // См. выше: список — удобство фильтра, а не данные отчёта.
-      }
-      // Неполный проход (ошибка, лимит запросов, обрыв) не запоминаем: иначе моргнувшая сеть
-      // закрыла бы выбор менеджера до перезагрузки страницы.
-      if (!complete) usersCache = undefined
-      return adaptUsers(rows)
-    })()
-    usersCache = attempt
-    return attempt
   }
 
   /**

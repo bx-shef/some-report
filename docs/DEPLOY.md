@@ -1,6 +1,6 @@
 # DEPLOY.md — сборка и выкат
 
-> Last reviewed: 2026-09-04
+> Last reviewed: 2026-09-05
 
 Отчёт — статический сайт. Backend'а нет, базы нет, состояния на сервере нет: nginx раздаёт файлы,
 всё остальное происходит в браузере внутри фрейма портала.
@@ -240,8 +240,10 @@ RFC 6797 §8.1 объявляет STS singleton-полем, браузер бе�
 
 ## Проверка CSP браузером — в CI
 
-Смоук `scripts/cspSmoke.ts` открывает `/`, `/app/?preview=1`, `/install/` настоящим Chrome, а
-на образе ещё шлёт POST на `/app/` и `/install/` — так их открывает портал. Провал — любое из:
+Смоук `scripts/cspSmoke.ts` открывает настоящим Chrome все страницы пререндера: `/`, `/app/`
+(выбор отчёта), `/app/leads/?preview=1`, `/app/managers/?preview=1` и `/install/`; список сверяется
+с маршрутами тестом, поэтому забытая страница уедет в статику не молча. На образе смоук ещё шлёт
+POST на `/app/` и `/install/` — так их открывает портал. Провал — любое из:
 нет заголовка CSP, в нём остался плейсхолдер или `'unsafe-inline'` в `script-src`, инлайновый
 скрипт без хеша, нарушение CSP в консоли, ошибка страницы, не стартовавший Nuxt, отсутствие
 текста, который рисует только JavaScript, ответ не 200 или другой CSP на POST. Список страниц
@@ -283,7 +285,9 @@ issue #24.
 curl -sI https://<адрес>/ | head -1                    # 200
 
 # 2. Служебные страницы попали в сборку
-curl -sI https://<адрес>/app/ | head -1                # 200
+curl -sI https://<адрес>/app/ | head -1                # 200 — главная приложения (выбор отчёта)
+curl -sI https://<адрес>/app/leads/ | head -1          # 200 — отчёт «Аналитика по лидам»
+curl -sI https://<адрес>/app/managers/ | head -1       # 200 — отчёт «Сделки по менеджерам»
 curl -sI https://<адрес>/install/ | head -1            # 200
 
 # 3. POST на обработчик плейсмента не даёт 405 (портал открывает его POST-запросом)
@@ -312,7 +316,7 @@ docker build --target runner \
   -t some-report:local .
 
 docker run -d --name some-report-local -p 8080:8080 some-report:local
-# http://localhost:8080/app?preview=1
+# http://localhost:8080/app/leads?preview=1 и /app/managers?preview=1
 
 # Тот же смоук, что гоняет CI на образе: браузер под заголовком, который отдаёт этот nginx
 pnpm smoke:image http://localhost:8080

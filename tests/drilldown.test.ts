@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { crmPath, dealDrillRow, demoDrillRows, drill, drillListParams, leadDrillRow } from '~/utils/drilldown'
+import { crmPath, dealDrillRow, demoDrillRows, drill, drillListParams, leadDrillRow, plainDealListParams } from '~/utils/drilldown'
 import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE, buildReport } from '~/utils/metrics'
 import { buildMockDataset } from '~/utils/mockReport'
 
@@ -118,5 +118,30 @@ describe('demoDrillRows', () => {
     expect(row.path).toBe('')
     expect(row.title).toMatch(/^Лид #/)
     expect(row.manager).toBeTruthy()
+  })
+})
+
+describe('plainDealListParams: готовый фильтр отчёта «Сделки по менеджерам»', () => {
+  const request = {
+    entity: 'deal' as const,
+    dealScope: 'plain' as const,
+    title: 'Сделки: Минск · Иванов Иван · Новая',
+    extra: { CATEGORY_ID: 0, STAGE_SEMANTIC_ID: 'P', MYCOMPANY_ID: 10, ASSIGNED_BY_ID: 1, STAGE_ID: 'NEW' }
+  }
+
+  // Фильтр приходит целиком: ни периода отчёта по лидам, ни его фильтров тут быть не должно —
+  // у второго отчёта свой отбор, и подмешать чужой значило бы показать не тот список.
+  it('фильтр списка — ровно условие числа, ничего сверх него', () => {
+    const params = plainDealListParams(request)
+    expect(params.method).toBe('crm.deal.list')
+    expect(params.filter).toEqual(request.extra)
+    expect(params.byLeadIds).toBe(false)
+    expect(params.empty).toBe(false)
+    expect(params.select).toContain('STAGE_ID')
+  })
+
+  it('через общий разбор запроса получается то же самое', () => {
+    const viaDispatch = drillListParams(request, { from: '2026-08-01', to: '2026-08-31' }, { sourceId: 'CALL' }, {})
+    expect(viaDispatch).toEqual(plainDealListParams(request))
   })
 })

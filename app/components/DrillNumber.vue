@@ -22,7 +22,7 @@ function open(): void {
   <button
     v-if="request"
     type="button"
-    class="cursor-pointer rounded underline decoration-dotted underline-offset-4 hover:text-[color:var(--chart-1)] focus-visible:outline-2 focus-visible:outline-[color:var(--chart-1)]"
+    class="drill-number"
     :title="`Открыть список: ${request.title}`"
     @click="open"
   >
