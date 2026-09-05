@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import type { ReportPeriod } from '~/types/report'
 import { formatDate } from '~/utils/format'
-import { PERIOD_PRESETS, matchPreset, resolvePreset, validatePeriod, type PeriodPresetId } from '~/utils/period'
 
 /**
  * Панель отчёта: период.
@@ -33,81 +32,17 @@ const periodText = computed(() => {
   return `${formatDate(shown.from)} — ${formatDate(shown.to)}`
 })
 
-/** Какой готовый интервал сейчас выбран. Ручной ввод «01.09 — 30.09» подсветит «Текущий месяц». */
-const activePreset = computed(() => matchPreset(props.period, props.today))
-
-/** Человек нажал «Произвольный» — поле открыто, даже если даты пока совпадают с готовым интервалом. */
-const customOpen = ref(false)
-
 /**
- * Произвольный режим активен ОДНИМ условием для подсветки, поля и применения правок.
- *
- * ⚠ Раньше условий было два: поле показывалось при «период не совпал ни с одним интервалом», а
- * правки применялись только при «нажали Произвольный». Пришедший снаружи нестандартный период
- * открывал календарь, в котором можно было выбирать сколько угодно — и ничего не происходило.
+ * Выбор периода — общий композабл: те же кнопки и та же проверка, что во второй панели.
+ * Здесь остаётся только то, что у панелей действительно разное: период приходит пропом и
+ * уходит наружу событием.
  */
-const isCustomActive = computed(() => customOpen.value || activePreset.value === 'custom')
-
-const customFrom = ref(props.period.from)
-const customTo = ref(props.period.to)
-
-function syncCustomToApplied(): void {
-  customFrom.value = props.period.from
-  customTo.value = props.period.to
-}
-
-watch(() => props.period, syncCustomToApplied)
-
-// Поле закрыли — недобранная половина выбора не должна ждать следующего открытия.
-watch(isCustomActive, (active) => {
-  if (!active) syncCustomToApplied()
-})
-
-/** Активна ли кнопка интервала. Одна функция для цвета и `aria-pressed`, чтобы им негде было разойтись. */
-function isPresetActive(id: PeriodPresetId): boolean {
-  return id === 'custom' ? isCustomActive.value : id === activePreset.value && !customOpen.value
-}
-
-/** Проблема периода, о которой нужно сказать до запроса. */
-const problem = ref<string | undefined>(undefined)
-
-function pickPreset(id: PeriodPresetId): void {
-  problem.value = undefined
-  if (id === 'custom') {
-    customOpen.value = true
-    return
-  }
-  customOpen.value = false
-  const bounds = resolvePreset(id, props.today)
-  if (!bounds) return
-  // ⚠ Готовые интервалы проходят ту же проверку, что и ручные: «текущий год» — это до 366 дней
-  // выборки, и без проверки он обходил бы предел одним нажатием.
-  const issue = validatePeriod(bounds)
-  if (issue) {
-    problem.value = issue.message
-    return
-  }
-  emit('update:period', bounds)
-}
-
-/**
- * Проблема выбранного вручную периода.
- *
- * ⚠ Проверяем ДО запроса. Перевёрнутый период REST принимает без ошибки и возвращает пустой
- * список — отчёт показал бы нули, неотличимые от «за период ничего не было», и человек искал бы
- * ошибку в CRM, а она у него на экране.
- */
-const customProblem = computed(() => {
-  if (!customFrom.value || !customTo.value) return undefined
-  return validatePeriod({ from: customFrom.value, to: customTo.value })
-})
-
-// Обе границы выбраны и период годный — применяем. Одна граница — человек ещё выбирает.
-watch([customFrom, customTo], () => {
-  if (!isCustomActive.value) return
-  if (!customFrom.value || !customTo.value || customProblem.value) return
-  if (customFrom.value === props.period.from && customTo.value === props.period.to) return
-  emit('update:period', { from: customFrom.value, to: customTo.value })
+const {
+  presets, isPresetActive, isCustomActive, customFrom, customTo, problem, customProblem, pickPreset
+} = usePeriodPicker({
+  period: () => props.period,
+  today: () => props.today,
+  apply: bounds => emit('update:period', bounds)
 })
 </script>
 
@@ -141,7 +76,7 @@ watch([customFrom, customTo], () => {
     >
       <span class="text-xs opacity-60">Период:</span>
       <button
-        v-for="preset in PERIOD_PRESETS"
+        v-for="preset in presets"
         :key="preset.id"
         type="button"
         class="rounded-lg border border-[color:var(--chart-track)] px-2.5 py-1 text-sm transition-colors"
