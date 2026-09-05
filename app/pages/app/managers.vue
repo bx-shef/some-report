@@ -1,34 +1,39 @@
 <script setup lang="ts">
 import type { ManagerCellRef, ManagerFilters } from '~/types/managers'
-import { DEFAULT_MANAGER_FILTERS } from '~/composables/useManagerReport'
+import { defaultManagerFilters } from '~/composables/useManagerReport'
 import { managerDealFilter } from '~/utils/managerQuery'
-import { OFFICE_UNSET, SCOPE_LABELS } from '~/utils/managerLoad'
-import { formatCount, formatPercent } from '~/utils/format'
+import { SCOPE_LABELS } from '~/utils/managerLoad'
+import { decodeManagersState, encodeManagersState, MANAGERS_OPTION_KEY } from '~/utils/savedFilters'
+import { formatCount } from '~/utils/format'
 
 /**
- * Отчёт «Сделки по менеджерам»: сколько сделок у каждого менеджера в каждом офисе и на какой
- * стадии. Направление, охват и период — фильтром; за каждым числом открывается список сделок.
+ * Отчёт «Сделки по менеджерам»: сколько сделок у каждого менеджера в каждой «моей компании» и на
+ * какой стадии. Направление, охват, компания и период — фильтром; за каждым числом (и за каждым
+ * сектором диаграммы) открывается список сделок.
  *
- * Идея взята из прежнего отчёта «Незакрытые заказы» на самом портале (офис → менеджер → стадия),
- * но считает он СДЕЛКИ и живёт снаружи, в приложении: доступа к базе портала у нас нет, а
- * счётчики REST на боевых объёмах отвечают за секунды (`docs/PORTAL.md`).
+ * Идея и вид взяты из прежнего отчёта «Незакрытые заказы» на самом портале: крупная кольцевая
+ * диаграмма «компания → ответственный → стадия», столбик чисел рядом и таблица под ними. Но
+ * считает он СДЕЛКИ и живёт снаружи, в приложении: доступа к базе портала у нас нет, а счётчики
+ * REST на боевых объёмах отвечают за секунды (`docs/PORTAL.md`).
  */
-const {
-  report, categories, stages, dictionaries, filters: appliedFilters,
-  pending, step, error, truncatedManagers, truncatedOffices,
-  stagesDeferred, stagesEstimateSeconds, startStages, isDemo, load
-} = useManagerReport()
-
 const b24 = useB24()
 const today = new Date()
 
+const {
+  report, categories, companyOptions, stages, dictionaries, filters: appliedFilters,
+  pending, step, error, truncatedManagers, truncatedCompanies,
+  stagesDeferred, stagesEstimateSeconds, startStages, isDemo, load
+} = useManagerReport({ today })
+
 /** Выбранный отбор. Применённый живёт в композабле — подпись строится по нему. */
-const filters = ref<ManagerFilters>({ ...DEFAULT_MANAGER_FILTERS })
+const filters = ref<ManagerFilters>(defaultManagerFilters(today))
+/** Отбор, который человек выставил в прошлый раз, — портал помнит его за ним самим. */
+const savedOptions = useUserOptions()
 
 const {
   open: drillOpen, request: drillRequest, rows: drillRows, pending: drillPending,
   error: drillError, done: drillDone, show: showDrill, loadMore: drillMore, openRow: openDrillRow, cellRequest
-} = useManagerDrilldown({ filters: appliedFilters, dictionaries, isDemo })
+} = useManagerDrilldown({ filters: appliedFilters, dictionaries, isDemo, today })
 
 useHead({ title: 'Сделки по менеджерам' })
 
@@ -43,6 +48,9 @@ const booting = ref(true)
 
 onMounted(async () => {
   await b24.init()
+  // ⚠ Сохранённый отбор читаем ДО первой выборки: иначе портал считал бы направление дважды —
+  // сначала по умолчанию, потом по восстановленному. Разбор проверяющий (`savedFilters.ts`).
+  if (b24.isInit()) filters.value = { ...filters.value, ...decodeManagersState(await savedOptions.read(MANAGERS_OPTION_KEY)) }
   await load(filters.value)
   booting.value = false
   await fit()
@@ -52,6 +60,7 @@ onMounted(async () => {
 // панель всегда присваивает отбор ЦЕЛИКОМ, новым объектом.
 watch(filters, async () => {
   if (booting.value) return
+  savedOptions.write(MANAGERS_OPTION_KEY, encodeManagersState(filters.value))
   await load(filters.value)
   await fit()
 })
@@ -74,31 +83,13 @@ const outsideNote = computed(() => {
   if (truncatedManagers.value) {
     notes.push('Сотрудников в этом направлении больше, чем отчёт перечисляет за один проход: часть сделок ушла в строку «вне таблицы». Сузьте отбор — направлением, охватом или периодом.')
   }
-  if (truncatedOffices.value) {
-    notes.push('«Моих компаний» у сделок больше, чем отчёт перечисляет за один проход: часть офисов в таблицу не попала, их сделки видны только в общем итоге.')
+  if (truncatedCompanies.value) {
+    notes.push('«Моих компаний» у сделок больше, чем отчёт перечисляет за один проход: часть из них в таблицу не попала, их сделки видны только в общем итоге.')
   }
   if (report.value.hiddenStages > 0) {
     notes.push(`Пустых стадий скрыто: ${report.value.hiddenStages} — в них нет ни одной сделки под этим отбором.`)
   }
   return notes
-})
-
-/**
- * Доля сделок без «моей компании».
- *
- * ⚠ На боевом портале заказчика это 92 % (замер `docs/PORTAL.md`), и молчать об этом нельзя:
- * руководитель, увидев почти всё в одной строке, решит, что сломан ОТЧЁТ, а не что поле в CRM
- * никто не заполняет. Это разные выводы, и второй — правда.
- */
-const unsetOfficeShare = computed(() => {
-  const total = report.value.total
-  const unset = report.value.offices.find(office => office.officeId === OFFICE_UNSET)?.total ?? 0
-  return total > 0 ? unset / total : 0
-})
-
-const officeFieldNote = computed(() => {
-  if (pending.value || unsetOfficeShare.value < 0.5) return undefined
-  return `У ${formatPercent(unsetOfficeShare.value)} сделок этого отбора поле «Моя компания» не заполнено, поэтому разрез по офисам показывает только оставшуюся часть. Это свойство данных CRM, а не отчёта: чтобы разрез заработал, поле нужно заполнять — правилом в карточке сделки, роботом на создание или при импорте.`
 })
 
 /** Сколько ждать стадии, если считать их по кнопке. */
@@ -115,7 +106,7 @@ const emptyNote = computed(() => {
   const applied = appliedFilters.value
   const name = categories.value.find(category => category.id === applied.categoryId)?.name ?? `направление #${applied.categoryId}`
   const scope = SCOPE_LABELS[applied.scope].toLowerCase()
-  return `Под этим отбором сделок нет: «${name}», ${scope}${applied.period ? ', выбранный период' : ', за всё время'}. Выберите другое направление, охват или период.`
+  return `Под этим отбором сделок нет: «${name}», ${scope}, выбранный период. Выберите другое направление, охват, компанию или период — например, прошлый месяц.`
 })
 
 /**
@@ -137,6 +128,7 @@ async function fit() {
         v-model="filters"
         :categories="categories"
         :stages="stages"
+        :companies="companyOptions"
         :applied-filters="booting ? undefined : appliedFilters"
         :is-demo="!booting && isDemo"
         :today="today"
@@ -148,8 +140,8 @@ async function fit() {
           Загрузка…
         </p>
         <p class="pb-6 text-center text-sm opacity-70">
-          Считаем сделки портала по офисам, менеджерам и стадиям. На боевом портале это около
-          шестнадцати секунд.
+          Считаем сделки портала по «моим компаниям», менеджерам и стадиям. На боевом портале это
+          около шестнадцати секунд.
         </p>
       </B24Card>
 
@@ -165,7 +157,7 @@ async function fit() {
           v-if="isDemo"
           color="air-primary-warning"
           title="Это НЕ данные вашего портала"
-          description="На экране демонстрационный набор: вымышленные офисы, сотрудники и сделки. Живые данные отчёт берёт, только когда открыт внутри Битрикс24 — из раздела CRM-аналитики или по плитке приложения."
+          description="На экране демонстрационный набор: вымышленные компании, сотрудники и сделки. Живые данные отчёт берёт, только когда открыт внутри Битрикс24 — из раздела CRM-аналитики или по плитке приложения."
         />
 
         <B24Alert
@@ -182,45 +174,12 @@ async function fit() {
           :description="emptyNote"
         />
 
-        <div
+        <ManagerDistribution
           v-if="report.total > 0"
-          class="grid grid-cols-2 gap-2 md:grid-cols-4"
-        >
-          <B24Card>
-            <StatTile
-              label="Сделок"
-              :value="formatCount(report.total)"
-              :hint="SCOPE_LABELS[appliedFilters.scope]"
-            />
-          </B24Card>
-          <B24Card>
-            <StatTile
-              label="Менеджеров"
-              :value="formatCount(report.managers)"
-              hint="с хотя бы одной сделкой"
-            />
-          </B24Card>
-          <B24Card>
-            <StatTile
-              label="Офисов"
-              :value="formatCount(report.officeCount)"
-              hint="«моя компания» сделки"
-            />
-          </B24Card>
-          <B24Card>
-            <StatTile
-              label="Стадий в таблице"
-              :value="formatCount(report.stages.length)"
-              :hint="`из ${formatCount(stages.length)} в направлении`"
-            />
-          </B24Card>
-        </div>
-
-        <B24Alert
-          v-if="officeFieldNote"
-          color="air-primary-warning"
-          title="Поле «Моя компания» у сделок почти не заполнено"
-          :description="officeFieldNote"
+          :report="report"
+          :total-stages="stages.length"
+          :scope-label="SCOPE_LABELS[appliedFilters.scope]"
+          @drill="openCell"
         />
 
         <B24Alert

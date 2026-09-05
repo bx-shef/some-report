@@ -63,10 +63,13 @@ const DICTIONARIES: ReportDictionaries = {
   users: { 1: 'Иванов Иван' }
 }
 
-const FILTERS: ManagerFilters = { categoryId: 0, scope: 'in-work' }
+/** «Сегодня» задано: от него построены даты демо-набора, и список обязан их повторить. */
+const TODAY = new Date(2026, 8, 15)
+
+const FILTERS: ManagerFilters = { categoryId: 0, scope: 'in-work', period: { from: '2026-09-01', to: '2026-09-30' } }
 
 function live(isDemo = false) {
-  return useManagerDrilldown({ filters: ref(FILTERS), dictionaries: ref(DICTIONARIES), isDemo: ref(isDemo) })
+  return useManagerDrilldown({ filters: ref(FILTERS), dictionaries: ref(DICTIONARIES), isDemo: ref(isDemo), today: TODAY })
 }
 
 /** Ответ портала страницей записей. */
@@ -88,7 +91,7 @@ describe('useManagerDrilldown', () => {
   it('спрашивает портал ровно условием клетки', async () => {
     const drill = live()
     const base = { CATEGORY_ID: 0, STAGE_SEMANTIC_ID: 'P' }
-    drill.show(drill.cellRequest('Сделки: Минск · Иванов Иван · Новая', base, { officeId: 10, managerId: 1, stageId: 'NEW' }, 4))
+    drill.show(drill.cellRequest('Сделки: Минск · Иванов Иван · Новая', base, { companyId: 10, managerId: 1, stageId: 'NEW' }, 4))
     await nextTick()
     expect(portal.calls[0]!.method).toBe('crm.deal.list')
     expect(portal.calls[0]!.filter).toEqual({
@@ -103,7 +106,7 @@ describe('useManagerDrilldown', () => {
 
   it('строки подписаны словами: стадия и ответственный — из справочников', async () => {
     const drill = live()
-    drill.show(drill.cellRequest('Сделки', {}, { officeId: 10 }, 2))
+    drill.show(drill.cellRequest('Сделки', {}, { companyId: 10 }, 2))
     await nextTick()
     answer(2)
     await nextTick()
@@ -113,7 +116,7 @@ describe('useManagerDrilldown', () => {
 
   it('короткая страница закрывает список, полная — оставляет курсор', async () => {
     const drill = live()
-    drill.show(drill.cellRequest('Сделки', {}, { officeId: 10 }, 60))
+    drill.show(drill.cellRequest('Сделки', {}, { companyId: 10 }, 60))
     await nextTick()
     answer(50)
     await nextTick()
@@ -130,7 +133,7 @@ describe('useManagerDrilldown', () => {
 
   it('закрытие слайдера выбрасывает страницу, которая ещё шла', async () => {
     const drill = live()
-    drill.show(drill.cellRequest('Сделки', {}, { officeId: 10 }, 4))
+    drill.show(drill.cellRequest('Сделки', {}, { companyId: 10 }, 4))
     await nextTick()
     drill.open.value = false
     await nextTick()
@@ -141,7 +144,7 @@ describe('useManagerDrilldown', () => {
 
   it('в демо-режиме список собирается по строкам набора, без запросов к порталу', async () => {
     const drill = live(true)
-    drill.show(drill.cellRequest('Сделки', {}, { officeId: 10, managerId: 101, stageId: 'NEW' }, 4))
+    drill.show(drill.cellRequest('Сделки', {}, { companyId: 10, managerId: 101, stageId: 'NEW' }, 4))
     await nextTick()
     expect(portal.calls).toHaveLength(0)
     expect(drill.done.value).toBe(true)
@@ -152,7 +155,7 @@ describe('useManagerDrilldown', () => {
 
   it('карточка открывается в слайдере портала', async () => {
     const drill = live()
-    drill.show(drill.cellRequest('Сделки', {}, { officeId: 10 }, 1))
+    drill.show(drill.cellRequest('Сделки', {}, { companyId: 10 }, 1))
     await nextTick()
     answer(1)
     await nextTick()
@@ -164,7 +167,7 @@ describe('useManagerDrilldown', () => {
 describe('useManagerDrilldown: когда что-то пошло не так', () => {
   it('ошибка страницы показывается, а повтор идёт с чистой плашкой', async () => {
     const drill = live()
-    drill.show(drill.cellRequest('Сделки', {}, { officeId: 10 }, 4))
+    drill.show(drill.cellRequest('Сделки', {}, { companyId: 10 }, 4))
     await nextTick()
     portal.pending.shift()?.(new Error('портал недоступен'))
     await nextTick()
@@ -183,7 +186,7 @@ describe('useManagerDrilldown: когда что-то пошло не так', (
   // портала открыть карточку показывается той же плашкой, что и ошибка страницы.
   it('портал не открыл карточку — об этом сказано', async () => {
     const drill = live()
-    drill.show(drill.cellRequest('Сделки', {}, { officeId: 10 }, 1))
+    drill.show(drill.cellRequest('Сделки', {}, { companyId: 10 }, 1))
     await nextTick()
     answer(1)
     await nextTick()
@@ -196,10 +199,10 @@ describe('useManagerDrilldown: когда что-то пошло не так', (
   // подмешаться к новому — иначе в списке окажутся записи из двух разных клеток.
   it('нажали по другой клетке — опоздавшая страница выбрасывается', async () => {
     const drill = live()
-    drill.show(drill.cellRequest('Первая', {}, { officeId: 10, stageId: 'NEW' }, 4))
+    drill.show(drill.cellRequest('Первая', {}, { companyId: 10, stageId: 'NEW' }, 4))
     await nextTick()
     const late = portal.pending.shift()
-    drill.show(drill.cellRequest('Вторая', {}, { officeId: 20, stageId: '1' }, 2))
+    drill.show(drill.cellRequest('Вторая', {}, { companyId: 20, stageId: '1' }, 2))
     await nextTick()
     late?.([{ ID: '999', TITLE: 'Из первого списка' }])
     await nextTick()

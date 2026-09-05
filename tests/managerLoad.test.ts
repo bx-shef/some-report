@@ -4,10 +4,10 @@ import {
   buildManagerLoad,
   cellKey,
   emptyManagerLoad,
-  officeKey,
-  OFFICE_UNSET,
-  OFFICE_UNSET_LABEL,
-  officeStageKey,
+  companyKey,
+  COMPANY_UNSET,
+  COMPANY_UNSET_LABEL,
+  companyStageKey,
   pairKey,
   scopeSemantic,
   stageCountSeconds,
@@ -27,10 +27,10 @@ const STAGES: StageRef[] = [
   { id: 'LOSE', name: 'Отказ', semantic: 'F' }
 ]
 
-const OFFICES = [
+const COMPANIES = [
   { id: 10, name: 'Минск' },
   { id: 20, name: 'Гомель' },
-  { id: OFFICE_UNSET, name: OFFICE_UNSET_LABEL }
+  { id: COMPANY_UNSET, name: COMPANY_UNSET_LABEL }
 ]
 
 const MANAGERS = [
@@ -39,7 +39,7 @@ const MANAGERS = [
   { id: 3, name: 'Сидоров Сидор' }
 ]
 
-/** Счётчики «как из портала»: итог, итоги офисов, пары, клетки. */
+/** Счётчики «как из портала»: итог, итоги компаний, пары, клетки. */
 function totals(entries: Record<string, number>): Record<string, number> {
   return entries
 }
@@ -61,14 +61,14 @@ describe('scopeSemantic и stagesForScope', () => {
 
 describe('buildManagerLoad', () => {
   const input = {
-    offices: OFFICES,
+    companies: COMPANIES,
     managers: MANAGERS,
     stages: stagesForScope(STAGES, 'in-work'),
     totals: totals({
       [totalKey()]: 30,
-      [officeKey(10)]: 20,
-      [officeKey(20)]: 10,
-      [officeKey(OFFICE_UNSET)]: 0,
+      [companyKey(10)]: 20,
+      [companyKey(20)]: 10,
+      [companyKey(COMPANY_UNSET)]: 0,
       [pairKey(10, 1)]: 12,
       [pairKey(10, 2)]: 8,
       [pairKey(20, 3)]: 10,
@@ -79,28 +79,28 @@ describe('buildManagerLoad', () => {
     })
   }
 
-  it('строит матрицу офис → менеджер → стадия', () => {
+  it('строит матрицу компания → менеджер → стадия', () => {
     const report = buildManagerLoad(input)
     expect(report.total).toBe(30)
     expect(report.managers).toBe(3)
-    expect(report.officeCount).toBe(2)
-    expect(report.offices[0]!.officeName).toBe('Минск')
-    expect(report.offices[0]!.rows.map(r => r.managerName)).toEqual(['Иванов Иван', 'Петров Пётр'])
-    expect(report.offices[0]!.rows[0]!.byStage).toEqual({ NEW: 5, 1: 7 })
+    expect(report.companyCount).toBe(2)
+    expect(report.companies[0]!.companyName).toBe('Минск')
+    expect(report.companies[0]!.rows.map(r => r.managerName)).toEqual(['Иванов Иван', 'Петров Пётр'])
+    expect(report.companies[0]!.rows[0]!.byStage).toEqual({ NEW: 5, 1: 7 })
     expect(report.byStage).toEqual({ NEW: 13, 1: 17 })
   })
 
-  it('офис без сделок в таблицу не попадает', () => {
+  it('компания без сделок в таблицу не попадает', () => {
     const report = buildManagerLoad(input)
-    expect(report.offices.map(o => o.officeId)).toEqual([10, 20])
+    expect(report.companies.map(o => o.companyId)).toEqual([10, 20])
   })
 
-  it('строки — по числу сделок вниз, доли считаются от итога офиса', () => {
+  it('строки — по числу сделок вниз, доли считаются от итога компании', () => {
     const report = buildManagerLoad(input)
-    const office = report.offices[0]!
-    expect(office.rows[0]!.total).toBe(12)
-    expect(office.rows[0]!.share).toBeCloseTo(12 / 20)
-    expect(office.share).toBeCloseTo(20 / 30)
+    const company = report.companies[0]!
+    expect(company.rows[0]!.total).toBe(12)
+    expect(company.rows[0]!.share).toBeCloseTo(12 / 20)
+    expect(company.share).toBeCloseTo(20 / 30)
   })
 
   it('пустые колонки скрываются, и отчёт говорит сколько', () => {
@@ -114,14 +114,14 @@ describe('buildManagerLoad', () => {
 
   // Сделки уволенного или неназначенные в строки не попадают: перечисление идёт по
   // ответственным, а их у таких сделок нет. Разница обязана быть видна числом, а не потеряться.
-  it('итог офиса больше суммы строк — разница показана остатком', () => {
+  it('итог компании больше суммы строк — разница показана остатком', () => {
     const report = buildManagerLoad({
       ...input,
-      totals: { ...input.totals, [officeKey(10)]: 25 }
+      totals: { ...input.totals, [companyKey(10)]: 25 }
     })
-    const office = report.offices.find(o => o.officeId === 10)!
-    expect(office.total).toBe(25)
-    expect(office.unlisted).toBe(5)
+    const company = report.companies.find(o => o.companyId === 10)!
+    expect(company.total).toBe(25)
+    expect(company.unlisted).toBe(5)
     expect(report.unlisted).toBe(5)
   })
 
@@ -131,41 +131,43 @@ describe('buildManagerLoad', () => {
       ...input,
       totals: { ...input.totals, [cellKey(10, 1, '1')]: 4 }
     })
-    const row = report.offices[0]!.rows[0]!
+    const row = report.companies[0]!.rows[0]!
     expect(row.total).toBe(12)
     expect(row.otherStages).toBe(3)
     expect(report.otherStages).toBe(3)
   })
 
   // Счётчики приходят разными пакетами: между ними портал живёт, и сумма строк может обогнать
-  // итог офиса. Отрицательного остатка быть не должно ни при каких данных.
-  it('сумма строк больше итога офиса — остаток ноль, а не минус', () => {
+  // итог компании. Отрицательного остатка быть не должно ни при каких данных.
+  it('сумма строк больше итога компании — остаток ноль, а не минус', () => {
     const report = buildManagerLoad({
       ...input,
-      totals: { ...input.totals, [officeKey(10)]: 3, [totalKey()]: 3 }
+      totals: { ...input.totals, [companyKey(10)]: 3, [totalKey()]: 3 }
     })
-    const office = report.offices.find(o => o.officeId === 10)!
-    expect(office.total).toBe(20)
-    expect(office.unlisted).toBe(0)
+    const company = report.companies.find(o => o.companyId === 10)!
+    expect(company.total).toBe(20)
+    expect(company.unlisted).toBe(0)
     expect(report.total).toBe(30)
     expect(report.unlisted).toBe(0)
   })
 
-  // «Не указана» — не офис, а незаполненное поле: на боевом портале в ней сделок больше всех,
-  // и первой строкой она подменяла бы отчёт разговором о качестве данных.
-  it('«моя компания не указана» стоит последней, даже когда она самая большая', () => {
+  // ⚠ Решение владельца от 2026-09-05: «Не указана» — такая же группа, как остальные, и место в
+  // порядке у неё общее — по числу сделок. Раньше она всегда стояла последней как «незаполненное
+  // поле»; теперь выбор «смотреть её или нет» отдан фильтру «Моя компания» в панели, и отдельное
+  // место в сортировке означало бы, что отчёт спорит с только что выставленным фильтром.
+  it('«без моей компании» сортируется по числу сделок, как все', () => {
     const report = buildManagerLoad({
       ...input,
       totals: {
         ...input.totals,
         [totalKey()]: 130,
-        [officeKey(OFFICE_UNSET)]: 100,
-        [pairKey(OFFICE_UNSET, 1)]: 100,
-        [cellKey(OFFICE_UNSET, 1, 'NEW')]: 100
+        [companyKey(COMPANY_UNSET)]: 100,
+        [pairKey(COMPANY_UNSET, 1)]: 100,
+        [cellKey(COMPANY_UNSET, 1, 'NEW')]: 100
       }
     })
-    expect(report.offices.map(o => o.officeId)).toEqual([10, 20, OFFICE_UNSET])
-    expect(report.offices.at(-1)!.total).toBe(100)
+    expect(report.companies.map(o => o.companyId)).toEqual([COMPANY_UNSET, 10, 20])
+    expect(report.companies[0]!.total).toBe(100)
   })
 
   it('без счётчиков — пустой отчёт, а не деление на ноль', () => {
@@ -176,39 +178,39 @@ describe('buildManagerLoad', () => {
 
 describe('итоги колонок — счётчики портала, а не суммы клеток', () => {
   const base = {
-    offices: OFFICES,
+    companies: COMPANIES,
     managers: MANAGERS,
     stages: stagesForScope(STAGES, 'in-work'),
     totals: totals({
       [totalKey()]: 30,
-      [officeKey(10)]: 25,
+      [companyKey(10)]: 25,
       [pairKey(10, 1)]: 12,
       [cellKey(10, 1, 'NEW')]: 5,
       [cellKey(10, 1, '1')]: 7,
       // Итоги колонок больше суммы клеток ровно на сделки без ответственного (25 − 12 = 13).
-      [officeStageKey(10, 'NEW')]: 8,
-      [officeStageKey(10, '1')]: 17
+      [companyStageKey(10, 'NEW')]: 8,
+      [companyStageKey(10, '1')]: 17
     })
   }
 
   // Ровно та причина, по которой колонка спрашивается отдельно: клик по её итогу открывает
-  // список по «офис + стадия», и число обязано совпадать с длиной этого списка.
+  // список по «компания + стадия», и число обязано совпадать с длиной этого списка.
   it('итог колонки берётся из счётчика, даже если он больше суммы строк', () => {
-    const office = buildManagerLoad(base).offices[0]!
-    expect(office.byStage).toEqual({ NEW: 8, 1: 17 })
-    expect(office.total).toBe(25)
+    const company = buildManagerLoad(base).companies[0]!
+    expect(company.byStage).toEqual({ NEW: 8, 1: 17 })
+    expect(company.total).toBe(25)
   })
 
   it('разница раскладывается в строку «вне таблицы» по стадиям', () => {
-    const office = buildManagerLoad(base).offices[0]!
-    expect(office.unlisted).toBe(13)
-    expect(office.unlistedByStage).toEqual({ NEW: 3, 1: 10 })
+    const company = buildManagerLoad(base).companies[0]!
+    expect(company.unlisted).toBe(13)
+    expect(company.unlistedByStage).toEqual({ NEW: 3, 1: 10 })
   })
 
-  it('сошлось: колонки плюс прочие стадии равны итогу офиса', () => {
-    const office = buildManagerLoad(base).offices[0]!
-    const columns = Object.values(office.byStage).reduce((sum, value) => sum + value, 0)
-    expect(columns + office.otherStages).toBe(office.total)
+  it('сошлось: колонки плюс прочие стадии равны итогу компании', () => {
+    const company = buildManagerLoad(base).companies[0]!
+    const columns = Object.values(company.byStage).reduce((sum, value) => sum + value, 0)
+    expect(columns + company.otherStages).toBe(company.total)
   })
 
   // Стадии считаются по кнопке: колонок нет вовсе, и «прочими» не может стать вся таблица.
@@ -216,22 +218,22 @@ describe('итоги колонок — счётчики портала, а не
     const report = buildManagerLoad({ ...base, stages: [] })
     expect(report.stages).toEqual([])
     expect(report.otherStages).toBe(0)
-    expect(report.offices[0]!.rows[0]!.otherStages).toBe(0)
-    expect(report.offices[0]!.total).toBe(25)
+    expect(report.companies[0]!.rows[0]!.otherStages).toBe(0)
+    expect(report.companies[0]!.total).toBe(25)
   })
 })
 
 describe('остатки уровня отчёта', () => {
-  // Офис не перечислился (цепочка упёрлась в предел): его сделки есть в общем итоге, но ни в
+  // Компания не перечислился (цепочка упёрлась в предел): его сделки есть в общем итоге, но ни в
   // одной строке. Молчать о них нельзя — это те же «сделки вне таблицы».
-  it('сделки офиса, которого нет в списке, попадают в общий остаток', () => {
+  it('сделки компании, которого нет в списке, попадают в общий остаток', () => {
     const report = buildManagerLoad({
-      offices: [{ id: 10, name: 'Минск' }],
+      companies: [{ id: 10, name: 'Минск' }],
       managers: MANAGERS,
       stages: stagesForScope(STAGES, 'in-work'),
       totals: totals({
         [totalKey()]: 50,
-        [officeKey(10)]: 20,
+        [companyKey(10)]: 20,
         [pairKey(10, 1)]: 20,
         [cellKey(10, 1, 'NEW')]: 20
       })
@@ -245,17 +247,17 @@ describe('порядок при равных числах', () => {
   // Иначе строки прыгали бы между обновлениями, и человек читал бы это как «данные меняются».
   it('равные итоги сортируются по имени', () => {
     const report = buildManagerLoad({
-      offices: [{ id: 10, name: 'Минск' }],
+      companies: [{ id: 10, name: 'Минск' }],
       managers: [{ id: 1, name: 'Яковлев Ян' }, { id: 2, name: 'Абрамов Абрам' }],
       stages: stagesForScope(STAGES, 'in-work'),
       totals: totals({
         [totalKey()]: 10,
-        [officeKey(10)]: 10,
+        [companyKey(10)]: 10,
         [pairKey(10, 1)]: 5,
         [pairKey(10, 2)]: 5
       })
     })
-    expect(report.offices[0]!.rows.map(row => row.managerName)).toEqual(['Абрамов Абрам', 'Яковлев Ян'])
+    expect(report.companies[0]!.rows.map(row => row.managerName)).toEqual(['Абрамов Абрам', 'Яковлев Ян'])
   })
 })
 

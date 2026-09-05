@@ -106,7 +106,7 @@ export interface BatchCommand {
 }
 
 /** Запрос «сколько записей» — только `total`, без единой строки данных. */
-function countCommand(method: string, filter: Record<string, unknown>): BatchCommand {
+export function countCommand(method: string, filter: Record<string, unknown>): BatchCommand {
   return { method, params: { select: ['ID'], filter, start: 0 } }
 }
 

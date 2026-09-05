@@ -28,15 +28,34 @@ export interface RegisteredPlacement {
 }
 
 /**
- * Состояние одной ожидаемой точки:
- * - `ok` — привязана на наш адрес;
- * - `other-handler` — привязана, но на другой адрес (переезд домена, старая установка);
- * - `missing` — не привязана вовсе.
+ * Состояние одного ожидаемого пункта:
+ * - `ok` — привязан на наш адрес;
+ * - `other-handler` — точка привязана, но ни один её обработчик не совпал с нашим (переезд
+ *   домена, установка прошлой версии, где путь был другим);
+ * - `missing` — точка не привязана вовсе.
  */
 export type PlacementStatus = 'ok' | 'other-handler' | 'missing'
 
+/**
+ * Что мы ждём увидеть в портале: КОД ТОЧКИ И АДРЕС.
+ *
+ * ⚠ Пары, а не просто коды, и это не усложнение ради строгости. В одной точке
+ * (`CRM_ANALYTICS_MENU`) теперь ДВА наших пункта — по одному на отчёт, — и проверка «код
+ * встречается в списке» показывала бы зелёное «всё зарегистрировано», когда привязан только
+ * один из двух: человек открыл бы аналитику и не нашёл там второй отчёт.
+ */
+export interface ExpectedPlacement {
+  code: string
+  handler: string
+  /** Заголовок пункта — только для диагностики на экране. */
+  title?: string
+}
+
 export interface PlacementCheck {
   code: string
+  /** Адрес, который мы ждали у этого пункта. */
+  handler: string
+  title?: string
   status: PlacementStatus
   /** Чужие адреса, найденные у этой точки, — их видно в диагностике как есть. */
   foreignHandlers: string[]
@@ -99,23 +118,55 @@ function pickString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
 }
 
-/** Состояние каждой ожидаемой точки против того, что реально зарегистрировано в портале. */
+/**
+ * Состояние каждого ожидаемого пункта против того, что реально зарегистрировано в портале.
+ *
+ * ⚠ Соседний пункт НАШЕГО ЖЕ приложения чужим не считается, и это не мелочь. Оба отчёта висят на
+ * одном коде точки (`CRM_ANALYTICS_MENU`), и наивная проверка «строки с этим кодом, кроме моей»
+ * объявляла бы адрес второго отчёта «чужим»: при частичной регистрации (второй `bind` упёрся в
+ * лимит запросов) диагноз читался бы как «пункт открывает другой адрес» с нашим же исправным
+ * адресом в подсказке — вместо «второй отчёт не зарегистрирован».
+ */
 export function checkPlacements(
-  expected: readonly string[],
-  registered: readonly RegisteredPlacement[],
-  ourHandler: string
+  expected: readonly ExpectedPlacement[],
+  registered: readonly RegisteredPlacement[]
 ): PlacementCheck[] {
-  const ours = normalizeHandlerUrl(ourHandler)
-  return expected.map((code) => {
-    const rows = registered.filter(row => row.code === code)
-    if (rows.length === 0) return { code, status: 'missing', foreignHandlers: [] }
+  const mine = new Set(expected.map(item => `${item.code}|${normalizeHandlerUrl(item.handler)}`))
+  return expected.map((item) => {
+    const ours = normalizeHandlerUrl(item.handler)
+    const base = { code: item.code, handler: item.handler, ...(item.title ? { title: item.title } : {}) }
+    const rows = registered.filter(row => row.code === item.code)
+    if (rows.some(row => normalizeHandlerUrl(row.handler) === ours)) {
+      // Наша привязка есть — пункт рабочий, даже если рядом в той же точке висит чужая.
+      const foreignHandlers = rows
+        .filter(row => !mine.has(`${row.code}|${normalizeHandlerUrl(row.handler)}`))
+        .map(row => row.handler)
+      return { ...base, status: 'ok', foreignHandlers }
+    }
     const foreignHandlers = rows
-      .filter(row => normalizeHandlerUrl(row.handler) !== ours)
+      .filter(row => !mine.has(`${row.code}|${normalizeHandlerUrl(row.handler)}`))
       .map(row => row.handler)
-    // Наша привязка есть — точка рабочая, даже если рядом висит чужая.
-    if (foreignHandlers.length < rows.length) return { code, status: 'ok', foreignHandlers }
-    return { code, status: 'other-handler', foreignHandlers }
+    // Точка занята ЧУЖИМ адресом — переезд домена или прошлая установка. Если чужого нет, то
+    // пункта просто нет: рядом стоит только наш же второй отчёт.
+    return { ...base, status: foreignHandlers.length ? 'other-handler' : 'missing', foreignHandlers }
   })
+}
+
+/**
+ * Лишние привязки: те, что портал помнит за нашим приложением, а мы больше не регистрируем.
+ *
+ * ⚠ Появились они не из воздуха: до 2026-09-05 приложение регистрировало один пункт на главную
+ * приложения и кнопку в шапке аналитики. После переустановки поверх старой установки они
+ * остались бы рядом с новыми — три входа вместо двух, причём старый ведёт в промежуточную
+ * страницу. Молчать об этом нельзя: человек, увидев в меню лишний пункт, решит, что приложение
+ * установилось дважды.
+ */
+export function extraPlacements(
+  expected: readonly ExpectedPlacement[],
+  registered: readonly RegisteredPlacement[]
+): RegisteredPlacement[] {
+  const ours = new Set(expected.map(item => `${item.code}|${normalizeHandlerUrl(item.handler)}`))
+  return registered.filter(row => !ours.has(`${row.code}|${normalizeHandlerUrl(row.handler)}`))
 }
 
 /** Каких прав портал приложению не выдал. Порядок — как в списке требуемых. */
@@ -141,6 +192,8 @@ export interface InstallState {
   placementsChecked: boolean
   /** Состояние точек встраивания (см. `checkPlacements`). */
   placements: readonly PlacementCheck[]
+  /** Привязки, которых мы не регистрируем (см. `extraPlacements`). */
+  extras?: readonly RegisteredPlacement[]
   /** Права администратора портала у текущего пользователя. */
   isAdmin?: boolean
 }
@@ -183,11 +236,15 @@ export function installVerdict(state: InstallState): InstallVerdict {
   if (absent.length > 0) {
     return {
       level: 'error',
-      title: `Не зарегистрированы точки встройки: ${absent.map(item => item.code).join(', ')}`,
+      title: `Не зарегистрированы пункты: ${absent.map(item => item.title ?? item.code).join(', ')}`,
       hint: 'Нажмите «Перепривязать точки». Если не помогло — проверьте, что приложение локальное и ему выданы права crm и placement.'
     }
   }
 
+  // ⚠ Про ЧУЖОЙ адрес говорим РАНЬШЕ, чем про лишние пункты. При переезде домена верно и то, и
+  // другое: наши пункты не найдены, а прежние висят «лишними». Но причина у этого одна — адрес
+  // приложения сменился, — и назвать её надо ею, а не «наследством прошлой версии»: лечится это
+  // одинаково, а понимается по-разному.
   const foreign = state.placements.filter(item => item.status === 'other-handler')
   if (foreign.length > 0) {
     return {
@@ -200,9 +257,18 @@ export function installVerdict(state: InstallState): InstallVerdict {
     }
   }
 
+  const extras = state.extras ?? []
+  if (extras.length > 0) {
+    return {
+      level: 'warning',
+      title: 'В портале остались лишние пункты приложения',
+      hint: `Кроме двух наших отчётов портал помнит ещё ${extras.length}: ${extras.map(row => row.handler || row.code).join(', ')}. Так бывает после обновления с прежней версии, где пункт был один. Нажмите «Перепривязать точки» — лишние снимутся.`
+    }
+  }
+
   return {
     level: 'ok',
-    title: 'Всё зарегистрировано — отчёт доступен в портале',
-    hint: 'Пункт «Аналитика по лидам» — раздел «CRM-аналитика», в левом меню раскройте «Приложения» (рядом с «Маркетплейс»). Пункт кэшируется: если его не видно, перезагрузите страницу портала целиком.'
+    title: 'Всё зарегистрировано — оба отчёта доступны в портале',
+    hint: 'Пункты «Аналитика по лидам» и «Сделки по менеджерам» — раздел «CRM-аналитика», в левом меню раскройте «Приложения» (рядом с «Маркетплейс»). Меню кэшируется: если пунктов не видно, перезагрузите страницу портала целиком.'
   }
 }

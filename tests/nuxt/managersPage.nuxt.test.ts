@@ -36,9 +36,9 @@ describe('страница «Сделки по менеджерам» вне п�
     const text = wrapper.text()
     expect(text).toContain('Это НЕ данные вашего портала')
     expect(text).toContain('Сделки по менеджерам')
-    // Матрица построена: офис демо-набора и его менеджеры на экране.
+    // Матрица построена: компания демо-набора и его менеджеры на экране.
     expect(text).toContain('Минск')
-    expect(text).toContain('Итого по офису')
+    expect(text).toContain('Итого по компании')
   })
 
   it('в шапке есть переход на второй отчёт и на главную', async () => {
@@ -51,13 +51,17 @@ describe('страница «Сделки по менеджерам» вне п�
     expect(links.every(link => (link.href ?? '').includes('preview=1'))).toBe(true)
   })
 
-  it('сводка над таблицей называет охват словами', async () => {
+  // Блок «Распределение»: крупная диаграмма и столбик чисел рядом — как в прежнем отчёте
+  // заказчика. Проверяем, что он на экране и что числа подписаны словами.
+  it('над таблицей — диаграмма распределения и статистика', async () => {
     const wrapper = await mountSuspended(ManagersPage)
     await flush()
     const text = wrapper.text()
+    expect(text).toContain('Распределение')
     expect(text).toContain('Сделок')
     expect(text).toContain('Менеджеров')
-    expect(text).toContain('Офисов')
+    expect(text).toContain('Моих компаний')
+    expect(wrapper.findAll('svg path').length).toBeGreaterThan(0)
   })
 })
 

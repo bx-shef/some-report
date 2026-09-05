@@ -1,18 +1,31 @@
 <script setup lang="ts">
-import { B24_REQUIRED_SCOPES, PLACEMENTS, placementHandlerUrl, portalAnalyticsUrl } from '~/config/b24'
+import { APP_HOME } from '~/config/routes'
+import {
+  B24_REQUIRED_SCOPES,
+  LEGACY_PLACEMENT_CODES,
+  PLACEMENTS,
+  placementHandlerUrl,
+  placementHandlers,
+  portalAnalyticsUrl
+} from '~/config/b24'
 import {
   checkPlacements,
+  extraPlacements,
   installVerdict,
   missingScopes,
   parseRegisteredPlacements,
   type InstallVerdict,
-  type PlacementCheck
+  type PlacementCheck,
+  type RegisteredPlacement
 } from '~/utils/installDiagnostics'
 
 /**
  * Установка приложения и проверка того, что портал её действительно принял.
  *
- * Порядок шагов важен: сначала `placement.bind` для каждой точки, потом `installFinish`. Пока
+ * Порядок шагов важен: сначала снимаем свои прежние привязки, потом `placement.bind` на каждый
+ * пункт, потом `installFinish`. Снятие обязательно, и вот почему: `placement.bind` с ДРУГИМ
+ * адресом обработчика не заменяет привязку, а ДОБАВЛЯЕТ её. Установка поверх прежней версии (где
+ * пункт был один и вёл на главную приложения) оставила бы в меню три входа вместо двух. Пока
  * установка не завершена, пункт приложения в интерфейсе портала не показывается вовсе — то есть
  * привязать точки ПОСЛЕ завершения означало бы, что первый вход человека приходится на портал без
  * нашего пункта.
@@ -36,6 +49,8 @@ const installFinishError = ref<string | undefined>(undefined)
 const unbindErrors = ref<string[]>([])
 const verdict = ref<InstallVerdict | undefined>(undefined)
 const placementChecks = ref<PlacementCheck[]>([])
+/** Привязки, которых мы не регистрируем: наследство прежних версий приложения. */
+const extras = ref<RegisteredPlacement[]>([])
 const placementsChecked = ref(false)
 /** `undefined` — спросить не удалось; `[]` — спросили, и прав нет. Это разные факты. */
 const grantedScopes = ref<string[] | undefined>(undefined)
@@ -44,7 +59,10 @@ const isAdmin = ref<boolean | undefined>(undefined)
 /** Перепривязка снимает живые привязки, поэтому спрашиваем подтверждение вторым нажатием. */
 const rebindArmed = ref(false)
 
-const handler = computed(() => placementHandlerUrl(config.public.siteUrl))
+/** Адрес главной приложения — он же ответ на вопрос «куда вообще смотрит эта установка». */
+const handler = computed(() => placementHandlerUrl(config.public.siteUrl, APP_HOME))
+/** Что регистрируем: пункт на каждый отчёт со своим адресом. */
+const expected = computed(() => placementHandlers(config.public.siteUrl) ?? [])
 
 /**
  * Адрес раздела CRM-аналитики портала.
@@ -84,23 +102,44 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-/** Регистрация точек встраивания. Ошибку каждой показываем отдельно: лечатся они по-разному. */
+/**
+ * Снять СВОИ привязки: и те, что регистрируем сейчас, и те, что регистрировали раньше.
+ *
+ * ⚠ `placement.unbind` без `HANDLER` снимает все обработчики точки, зарегистрированные НАШИМ
+ * приложением, — чужих приложений он не касается. Пустая точка ошибкой не считается: портал
+ * отвечает `{count: 0}`.
+ */
+async function unbindPlacements(): Promise<void> {
+  const codes = [...new Set([...PLACEMENTS.map(p => p.code), ...LEGACY_PLACEMENT_CODES])]
+  for (const code of codes) {
+    try {
+      await callResult('placement.unbind', { PLACEMENT: code })
+    } catch (e) {
+      // ⚠ Не «нечего снимать — тем лучше»: сюда же приходят лимит запросов и сетевой сбой. При
+      // них старая привязка ОСТАЛАСЬ, а следом мы поставим новую — и получим в меню лишний
+      // пункт, ведущий в прошлую версию. Молчать об этом нельзя.
+      unbindErrors.value.push(`${code}: ${describe(e)}`)
+    }
+  }
+}
+
+/** Регистрация пунктов. Ошибку каждого показываем отдельно: лечатся они по-разному. */
 async function bindPlacements(): Promise<void> {
   steps.value = []
-  for (const placement of PLACEMENTS) {
+  for (const placement of expected.value) {
     try {
       const result = await callResult('placement.bind', {
         PLACEMENT: placement.code,
-        HANDLER: handler.value,
+        HANDLER: placement.handler,
         TITLE: placement.title,
         LANG_ALL: {
           ru: { TITLE: placement.title },
-          en: { TITLE: 'Lead analytics' }
+          en: { TITLE: placement.title }
         }
       })
-      steps.value.push({ code: placement.code, ok: Boolean(result) })
+      steps.value.push({ code: `${placement.code} → ${placement.title}`, ok: Boolean(result) })
     } catch (e) {
-      steps.value.push({ code: placement.code, ok: false, error: describe(e) })
+      steps.value.push({ code: `${placement.code} → ${placement.title}`, ok: false, error: describe(e) })
     }
   }
 }
@@ -132,16 +171,15 @@ async function verify(): Promise<void> {
   } catch { grantedScopes.value = undefined }
 
   try {
-    placementChecks.value = checkPlacements(
-      PLACEMENTS.map(p => p.code),
-      parseRegisteredPlacements(await callResult('placement.get')),
-      handler.value ?? ''
-    )
+    const registered = parseRegisteredPlacements(await callResult('placement.get'))
+    placementChecks.value = checkPlacements(expected.value, registered)
+    extras.value = extraPlacements(expected.value, registered)
     placementsChecked.value = true
   } catch {
     // ⚠ Именно ФЛАГ, а не пустой список: пустой список означал бы «точек нет» и увёл бы вердикт
     // в зелёное «всё зарегистрировано» ровно тогда, когда мы не проверили ничего.
     placementChecks.value = []
+    extras.value = []
     placementsChecked.value = false
   }
 
@@ -150,6 +188,7 @@ async function verify(): Promise<void> {
     missing: grantedScopes.value ? missingScopes(grantedScopes.value, B24_REQUIRED_SCOPES) : [],
     placementsChecked: placementsChecked.value,
     placements: placementChecks.value,
+    extras: extras.value,
     isAdmin: isAdmin.value
   })
 
@@ -181,6 +220,7 @@ async function ready(): Promise<boolean> {
 function resetDiagnosis(): void {
   verdict.value = undefined
   placementChecks.value = []
+  extras.value = []
   placementsChecked.value = false
   unbindErrors.value = []
   installFinishError.value = undefined
@@ -192,6 +232,20 @@ async function install() {
   resetDiagnosis()
   if (!await ready()) return
 
+  // ⚠ Не-администратору привязку портал всё равно запретит (`ACCESS_DENIED`), но спрашивать его
+  // об этом незачем: `placement.unbind` для не-админа — это запрос, который может и пройти
+  // частично. Проверяем сами и сразу переходим к диагностике: она объяснит, что делать и кому.
+  try {
+    isAdmin.value = b24.getOrThrow().auth.isAdmin
+  } catch { /* не смогли узнать — идём обычным путём, портал рассудит сам */ }
+  if (isAdmin.value === false) {
+    await verify()
+    return
+  }
+
+  // Сначала снимаем своё прежнее — см. шапку: `bind` с новым адресом ДОБАВЛЯЕТ пункт, а не
+  // заменяет, и без этого установка поверх старой версии множит их в меню.
+  await unbindPlacements()
   await bindPlacements()
 
   try {
@@ -236,16 +290,7 @@ async function rebind() {
   resetDiagnosis()
   if (!await ready()) return
 
-  for (const placement of PLACEMENTS) {
-    try {
-      await callResult('placement.unbind', { PLACEMENT: placement.code })
-    } catch (e) {
-      // ⚠ Не «нечего снимать — тем лучше»: сюда же приходят лимит запросов и сетевой сбой. При
-      // них старая привязка ОСТАЛАСЬ, а следом мы поставим новую — и получим в меню два пункта,
-      // один из которых открывает пустоту. Молчать об этом нельзя.
-      unbindErrors.value.push(`${placement.code}: ${describe(e)}`)
-    }
-  }
+  await unbindPlacements()
   await bindPlacements()
   await verify()
 }
@@ -263,7 +308,7 @@ onMounted(install)
       v-if="state === 'running'"
       class="text-sm opacity-70"
     >
-      Регистрируем отчёт в разделе CRM-аналитики…
+      Регистрируем оба отчёта в разделе CRM-аналитики…
     </p>
     <p
       v-else-if="state === 'checking'"
@@ -286,7 +331,7 @@ onMounted(install)
       :description="fatal"
     />
 
-    <!-- Снять старую привязку не удалось: в меню портала могли остаться два пункта. -->
+    <!-- Снять старую привязку не удалось: в меню портала могли остаться лишние пункты. -->
     <B24Alert
       v-if="unbindErrors.length"
       color="air-primary-warning"
@@ -311,11 +356,7 @@ onMounted(install)
       </h2>
       <ol class="list-decimal space-y-1 pl-5">
         <li>
-          <b>Плитка приложения:</b> «Приложения» → «{{ PLACEMENTS[0].title }}». Открывает страницу
-          выбора отчёта и работает даже если пункт в аналитике не появился.
-        </li>
-        <li>
-          <b>Пункт в CRM-аналитике:</b>
+          <b>Два пункта в CRM-аналитике:</b>
           <a
             v-if="analyticsUrl"
             :href="analyticsUrl"
@@ -324,8 +365,13 @@ onMounted(install)
             class="underline"
           >{{ analyticsUrl }}</a>
           <span v-else>раздел «CRM-аналитика»</span>
-          → в левом меню раскройте «Приложения» → «{{ PLACEMENTS[0].title }}», рядом с «Маркетплейс».
-          Оттуда открывается выбор отчёта: «Аналитика по лидам» и «Сделки по менеджерам».
+          → в левом меню раскройте «Приложения» (рядом с «Маркетплейс»). Там
+          «{{ PLACEMENTS[0].title }}» и «{{ PLACEMENTS[1].title }}» — каждый открывает свой отчёт
+          сразу, без промежуточной страницы.
+        </li>
+        <li>
+          <b>Плитка приложения:</b> «Приложения» → плитка отчётов. Открывает страницу выбора
+          отчёта и работает, даже если пункты в аналитике ещё не появились.
         </li>
       </ol>
     </section>
@@ -436,17 +482,20 @@ onMounted(install)
       >
         <li
           v-for="check in placementChecks"
-          :key="check.code"
+          :key="`${check.code}|${check.handler}`"
         >
-          <code>{{ check.code }}</code> —
+          <!-- ⚠ Пункт называем ЗАГОЛОВКОМ, а ключ строки собираем с адресом: оба отчёта висят на
+               одном коде точки, и по коду строки диагностики были бы неразличимы, а `:key` —
+               дублирующимся (Vue переиспользовал бы не ту строку при обновлении). -->
+          <b>{{ check.title ?? check.code }}</b> <code class="opacity-70">{{ check.code }}</code> —
           <template v-if="check.status === 'ok'">
-            привязана на наш адрес
+            привязан на наш адрес
           </template>
           <template v-else-if="check.status === 'missing'">
-            не зарегистрирована
+            не зарегистрирован
           </template>
           <template v-else>
-            привязана на другой адрес: {{ check.foreignHandlers.join(', ') }}
+            точка занята другим адресом: {{ check.foreignHandlers.join(', ') }}
           </template>
         </li>
       </ul>

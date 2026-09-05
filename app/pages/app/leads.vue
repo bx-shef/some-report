@@ -3,6 +3,7 @@ import type { ReportFilters, ReportPeriod } from '~/types/report'
 import { hasFilters, needsLeadIds } from '~/utils/filters'
 import { formatDate } from '~/utils/format'
 import { periodLengthDays, resolvePreset, samePeriod } from '~/utils/period'
+import { decodeLeadsState, encodeLeadsState, LEADS_OPTION_KEY } from '~/utils/savedFilters'
 import { PROCESSING_MINUTES_PER_MONTH, UNLINKED_MINUTES_PER_MONTH } from '~/composables/useReportData'
 
 /**
@@ -30,6 +31,8 @@ const period = ref<ReportPeriod>(dataset.value.period)
 /** Выбранные фильтры (ТЗ от 2026-09-04). Панель появляется после первой выборки — см. `booting`. */
 const filters = ref<ReportFilters>({})
 const b24 = useB24()
+/** Отбор, который человек выставил в прошлый раз, — портал помнит его за ним самим. */
+const savedOptions = useUserOptions()
 
 /** Экспорт: Excel из таблиц и PDF-снимок всего отчёта (`main`), под применёнными фильтрами. */
 const reportRoot = useTemplateRef<HTMLElement>('reportRoot')
@@ -58,7 +61,15 @@ onMounted(async () => {
   // демонстрационный набор со своим периодом, и подпись обязана совпадать с данными: шапка
   // «сентябрь» над августовскими числами — это ровно то враньё, из-за которого заказчик уже
   // однажды принял чужие цифры за свои.
-  if (b24.isInit()) period.value = resolvePreset('this-month', today)!
+  if (b24.isInit()) {
+    period.value = resolvePreset('this-month', today)!
+    // ⚠ Сохранённый отбор читаем ДО первой выборки, а не после: иначе портал считал бы месяц
+    // дважды — сначала по умолчанию, потом по восстановленному отбору. Разбор проверяющий:
+    // негодное значение отбрасывается, и отчёт открывается с умолчанием (`savedFilters.ts`).
+    const saved = decodeLeadsState(await savedOptions.read(LEADS_OPTION_KEY))
+    if (saved.period) period.value = saved.period
+    if (saved.filters) filters.value = saved.filters
+  }
   // Внутри портала берём живые лиды и сделки. Снаружи `load()` тихо ничего не делает.
   const requested = period.value
   await load(requested, filters.value)
@@ -96,6 +107,9 @@ watch([unlinkedPending, unlinkedDeferred, processingPending, processingDeferred]
  */
 watch([period, filters], async () => {
   if (booting.value) return
+  // Запоминаем ВЫБРАННОЕ, а не применённое: человек выбрал этот отбор осознанно, и вернуться
+  // завтра он хочет к нему — даже если портал именно сейчас ответил ошибкой.
+  savedOptions.write(LEADS_OPTION_KEY, encodeLeadsState(period.value, filters.value))
   await load(period.value, filters.value)
   await fit()
 })

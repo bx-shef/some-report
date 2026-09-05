@@ -36,7 +36,11 @@ const portal = vi.hoisted(() => ({
   pending: {} as Record<string, (rows: unknown[]) => void>,
   /** Портал отвечает ошибкой на первый же пакет. */
   batchThrows: false,
-  batchCalls: 0
+  batchCalls: 0,
+  /** Настройки пользователя, которые «помнит» портал (`user.option.get`). */
+  options: {} as Record<string, unknown>,
+  /** Что отчёт записал в настройки (`user.option.set`). */
+  optionWrites: [] as Array<Record<string, unknown>>
 }))
 
 function batchAnswer(commands: Record<string, unknown>) {
@@ -64,7 +68,14 @@ mockNuxtImport('useB24', () => () => ({
           }
         },
         call: {
-          make: ({ method, params }: { method: string, params: { filter?: Record<string, string> } }) => {
+          make: ({ method, params }: { method: string, params: { filter?: Record<string, string>, options?: Record<string, unknown> } }) => {
+            if (method === 'user.option.get') {
+              return Promise.resolve({ isSuccess: true, getData: () => ({ result: portal.options }), getErrorMessages: () => [] })
+            }
+            if (method === 'user.option.set') {
+              portal.optionWrites.push(params.options ?? {})
+              return Promise.resolve({ isSuccess: true, getData: () => ({ result: true }), getErrorMessages: () => [] })
+            }
             // Справка блока 7 (фоном, по дате закрытия) — своим курсором через `call`.
             if (method === 'crm.deal.list') {
               return new Promise((resolve) => {
@@ -90,6 +101,8 @@ beforeEach(() => {
   portal.pending = {}
   portal.batchThrows = false
   portal.batchCalls = 0
+  portal.options = {}
+  portal.optionWrites = []
 })
 
 describe('страница отчёта в портале', () => {
@@ -229,6 +242,51 @@ describe('страница отчёта в портале', () => {
       delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollWidth
       delete (HTMLElement.prototype as unknown as Record<string, unknown>).scrollHeight
     }
+  })
+
+  /**
+   * Отбор, запомненный порталом за человеком (`user.option`).
+   *
+   * ⚠ Читается ДО первой выборки: иначе портал считал бы месяц дважды — сначала по умолчанию,
+   * потом по восстановленному отбору. Проверяем именно по ключу запроса: он равен началу
+   * периода, с которым отчёт пошёл в портал.
+   */
+  it('открывается с периодом и фильтрами, запомненными в прошлый раз', async () => {
+    portal.options['report.leads.v1'] = JSON.stringify({
+      period: { from: '2026-07-01', to: '2026-07-31' },
+      filters: { sourceId: 'CALL' }
+    })
+    await mountSuspended(AppPage)
+    await vi.waitFor(() => expect(mainKeys()).toHaveLength(1))
+    expect(mainKeys()[0]).toBe('2026-07-01')
+  })
+
+  // Негодную настройку (перевёрнутый период) отчёт молча не берёт: отбор, которого человек не
+  // выбирал, он стал бы искать в данных.
+  it('негодный сохранённый период не применяется', async () => {
+    portal.options['report.leads.v1'] = JSON.stringify({ period: { from: '2026-09-30', to: '2026-09-01' } })
+    await mountSuspended(AppPage)
+    await vi.waitFor(() => expect(mainKeys()).toHaveLength(1))
+    expect(mainKeys()[0]).not.toBe('2026-09-30')
+  })
+
+  it('смена периода запоминается в портале', async () => {
+    const wrapper = await mountSuspended(AppPage)
+    await vi.waitFor(() => expect(mainKeys()).toHaveLength(1))
+    portal.pending[mainKeys()[0]!]!([])
+    await vi.waitFor(() => expect(wrapper.text()).toContain('1. Сводка'))
+
+    const previous = wrapper.findAll('button').find((b: { text: () => string }) => b.text() === 'Прошлый месяц')!
+    await previous.trigger('click')
+    await vi.waitFor(() => expect(portal.optionWrites).toHaveLength(1))
+    // ⚠ Границы считаем в тесте от «сегодня», а не пишем датами: иначе тест начал бы падать в
+    // первый день следующего месяца, и виноват был бы календарь, а не код.
+    const now = new Date()
+    const first = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+    const iso = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+    expect(JSON.parse(String(portal.optionWrites[0]!['report.leads.v1']))).toMatchObject({
+      period: { from: iso(first), to: iso(new Date(now.getFullYear(), now.getMonth(), 0)) }
+    })
   })
 
   it('вне портала «Загрузка» сменяется демо-набором с предупреждением', async () => {

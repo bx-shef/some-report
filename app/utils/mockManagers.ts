@@ -1,5 +1,6 @@
-import type { CategoryRef, ManagerFilters, ManagerLoadReport, ManagerRef, OfficeRef, StageRef } from '~/types/managers'
-import { buildManagerLoad, cellKey, officeKey, officeStageKey, OFFICE_UNSET, OFFICE_UNSET_LABEL, pairKey, stagesForScope, totalKey } from '~/utils/managerLoad'
+import type { CategoryRef, ManagerFilters, ManagerLoadReport, ManagerRef, CompanyRef, StageRef } from '~/types/managers'
+import { buildManagerLoad, cellKey, companyKey, companyStageKey, COMPANY_UNSET, COMPANY_UNSET_LABEL, pairKey, stagesForScope, totalKey } from '~/utils/managerLoad'
+import { toIsoDate } from '~/utils/period'
 
 /**
  * Демонстрационный набор отчёта «Сделки по менеджерам» — то, что видно вне портала (`?preview=1`).
@@ -15,7 +16,7 @@ import { buildManagerLoad, cellKey, officeKey, officeStageKey, OFFICE_UNSET, OFF
 export interface MockManagerDeal {
   id: number
   categoryId: number
-  officeId: number
+  companyId: number
   managerId: number
   stageId: string
   title: string
@@ -50,11 +51,11 @@ export const MOCK_STAGES: Record<number, StageRef[]> = {
   ]
 }
 
-/** Офисы демо-набора. Один «не указан» — на боевом портале это самая крупная строка. */
-export const MOCK_OFFICES: OfficeRef[] = [
+/** «Мои компании» демо-набора. Одна «не указана» — на боевом портале это самая крупная группа. */
+export const MOCK_COMPANIES: CompanyRef[] = [
   { id: 10, name: 'ООО «Пример» — Минск' },
   { id: 20, name: 'ООО «Пример» — Гомель' },
-  { id: OFFICE_UNSET, name: OFFICE_UNSET_LABEL }
+  { id: COMPANY_UNSET, name: COMPANY_UNSET_LABEL }
 ]
 
 export const MOCK_MANAGERS: ManagerRef[] = [
@@ -69,41 +70,52 @@ export const MOCK_MANAGERS: ManagerRef[] = [
  * Сколько сделок и где. Таблица разворачивается в отдельные сделки ниже: отчёт и список по клику
  * работают со сделками, а не с этими числами.
  */
-const DISTRIBUTION: Array<{ categoryId: number, officeId: number, managerId: number, stageId: string, count: number }> = [
+const DISTRIBUTION: Array<{ categoryId: number, companyId: number, managerId: number, stageId: string, count: number }> = [
   // Минск, направление по умолчанию
-  { categoryId: 0, officeId: 10, managerId: 101, stageId: 'NEW', count: 4 },
-  { categoryId: 0, officeId: 10, managerId: 101, stageId: '1', count: 7 },
-  { categoryId: 0, officeId: 10, managerId: 101, stageId: 'WON', count: 5 },
-  { categoryId: 0, officeId: 10, managerId: 102, stageId: 'NEW', count: 2 },
-  { categoryId: 0, officeId: 10, managerId: 102, stageId: 'PREPARATION', count: 3 },
-  { categoryId: 0, officeId: 10, managerId: 102, stageId: '1', count: 4 },
-  { categoryId: 0, officeId: 10, managerId: 102, stageId: 'LOSE', count: 2 },
-  { categoryId: 0, officeId: 10, managerId: 103, stageId: 'NEW', count: 6 },
-  { categoryId: 0, officeId: 10, managerId: 103, stageId: 'PROCES_DELIVERY', count: 1 },
+  { categoryId: 0, companyId: 10, managerId: 101, stageId: 'NEW', count: 4 },
+  { categoryId: 0, companyId: 10, managerId: 101, stageId: '1', count: 7 },
+  { categoryId: 0, companyId: 10, managerId: 101, stageId: 'WON', count: 5 },
+  { categoryId: 0, companyId: 10, managerId: 102, stageId: 'NEW', count: 2 },
+  { categoryId: 0, companyId: 10, managerId: 102, stageId: 'PREPARATION', count: 3 },
+  { categoryId: 0, companyId: 10, managerId: 102, stageId: '1', count: 4 },
+  { categoryId: 0, companyId: 10, managerId: 102, stageId: 'LOSE', count: 2 },
+  { categoryId: 0, companyId: 10, managerId: 103, stageId: 'NEW', count: 6 },
+  { categoryId: 0, companyId: 10, managerId: 103, stageId: 'PROCES_DELIVERY', count: 1 },
   // Гомель
-  { categoryId: 0, officeId: 20, managerId: 104, stageId: 'NEW', count: 3 },
-  { categoryId: 0, officeId: 20, managerId: 104, stageId: '1', count: 5 },
-  { categoryId: 0, officeId: 20, managerId: 104, stageId: 'WON', count: 2 },
-  { categoryId: 0, officeId: 20, managerId: 105, stageId: 'PREPARATION', count: 2 },
-  { categoryId: 0, officeId: 20, managerId: 105, stageId: '1', count: 3 },
+  { categoryId: 0, companyId: 20, managerId: 104, stageId: 'NEW', count: 3 },
+  { categoryId: 0, companyId: 20, managerId: 104, stageId: '1', count: 5 },
+  { categoryId: 0, companyId: 20, managerId: 104, stageId: 'WON', count: 2 },
+  { categoryId: 0, companyId: 20, managerId: 105, stageId: 'PREPARATION', count: 2 },
+  { categoryId: 0, companyId: 20, managerId: 105, stageId: '1', count: 3 },
   // Без «моей компании» — так на портале выглядят сделки, заведённые мимо шаблона
-  { categoryId: 0, officeId: OFFICE_UNSET, managerId: 101, stageId: 'NEW', count: 5 },
-  { categoryId: 0, officeId: OFFICE_UNSET, managerId: 104, stageId: '1', count: 8 },
-  { categoryId: 0, officeId: OFFICE_UNSET, managerId: 105, stageId: 'NEW', count: 4 },
-  { categoryId: 0, officeId: OFFICE_UNSET, managerId: 105, stageId: 'LOSE', count: 3 },
+  { categoryId: 0, companyId: COMPANY_UNSET, managerId: 101, stageId: 'NEW', count: 5 },
+  { categoryId: 0, companyId: COMPANY_UNSET, managerId: 104, stageId: '1', count: 8 },
+  { categoryId: 0, companyId: COMPANY_UNSET, managerId: 105, stageId: 'NEW', count: 4 },
+  { categoryId: 0, companyId: COMPANY_UNSET, managerId: 105, stageId: 'LOSE', count: 3 },
   // Оптовые продажи — своё направление со своими стадиями
-  { categoryId: 1, officeId: 10, managerId: 102, stageId: 'C1:NEW', count: 3 },
-  { categoryId: 1, officeId: 10, managerId: 102, stageId: 'C1:UC_APPROVE', count: 4 },
-  { categoryId: 1, officeId: 20, managerId: 104, stageId: 'C1:UC_APPROVE', count: 2 },
-  { categoryId: 1, officeId: 20, managerId: 104, stageId: 'C1:WON', count: 1 },
-  { categoryId: 1, officeId: OFFICE_UNSET, managerId: 103, stageId: 'C1:NEW', count: 2 }
+  { categoryId: 1, companyId: 10, managerId: 102, stageId: 'C1:NEW', count: 3 },
+  { categoryId: 1, companyId: 10, managerId: 102, stageId: 'C1:UC_APPROVE', count: 4 },
+  { categoryId: 1, companyId: 20, managerId: 104, stageId: 'C1:UC_APPROVE', count: 2 },
+  { categoryId: 1, companyId: 20, managerId: 104, stageId: 'C1:WON', count: 1 },
+  { categoryId: 1, companyId: COMPANY_UNSET, managerId: 103, stageId: 'C1:NEW', count: 2 }
 ]
 
-/** Даты создания демо-сделок: разбросаны по месяцу, чтобы фильтр периода что-то менял. */
-const MOCK_DAYS = ['2026-08-05', '2026-08-12', '2026-08-19', '2026-08-26', '2026-09-02']
+/**
+ * Даты создания демо-сделок — внутри ТЕКУЩЕГО месяца, от первого числа до «сегодня».
+ *
+ * ⚠ Не фиксированные даты, и это не каприз. Умолчание отчёта — текущий месяц (решение владельца
+ * от 2026-09-05, «за всё время» убрано), а набор с датами прошлого августа под этим умолчанием
+ * показывал бы пустой экран: предпросмотр читался бы как сломанный отчёт. Раскладка
+ * детерминированная — «сегодня» приходит снаружи, поэтому тесты задают день и получают те же
+ * числа.
+ */
+function mockCreatedAt(today: Date, index: number): string {
+  const day = (index % today.getDate()) + 1
+  return toIsoDate(new Date(today.getFullYear(), today.getMonth(), day))
+}
 
 /** Демонстрационные сделки — по одной на каждую единицу распределения. */
-export function mockManagerDeals(): MockManagerDeal[] {
+export function mockManagerDeals(today: Date): MockManagerDeal[] {
   const deals: MockManagerDeal[] = []
   let id = 5001
   for (const item of DISTRIBUTION) {
@@ -111,25 +123,32 @@ export function mockManagerDeals(): MockManagerDeal[] {
       deals.push({
         id: id++,
         categoryId: item.categoryId,
-        officeId: item.officeId,
+        companyId: item.companyId,
         managerId: item.managerId,
         stageId: item.stageId,
         title: `Демо-сделка № ${id - 1}`,
-        createdAt: MOCK_DAYS[deals.length % MOCK_DAYS.length]!
+        createdAt: mockCreatedAt(today, deals.length)
       })
     }
   }
   return deals
 }
 
-/** Сделки под отбором — тот же смысл, что у фильтра REST на живом портале. */
+/**
+ * Сделки под отбором — тот же смысл, что у фильтра REST на живом портале.
+ *
+ * ⚠ `companyId === undefined` — «все компании», а `companyId === COMPANY_UNSET` — сделки с
+ * незаполненным полем: ровно то же различие, что и в фильтре портала (`managerDealFilter`).
+ * Сравнение с `undefined`, а не проверка на истинность, — иначе «Без моей компании» (ноль)
+ * молча превратилось бы во «все».
+ */
 export function filterMockDeals(deals: readonly MockManagerDeal[], filters: ManagerFilters): MockManagerDeal[] {
   const stages = MOCK_STAGES[filters.categoryId] ?? []
   const allowed = new Set(stagesForScope(stages, filters.scope).map(stage => stage.id))
   return deals.filter((deal) => {
     if (deal.categoryId !== filters.categoryId) return false
     if (!allowed.has(deal.stageId)) return false
-    if (!filters.period) return true
+    if (filters.companyId !== undefined && deal.companyId !== filters.companyId) return false
     return deal.createdAt >= filters.period.from && deal.createdAt <= filters.period.to
   })
 }
@@ -146,21 +165,23 @@ export function mockTotals(deals: readonly MockManagerDeal[]): Record<string, nu
     totals[key] = (totals[key] ?? 0) + 1
   }
   for (const deal of deals) {
-    add(officeKey(deal.officeId))
+    add(companyKey(deal.companyId))
     // Итог колонки — такой же отдельный вопрос, как на портале: набор обязан отвечать на ВСЕ
     // вопросы, которые отчёт задаёт живому порталу, иначе предпросмотр считает по другой ветке.
-    add(officeStageKey(deal.officeId, deal.stageId))
-    add(pairKey(deal.officeId, deal.managerId))
-    add(cellKey(deal.officeId, deal.managerId, deal.stageId))
+    add(companyStageKey(deal.companyId, deal.stageId))
+    add(pairKey(deal.companyId, deal.managerId))
+    add(cellKey(deal.companyId, deal.managerId, deal.stageId))
   }
   return totals
 }
 
 /** Демонстрационный отчёт под текущим отбором. */
-export function buildMockManagerReport(filters: ManagerFilters): ManagerLoadReport {
-  const deals = filterMockDeals(mockManagerDeals(), filters)
+export function buildMockManagerReport(filters: ManagerFilters, today: Date): ManagerLoadReport {
+  const deals = filterMockDeals(mockManagerDeals(today), filters)
   return buildManagerLoad({
-    offices: MOCK_OFFICES,
+    // ⚠ Компании берём ВСЕ, а не только выбранную: пустые группы ядро и так отбрасывает, а
+    // список «какие компании вообще есть» на живом портале тоже собирается без учёта фильтра.
+    companies: MOCK_COMPANIES,
     managers: MOCK_MANAGERS,
     stages: stagesForScope(MOCK_STAGES[filters.categoryId] ?? [], filters.scope),
     totals: mockTotals(deals)

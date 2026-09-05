@@ -23,6 +23,7 @@ export function useB24Users() {
 
   function fetchUsers(): Promise<Record<string, string>> {
     if (cache) return cache
+    let incomplete = false
     const attempt = (async () => {
       const rows: B24UserRow[] = []
       let complete = false
@@ -42,9 +43,19 @@ export function useB24Users() {
       } catch {
         // См. шапку: список — удобство подписи, а не данные отчёта.
       }
-      if (!complete) cache = undefined
+      // ⚠ Неполный проход снимается ДВУМЯ способами, и оба нужны. `cache = undefined` работает,
+      // когда мы дошли сюда после `await`, то есть уже ПОСЛЕ присваивания `cache = attempt`.
+      // А если `getOrThrow()` бросит СИНХРОННО (SDK ещё не инициализирован), всё тело выполнится
+      // ДО этого присваивания — сброс не сработал бы, и пустой список запомнился бы навсегда:
+      // фильтр по менеджеру остался бы закрытым, а матрица подписанной «Сотрудник #17» до
+      // перезагрузки страницы. Для этого случая и нужен флаг.
+      if (!complete) {
+        incomplete = true
+        cache = undefined
+      }
       return adaptUsers(rows)
     })()
+    if (incomplete) return attempt
     cache = attempt
     return attempt
   }
