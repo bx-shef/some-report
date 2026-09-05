@@ -18,7 +18,7 @@ import { filterMockDeals, mockManagerDeals, MOCK_STAGES } from '~/utils/mockMana
  *
  * ⚠ Композабл свой, а не общий с отчётом по лидам, и это осознанно. Там список строится поверх
  * ПЕРИОДА и фильтров отчёта, а под фильтром по менеджеру ещё и кусками по списку ID лидов; здесь
- * фильтр приходит готовым и целиком (`dealScope: 'plain'`) — офис, менеджер, стадия. Общими
+ * фильтр приходит готовым и целиком (`dealScope: 'plain'`) — компания, менеджер, стадия. Общими
  * остаются то, что и должно быть общим: разбор строки (`dealDrillRow`), состав полей и слайдер.
  * Свести их в один композабл значило бы завести флаг «какой я сегодня отчёт» на каждой ветке.
  */
@@ -26,6 +26,8 @@ export function useManagerDrilldown(input: {
   filters: Ref<ManagerFilters>
   dictionaries: Ref<ReportDictionaries>
   isDemo: Ref<boolean>
+  /** «Сегодня»: от него построены даты демонстрационного набора, и список обязан их повторить. */
+  today: Date
 }) {
   const b24 = useB24()
   const open = ref(false)
@@ -95,11 +97,11 @@ export function useManagerDrilldown(input: {
   function demoRows(next: DrillRequest): DrillRow[] {
     const filters = input.filters.value
     const stages = MOCK_STAGES[filters.categoryId] ?? []
-    const officeId = next.extra.MYCOMPANY_ID
+    const companyId = next.extra.MYCOMPANY_ID
     const managerId = next.extra.ASSIGNED_BY_ID
     const stageId = next.extra.STAGE_ID
-    return filterMockDeals(mockManagerDeals(), filters)
-      .filter(deal => (officeId === undefined || String(deal.officeId) === String(officeId))
+    return filterMockDeals(mockManagerDeals(input.today), filters)
+      .filter(deal => (companyId === undefined || String(deal.companyId) === String(companyId))
         && (managerId === undefined || String(deal.managerId) === String(managerId))
         && (stageId === undefined || String(deal.stageId) === String(stageId)))
       .map(deal => ({
@@ -132,7 +134,7 @@ export function useManagerDrilldown(input: {
   function cellRequest(
     title: string,
     base: Record<string, unknown>,
-    cell: { officeId?: number, managerId?: number, stageId?: string },
+    cell: { companyId?: number, managerId?: number, stageId?: string },
     total: number
   ): DrillRequest {
     return {

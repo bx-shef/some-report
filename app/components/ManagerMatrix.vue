@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import type { ManagerCellRef, ManagerLoadOffice, ManagerLoadReport } from '~/types/managers'
+import type { ManagerCellRef, ManagerLoadCompany, ManagerLoadReport } from '~/types/managers'
 import { UNLISTED_MANAGER_LABEL } from '~/utils/managerLoad'
 import { formatCount, formatPercent } from '~/utils/format'
 
 /**
- * Матрица «офис → менеджер → стадия»: по карточке на офис, строка на менеджера, столбец на
+ * Матрица «компания → менеджер → стадия»: по карточке на компанию, строка на менеджера, столбец на
  * стадию. Компонент только рисует: ни одной формулы здесь нет — всё посчитано ядром
  * (`app/utils/managerLoad.ts`), а условие списка за числом собирает страница.
  *
@@ -26,24 +26,24 @@ const props = defineProps<{
 const emit = defineEmits<{ drill: [ManagerCellRef] }>()
 
 /**
- * Кому досталось больше всех в офисе — по нему меряются полосы строк.
+ * Кому досталось больше всех в компании — по нему меряются полосы строк.
  *
- * Считается один раз на офис, а не в каждой ячейке: строк в таблице десятки, и вызов из шаблона
+ * Считается один раз на компанию, а не в каждой ячейке: строк в таблице десятки, и вызов из шаблона
  * повторялся бы на каждую перерисовку — так же, как это уже сделано в блоке источников.
  */
 const peaks = computed(() => {
   const out: Record<number, number> = {}
-  for (const office of props.report.offices) {
-    out[office.officeId] = office.rows.reduce((max, row) => Math.max(max, row.total), 0)
+  for (const company of props.report.companies) {
+    out[company.companyId] = company.rows.reduce((max, row) => Math.max(max, row.total), 0)
   }
   return out
 })
 
 /** Клик по числу: заголовок списка повторяет то, по чему нажали. */
-function cell(office: ManagerLoadOffice, parts: { managerId?: number, managerName?: string, stageId?: string, stageName?: string, total: number }): ManagerCellRef {
-  const title = [office.officeName, parts.managerName, parts.stageName].filter(Boolean).join(' · ')
+function cell(company: ManagerLoadCompany, parts: { managerId?: number, managerName?: string, stageId?: string, stageName?: string, total: number }): ManagerCellRef {
+  const title = [company.companyName, parts.managerName, parts.stageName].filter(Boolean).join(' · ')
   return {
-    officeId: office.officeId,
+    companyId: company.companyId,
     ...(parts.managerId === undefined ? {} : { managerId: parts.managerId }),
     ...(parts.stageId === undefined ? {} : { stageId: parts.stageId }),
     title: `Сделки: ${title}`,
@@ -57,17 +57,17 @@ const hasOther = computed(() => props.report.otherStages > 0)
 <template>
   <div class="space-y-4">
     <B24Card
-      v-for="office in report.offices"
-      :key="office.officeId"
+      v-for="company in report.companies"
+      :key="company.companyId"
     >
       <template #header>
         <div class="flex flex-wrap items-baseline justify-between gap-2">
           <h2 class="text-base font-semibold">
-            {{ office.officeName }}
+            {{ company.companyName }}
           </h2>
           <p class="text-sm opacity-70">
-            сделок: <span class="font-semibold">{{ formatCount(office.total) }}</span>
-            ({{ formatPercent(office.share) }} от всех)
+            сделок: <span class="font-semibold">{{ formatCount(company.total) }}</span>
+            ({{ formatPercent(company.share) }} от всех)
           </p>
         </div>
       </template>
@@ -99,7 +99,7 @@ const hasOther = computed(() => props.report.otherStages > 0)
           </thead>
           <tbody>
             <tr
-              v-for="row in office.rows"
+              v-for="row in company.rows"
               :key="row.managerId"
               class="border-b border-[color:var(--chart-track)]"
             >
@@ -108,7 +108,7 @@ const hasOther = computed(() => props.report.otherStages > 0)
                   {{ row.managerName }}
                   <MetricBar
                     class="mt-1"
-                    :value="peaks[office.officeId] ? row.total / peaks[office.officeId]! : 0"
+                    :value="peaks[company.companyId] ? row.total / peaks[company.companyId]! : 0"
                     :label="`${row.managerName}: ${formatCount(row.total)}`"
                   />
                 </div>
@@ -123,7 +123,7 @@ const hasOther = computed(() => props.report.otherStages > 0)
                   type="button"
                   class="drill-number"
                   :title="`Открыть список: ${row.managerName}, ${stage.name}`"
-                  @click="emit('drill', cell(office, { managerId: row.managerId, managerName: row.managerName, stageId: stage.id, stageName: stage.name, total: row.byStage[stage.id]! }))"
+                  @click="emit('drill', cell(company, { managerId: row.managerId, managerName: row.managerName, stageId: stage.id, stageName: stage.name, total: row.byStage[stage.id]! }))"
                 >
                   {{ formatCount(row.byStage[stage.id]!) }}
                 </button>
@@ -145,16 +145,16 @@ const hasOther = computed(() => props.report.otherStages > 0)
                   type="button"
                   class="drill-number"
                   :title="`Открыть список: все сделки, ${row.managerName}`"
-                  @click="emit('drill', cell(office, { managerId: row.managerId, managerName: row.managerName, total: row.total }))"
+                  @click="emit('drill', cell(company, { managerId: row.managerId, managerName: row.managerName, total: row.total }))"
                 >
                   {{ formatCount(row.total) }}
                 </button>
               </td>
             </tr>
 
-            <!-- Сделки офиса без строки: ответственный не назначен или не попал в перечисление. -->
+            <!-- Сделки компании без строки: ответственный не назначен или не попал в перечисление. -->
             <tr
-              v-if="office.unlisted > 0"
+              v-if="company.unlisted > 0"
               class="border-b border-[color:var(--chart-track)]"
             >
               <td class="py-2 pr-3 opacity-70">
@@ -168,7 +168,7 @@ const hasOther = computed(() => props.report.otherStages > 0)
                 :key="stage.id"
                 class="py-2 pr-3 text-right tabular-nums opacity-70"
               >
-                {{ office.unlistedByStage[stage.id] ? formatCount(office.unlistedByStage[stage.id]!) : '—' }}
+                {{ company.unlistedByStage[stage.id] ? formatCount(company.unlistedByStage[stage.id]!) : '—' }}
               </td>
               <td
                 v-if="hasOther"
@@ -177,14 +177,14 @@ const hasOther = computed(() => props.report.otherStages > 0)
                 —
               </td>
               <td class="py-2 text-right tabular-nums opacity-70">
-                {{ formatCount(office.unlisted) }}
+                {{ formatCount(company.unlisted) }}
               </td>
             </tr>
           </tbody>
           <tfoot>
             <tr class="text-sm font-semibold">
               <td class="py-2 pr-3">
-                Итого по офису
+                Итого по компании
               </td>
               <td
                 v-for="stage in report.stages"
@@ -192,13 +192,13 @@ const hasOther = computed(() => props.report.otherStages > 0)
                 class="py-2 pr-3 text-right tabular-nums"
               >
                 <button
-                  v-if="office.byStage[stage.id]"
+                  v-if="company.byStage[stage.id]"
                   type="button"
                   class="drill-number"
-                  :title="`Открыть список: ${office.officeName}, ${stage.name}`"
-                  @click="emit('drill', cell(office, { stageId: stage.id, stageName: stage.name, total: office.byStage[stage.id]! }))"
+                  :title="`Открыть список: ${company.companyName}, ${stage.name}`"
+                  @click="emit('drill', cell(company, { stageId: stage.id, stageName: stage.name, total: company.byStage[stage.id]! }))"
                 >
-                  {{ formatCount(office.byStage[stage.id]!) }}
+                  {{ formatCount(company.byStage[stage.id]!) }}
                 </button>
                 <span
                   v-else
@@ -209,16 +209,16 @@ const hasOther = computed(() => props.report.otherStages > 0)
                 v-if="hasOther"
                 class="py-2 pr-3 text-right tabular-nums"
               >
-                {{ office.otherStages ? formatCount(office.otherStages) : '—' }}
+                {{ company.otherStages ? formatCount(company.otherStages) : '—' }}
               </td>
               <td class="py-2 text-right tabular-nums">
                 <button
                   type="button"
                   class="drill-number"
-                  :title="`Открыть список: все сделки офиса ${office.officeName}`"
-                  @click="emit('drill', cell(office, { total: office.total }))"
+                  :title="`Открыть список: все сделки компании ${company.companyName}`"
+                  @click="emit('drill', cell(company, { total: company.total }))"
                 >
-                  {{ formatCount(office.total) }}
+                  {{ formatCount(company.total) }}
                 </button>
               </td>
             </tr>
@@ -227,10 +227,10 @@ const hasOther = computed(() => props.report.otherStages > 0)
       </div>
 
       <p
-        v-if="office.unlisted > 0"
+        v-if="company.unlisted > 0"
         class="mt-3 text-xs opacity-60"
       >
-        Строка «{{ UNLISTED_MANAGER_LABEL }}» — разница между итогом офиса и суммой строк:
+        Строка «{{ UNLISTED_MANAGER_LABEL }}» — разница между итогом компании и суммой строк:
         сделки без ответственного или у сотрудника, которого не нашлось среди ответственных
         (например, его сделки появились уже после того, как отчёт перечислил менеджеров).
         Стадии у них известны — итог каждой колонки портал считает отдельно, — а списка по клику

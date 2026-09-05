@@ -20,8 +20,9 @@ const portal = vi.hoisted(() => ({
   installFinishThrows: false
 }))
 
-/** Адрес обработчика, который построит страница из `siteUrl` (задан в `vitest.config.ts`). */
-const OUR_HANDLER = 'https://report.example.com/app'
+/** Адреса обработчиков, которые построит страница из `siteUrl` (задан в `vitest.config.ts`). */
+const LEADS_HANDLER = 'https://report.example.com/app/leads'
+const MANAGERS_HANDLER = 'https://report.example.com/app/managers'
 
 mockNuxtImport('useB24', () => () => ({
   init: async () => {},
@@ -43,15 +44,15 @@ mockNuxtImport('useB24', () => () => ({
   })
 }))
 
-/** Портал, у которого всё в порядке: права выданы, установка завершена, обе точки на нашем адресе. */
+/** Портал, у которого всё в порядке: права выданы, установка завершена, оба пункта на месте. */
 function healthyPortal() {
   portal.answers = {
     'placement.bind': true,
     'app.info': { INSTALLED: true },
     'scope': ['crm', 'placement', 'user_brief'],
     'placement.get': [
-      { placement: 'CRM_ANALYTICS_MENU', handler: OUR_HANDLER },
-      { placement: 'CRM_ANALYTICS_TOOLBAR', handler: OUR_HANDLER }
+      { placement: 'CRM_ANALYTICS_MENU', handler: LEADS_HANDLER },
+      { placement: 'CRM_ANALYTICS_MENU', handler: MANAGERS_HANDLER }
     ],
     'placement.unbind': { count: 2 }
   }
@@ -161,6 +162,28 @@ describe('страница установки', () => {
     await click(wrapper, 'Перепривязать точки')
     await click(wrapper, 'Точно перепривязать?')
     expect(portal.calls.indexOf('placement.unbind')).toBeLessThan(portal.calls.indexOf('placement.bind'))
+  })
+
+  // ⚠ Наследство прошлой версии: пункт на главную приложения и кнопка в шапке аналитики. После
+  // обновления они остались бы в меню рядом с двумя новыми — три входа вместо двух.
+  it('видит лишние пункты прошлой версии и зовёт перепривязать', async () => {
+    portal.answers['placement.get'] = [
+      { placement: 'CRM_ANALYTICS_MENU', handler: LEADS_HANDLER },
+      { placement: 'CRM_ANALYTICS_MENU', handler: MANAGERS_HANDLER },
+      { placement: 'CRM_ANALYTICS_TOOLBAR', handler: 'https://report.example.com/app' }
+    ]
+    const wrapper = await mountInstall()
+    expect(wrapper.text()).toContain('лишние пункты')
+    expect(wrapper.text()).toContain('Перепривязать точки')
+  })
+
+  // Половина установки хуже, чем её отсутствие: человек нашёл бы один отчёт и решил, что второго
+  // в приложении нет.
+  it('привязан один отчёт из двух — это не «всё хорошо»', async () => {
+    portal.answers['placement.get'] = [{ placement: 'CRM_ANALYTICS_MENU', handler: LEADS_HANDLER }]
+    const wrapper = await mountInstall()
+    expect(wrapper.text()).not.toContain('Всё зарегистрировано')
+    expect(wrapper.text()).toContain('Сделки по менеджерам')
   })
 
   it('не администратору перепривязку не предлагает', async () => {

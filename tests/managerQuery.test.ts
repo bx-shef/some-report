@@ -7,37 +7,60 @@ import {
   countBatch,
   distinctChainBatch,
   managerDealFilter,
-  officeCountRequests,
-  officeStageCountRequests,
+  managerScanFilter,
+  companyCountRequests,
+  companyStageCountRequests,
   pairCountRequests,
   readDistinctChain,
   stageListParams
 } from '~/utils/managerQuery'
-import { cellKey, officeKey, officeStageKey, pairKey, totalKey } from '~/utils/managerLoad'
+import { cellKey, companyKey, companyStageKey, pairKey, totalKey } from '~/utils/managerLoad'
 
 /**
  * Запросы отчёта «Сделки по менеджерам». Ошибка здесь не роняет отчёт — она тихо меняет все
  * числа на экране, поэтому проверяем ровно фильтры, ключи и разбор цепочки.
  */
 
+const PERIOD = { from: '2026-09-01', to: '2026-09-30' }
+/** Период обязателен: «за всё время» убрано решением владельца от 2026-09-05. */
+const DATES = { '>=DATE_CREATE': '2026-09-01', '<DATE_CREATE': '2026-10-01' }
+
 describe('managerDealFilter', () => {
   it('направление обязательно, охват — семантикой стадии', () => {
-    expect(managerDealFilter({ categoryId: 3, scope: 'in-work' })).toEqual({ CATEGORY_ID: 3, STAGE_SEMANTIC_ID: 'P' })
-    expect(managerDealFilter({ categoryId: 3, scope: 'won' })).toEqual({ CATEGORY_ID: 3, STAGE_SEMANTIC_ID: 'S' })
+    expect(managerDealFilter({ categoryId: 3, scope: 'in-work', period: PERIOD })).toEqual({ CATEGORY_ID: 3, STAGE_SEMANTIC_ID: 'P', ...DATES })
+    expect(managerDealFilter({ categoryId: 3, scope: 'won', period: PERIOD })).toEqual({ CATEGORY_ID: 3, STAGE_SEMANTIC_ID: 'S', ...DATES })
   })
 
   // Направление по умолчанию — это `CATEGORY_ID = 0`, а не «фильтра нет»: без него в матрицу
   // попали бы сделки всех четырёх направлений с чужими стадиями.
   it('нулевое направление остаётся в фильтре', () => {
-    expect(managerDealFilter({ categoryId: 0, scope: 'all' })).toEqual({ CATEGORY_ID: 0 })
+    expect(managerDealFilter({ categoryId: 0, scope: 'all', period: PERIOD })).toEqual({ CATEGORY_ID: 0, ...DATES })
   })
 
   it('период ложится на дату создания сделки, конец периода включительно', () => {
-    expect(managerDealFilter({ categoryId: 0, scope: 'all', period: { from: '2026-09-01', to: '2026-09-30' } })).toEqual({
+    expect(managerDealFilter({ categoryId: 0, scope: 'all', period: PERIOD })).toEqual({
       'CATEGORY_ID': 0,
       '>=DATE_CREATE': '2026-09-01',
       '<DATE_CREATE': '2026-10-01'
     })
+  })
+
+  // ⚠ Ноль — ЗНАЧЕНИЕ («Без моей компании»), а не «не задано»: на боевом портале `MYCOMPANY_ID: 0`
+  // отдаёт сделки с незаполненным полем. Проверка на истинность превратила бы этот выбор во
+  // «все компании», и заметить подмену на экране было бы нельзя.
+  it('выбранная компания попадает в фильтр, ноль — тоже', () => {
+    expect(managerDealFilter({ categoryId: 0, scope: 'all', period: PERIOD, companyId: 17 })).toEqual({ CATEGORY_ID: 0, ...DATES, MYCOMPANY_ID: 17 })
+    expect(managerDealFilter({ categoryId: 0, scope: 'all', period: PERIOD, companyId: 0 })).toEqual({ CATEGORY_ID: 0, ...DATES, MYCOMPANY_ID: 0 })
+  })
+})
+
+describe('managerScanFilter', () => {
+  // ⚠ Перечисление компаний идёт БЕЗ фильтра компании: иначе, выбрав одну, человек получил бы
+  // список из неё одной и не смог бы вернуться ко всем.
+  it('компанию в фильтр не кладёт, всё остальное — как в основном', () => {
+    const filters = { categoryId: 2, scope: 'in-work' as const, period: PERIOD, companyId: 17 }
+    expect(managerScanFilter(filters)).toEqual({ CATEGORY_ID: 2, STAGE_SEMANTIC_ID: 'P', ...DATES })
+    expect(managerDealFilter(filters)).toEqual({ CATEGORY_ID: 2, STAGE_SEMANTIC_ID: 'P', ...DATES, MYCOMPANY_ID: 17 })
   })
 })
 
@@ -88,9 +111,9 @@ describe('distinctChainBatch и readDistinctChain', () => {
 describe('счётчики', () => {
   const base = { CATEGORY_ID: 0, STAGE_SEMANTIC_ID: 'P' }
 
-  it('итог отбора и итоги офисов', () => {
-    const requests = officeCountRequests([10, 0], base)
-    expect(requests.map(r => r.key)).toEqual([totalKey(), officeKey(10), officeKey(0)])
+  it('итог отбора и итоги компаний', () => {
+    const requests = companyCountRequests([10, 0], base)
+    expect(requests.map(r => r.key)).toEqual([totalKey(), companyKey(10), companyKey(0)])
     expect(requests[1]!.filter).toEqual({ ...base, MYCOMPANY_ID: 10 })
     // «Не указана» — это значение 0 в фильтре, а не отсутствие условия.
     expect(requests[2]!.filter).toEqual({ ...base, MYCOMPANY_ID: 0 })
@@ -99,12 +122,12 @@ describe('счётчики', () => {
   // Итог колонки — свой вопрос порталу: в сумму клеток не попали бы сделки без ответственного,
   // и клик по итогу колонки открывал бы список длиннее числа над ним.
   it('итоги колонок спрашиваются отдельно от клеток', () => {
-    const requests = officeStageCountRequests([10, 0], ['NEW'], base)
-    expect(requests.map(r => r.key)).toEqual([officeStageKey(10, 'NEW'), officeStageKey(0, 'NEW')])
+    const requests = companyStageCountRequests([10, 0], ['NEW'], base)
+    expect(requests.map(r => r.key)).toEqual([companyStageKey(10, 'NEW'), companyStageKey(0, 'NEW')])
     expect(requests[0]!.filter).toEqual({ ...base, MYCOMPANY_ID: 10, STAGE_ID: 'NEW' })
   })
 
-  it('пары спрашиваются по всем офисам: менеджер бывает сразу в двух', () => {
+  it('пары спрашиваются по всем компаниям: менеджер бывает сразу в двух', () => {
     const requests = pairCountRequests([10, 20], [1, 2], base)
     expect(requests).toHaveLength(4)
     expect(requests[0]!.key).toBe(pairKey(10, 1))
@@ -112,14 +135,14 @@ describe('счётчики', () => {
   })
 
   it('клетки — только по непустым парам', () => {
-    const requests = cellCountRequests([{ officeId: 10, managerId: 1 }], ['NEW', 'C4:LOSE'], base)
+    const requests = cellCountRequests([{ companyId: 10, managerId: 1 }], ['NEW', 'C4:LOSE'], base)
     expect(requests.map(r => r.key)).toEqual([cellKey(10, 1, 'NEW'), cellKey(10, 1, 'C4:LOSE')])
     expect(requests[1]!.filter).toEqual({ ...base, MYCOMPANY_ID: 10, ASSIGNED_BY_ID: 1, STAGE_ID: 'C4:LOSE' })
   })
 
   // Имя команды пакета не должно зависеть от кода стадии: коды направлений выглядят как `C4:LOSE`.
   it('имена команд — порядковые, соответствие возвращается картой', () => {
-    const { commands, keyByCommand } = countBatch(cellCountRequests([{ officeId: 1, managerId: 2 }], ['C4:LOSE'], base))
+    const { commands, keyByCommand } = countBatch(cellCountRequests([{ companyId: 1, managerId: 2 }], ['C4:LOSE'], base))
     expect(Object.keys(commands)).toEqual(['n0'])
     expect(keyByCommand.n0).toBe(cellKey(1, 2, 'C4:LOSE'))
     expect(commands.n0!.method).toBe('crm.deal.list')
@@ -128,21 +151,21 @@ describe('счётчики', () => {
   })
 
   it('ответы пакета раскладываются по ключам ядра', () => {
-    const { keyByCommand } = countBatch([{ key: totalKey(), filter: {} }, { key: officeKey(5), filter: {} }])
-    expect(collectTotals({ n0: 30, n1: 12 }, keyByCommand)).toEqual({ [totalKey()]: 30, [officeKey(5)]: 12 })
+    const { keyByCommand } = countBatch([{ key: totalKey(), filter: {} }, { key: companyKey(5), filter: {} }])
+    expect(collectTotals({ n0: 30, n1: 12 }, keyByCommand)).toEqual({ [totalKey()]: 30, [companyKey(5)]: 12 })
   })
 
   // Команда осталась без ответа (портал ответил ошибкой на неё одну): ключ не появляется вовсе,
   // и ядро читает его как ноль — а не как `NaN`, который расползся бы по всей матрице.
   it('нечисловой ответ команды в счётчики не попадает', () => {
-    expect(collectTotals({ n0: Number.NaN, n1: 5 }, { n0: totalKey(), n1: officeKey(5) }))
-      .toEqual({ [officeKey(5)]: 5 })
+    expect(collectTotals({ n0: Number.NaN, n1: 5 }, { n0: totalKey(), n1: companyKey(5) }))
+      .toEqual({ [companyKey(5)]: 5 })
   })
 
   it('счётчики нескольких пакетов складываются в один набор', () => {
     const into = collectTotals({ n0: 30 }, { n0: totalKey() })
-    collectTotals({ n0: 12 }, { n0: officeKey(5) }, into)
-    expect(into).toEqual({ [totalKey()]: 30, [officeKey(5)]: 12 })
+    collectTotals({ n0: 12 }, { n0: companyKey(5) }, into)
+    expect(into).toEqual({ [totalKey()]: 30, [companyKey(5)]: 12 })
   })
 })
 
@@ -150,14 +173,14 @@ describe('cellDealFilter', () => {
   const base = { CATEGORY_ID: 0, STAGE_SEMANTIC_ID: 'P' }
 
   it('список за клеткой — тем же условием, что дало число', () => {
-    expect(cellDealFilter(base, { officeId: 10, managerId: 3, stageId: 'NEW' })).toEqual({
+    expect(cellDealFilter(base, { companyId: 10, managerId: 3, stageId: 'NEW' })).toEqual({
       ...base, MYCOMPANY_ID: 10, ASSIGNED_BY_ID: 3, STAGE_ID: 'NEW'
     })
   })
 
-  it('строка «всего» — без стадии, итог офиса — без менеджера', () => {
-    expect(cellDealFilter(base, { officeId: 10, managerId: 3 })).toEqual({ ...base, MYCOMPANY_ID: 10, ASSIGNED_BY_ID: 3 })
-    expect(cellDealFilter(base, { officeId: 0 })).toEqual({ ...base, MYCOMPANY_ID: 0 })
+  it('строка «всего» — без стадии, итог компании — без менеджера', () => {
+    expect(cellDealFilter(base, { companyId: 10, managerId: 3 })).toEqual({ ...base, MYCOMPANY_ID: 10, ASSIGNED_BY_ID: 3 })
+    expect(cellDealFilter(base, { companyId: 0 })).toEqual({ ...base, MYCOMPANY_ID: 0 })
   })
 })
 

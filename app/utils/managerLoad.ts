@@ -1,33 +1,54 @@
 import type {
   DealScope,
-  ManagerLoadOffice,
+  ManagerLoadCompany,
   ManagerLoadReport,
   ManagerLoadRow,
   ManagerRef,
-  OfficeRef,
+  CompanyRef,
   StageRef
 } from '~/types/managers'
 
 /**
- * Ядро отчёта «Сделки по менеджерам»: из счётчиков портала — матрица офис → менеджер → стадия.
+ * Ядро отчёта «Сделки по менеджерам»: из счётчиков портала — матрица «моя компания» → менеджер
+ * → стадия.
  *
  * Здесь только чистые функции: ни сети, ни SDK, ни `Date.now()`. Портал отвечает на сотни
  * вопросов «сколько», а этот модуль решает, что из них показать, в каком порядке и что делать с
  * тем, что не сошлось. Ровно эта арифметика и ломается молча — поэтому она под тестом.
  *
  * ⚠ Счётчики приходят РАЗНЫМИ пакетами, между ними проходят секунды, и портал в это время живёт:
- * сделку могли создать, закрыть или передать другому. Поэтому итог офиса берётся отдельным
+ * сделку могли создать, закрыть или передать другому. Поэтому итог компании берётся отдельным
  * счётчиком, а не суммой строк, и всё, что не сошлось, показывается остатком (`unlisted`,
  * `otherStages`), а не прячется. Отрицательных остатков не бывает: они подрезаются нулём.
  */
 
 /** «Моя компания» у сделки не заполнена. В фильтре REST это значение и означает «пусто». */
-export const OFFICE_UNSET = 0
+export const COMPANY_UNSET = 0
 
-/** Как подписан офис без «моей компании». Не «Другие»: это не офис, а незаполненное поле. */
-export const OFFICE_UNSET_LABEL = 'Моя компания не указана'
+/**
+ * Как подписана группа сделок с незаполненной «моей компанией» ТАМ, ГДЕ РЯДОМ ЕСТЬ КОНТЕКСТ, —
+ * в карточке таблицы и в легенде диаграммы, над которыми стоит заголовок про «мою компанию».
+ *
+ * ⚠ Не «Другие» и не «Прочее»: это незаполненное поле, и подпись должна читаться именно так.
+ * Формулировку выбрал владелец 2026-09-05.
+ */
+export const COMPANY_UNSET_LABEL = 'Не указана'
 
-/** Как подписан остаток «сделки офиса вне строк таблицы». */
+/**
+ * Та же группа там, где контекста рядом НЕТ: пункт фильтра и заголовок списка по клику.
+ *
+ * ⚠ Две подписи вместо одной — не забытая унификация. «Не указана» в выпадающем списке рядом с
+ * названиями компаний непонятна («что не указана?»), а «Без моей компании» заголовком каждой
+ * карточки повторяло бы название поля из панели в каждой строке экрана.
+ */
+export const COMPANY_UNSET_FULL_LABEL = 'Без моей компании'
+
+/** Как назвать группу там, где рядом нет заголовка про «мою компанию». */
+export function companyFullLabel(companyId: number, companyName: string): string {
+  return companyId === COMPANY_UNSET ? COMPANY_UNSET_FULL_LABEL : companyName
+}
+
+/** Как подписан остаток «сделки компании вне строк таблицы». */
 export const UNLISTED_MANAGER_LABEL = 'Ответственный не указан или не найден'
 
 /** Подписи охвата — одни и те же в панели, в заголовке слайдера и в подписи под таблицей. */
@@ -70,27 +91,27 @@ export function totalKey(): string {
   return 't'
 }
 
-export function officeKey(officeId: number): string {
-  return `o|${officeId}`
+export function companyKey(companyId: number): string {
+  return `mc|${companyId}`
 }
 
-export function pairKey(officeId: number, managerId: number): string {
-  return `p|${officeId}|${managerId}`
+export function pairKey(companyId: number, managerId: number): string {
+  return `p|${companyId}|${managerId}`
 }
 
 /**
- * Счётчик «офис + стадия» — итог колонки.
+ * Счётчик «моя компания + стадия» — итог колонки.
  *
  * ⚠ Отдельный вопрос порталу, а НЕ сумма клеток над ним. Сумма не включала бы сделки, у которых
  * ответственного нет вовсе (строка «вне таблицы»), — и клик по итогу колонки открывал бы список
  * длиннее числа, по которому нажали. Ровно то, чего этот отчёт не должен делать.
  */
-export function officeStageKey(officeId: number, stageId: string): string {
-  return `os|${officeId}|${stageId}`
+export function companyStageKey(companyId: number, stageId: string): string {
+  return `mcs|${companyId}|${stageId}`
 }
 
-export function cellKey(officeId: number, managerId: number, stageId: string): string {
-  return `c|${officeId}|${managerId}|${stageId}`
+export function cellKey(companyId: number, managerId: number, stageId: string): string {
+  return `c|${companyId}|${managerId}|${stageId}`
 }
 
 /**
@@ -108,13 +129,13 @@ export function stageCountSeconds(cells: number, batchSize = 50): number {
 
 /** Что нужно ядру, чтобы собрать матрицу. */
 export interface ManagerLoadInput {
-  /** Офисы, встреченные у сделок отбора. `OFFICE_UNSET` — сделки с незаполненным полем. */
-  offices: readonly OfficeRef[]
+  /** «Мои компании», встреченные у сделок отбора. `COMPANY_UNSET` — сделки с незаполненным полем. */
+  companies: readonly CompanyRef[]
   /** Менеджеры, встреченные у сделок отбора. */
   managers: readonly ManagerRef[]
   /** Колонки: стадии охвата из справочника направления. */
   stages: readonly StageRef[]
-  /** Счётчики портала по ключам `totalKey` / `officeKey` / `pairKey` / `cellKey`. */
+  /** Счётчики портала по ключам `totalKey` / `companyKey` / `pairKey` / `cellKey`. */
   totals: Record<string, number>
 }
 
@@ -137,18 +158,18 @@ function sum(values: Iterable<number>): number {
  */
 export function buildManagerLoad(input: ManagerLoadInput): ManagerLoadReport {
   const { totals } = input
-  const offices: ManagerLoadOffice[] = []
+  const companies: ManagerLoadCompany[] = []
   const byStage: Record<string, number> = {}
   const managerIds = new Set<number>()
 
-  for (const office of input.offices) {
+  for (const company of input.companies) {
     const rows: ManagerLoadRow[] = []
     for (const manager of input.managers) {
-      const total = count(totals, pairKey(office.id, manager.id))
+      const total = count(totals, pairKey(company.id, manager.id))
       if (total === 0) continue
       const rowStages: Record<string, number> = {}
       for (const stage of input.stages) {
-        const value = count(totals, cellKey(office.id, manager.id, stage.id))
+        const value = count(totals, cellKey(company.id, manager.id, stage.id))
         if (value > 0) rowStages[stage.id] = value
       }
       rows.push({
@@ -163,17 +184,17 @@ export function buildManagerLoad(input: ManagerLoadInput): ManagerLoadReport {
       })
       managerIds.add(manager.id)
     }
-    // Итог офиса — свой счётчик: сумма строк его не заменяет, потому что сделки уволенных и
-    // неназначенные в строки не попадают, а в офисе они есть. Разница и есть `unlisted`.
+    // Итог компании — свой счётчик: сумма строк его не заменяет, потому что сделки уволенных и
+    // неназначенные в строки не попадают, а в компании они есть. Разница и есть `unlisted`.
     const rowsTotal = sum(rows.map(row => row.total))
-    const officeTotal = Math.max(count(totals, officeKey(office.id)), rowsTotal)
-    if (officeTotal === 0) continue
+    const companyTotal = Math.max(count(totals, companyKey(company.id)), rowsTotal)
+    if (companyTotal === 0) continue
     rows.sort((a, b) => b.total - a.total || a.managerName.localeCompare(b.managerName, 'ru') || a.managerId - b.managerId)
-    for (const row of rows) row.share = officeTotal > 0 ? row.total / officeTotal : 0
+    for (const row of rows) row.share = companyTotal > 0 ? row.total / companyTotal : 0
     // Итог колонки — свой счётчик портала; сумма клеток над ним берётся только если счётчика
     // нет. Разница между ними — сделки строки «вне таблицы»: их стадии известны, а ответственный
     // нет, поэтому раскладываются они здесь, а не в строке менеджера.
-    const officeStages: Record<string, number> = {}
+    const companyStages: Record<string, number> = {}
     const listedByStage: Record<string, number> = {}
     for (const row of rows) {
       for (const [stageId, value] of Object.entries(row.byStage)) {
@@ -187,70 +208,70 @@ export function buildManagerLoad(input: ManagerLoadInput): ManagerLoadReport {
     let stageCounters = false
     for (const stage of input.stages) {
       const listed = listedByStage[stage.id] ?? 0
-      const counted = count(totals, officeStageKey(office.id, stage.id))
+      const counted = count(totals, companyStageKey(company.id, stage.id))
       if (counted > 0) stageCounters = true
       const value = Math.max(counted, listed)
       if (value === 0) continue
-      officeStages[stage.id] = value
+      companyStages[stage.id] = value
       byStage[stage.id] = (byStage[stage.id] ?? 0) + value
       if (value > listed) unlistedByStage[stage.id] = value - listed
     }
-    const unlisted = Math.max(0, officeTotal - rowsTotal)
-    offices.push({
-      officeId: office.id,
-      officeName: office.name,
+    const unlisted = Math.max(0, companyTotal - rowsTotal)
+    companies.push({
+      companyId: company.id,
+      companyName: company.name,
       rows,
-      byStage: officeStages,
-      // Сделки офиса вне колонок: стадии, которой нет в справочнике направления.
+      byStage: companyStages,
+      // Сделки компании вне колонок: стадии, которой нет в справочнике направления.
       otherStages: !input.stages.length
         ? 0
         : stageCounters
-          ? Math.max(0, officeTotal - sum(Object.values(officeStages)))
+          ? Math.max(0, companyTotal - sum(Object.values(companyStages)))
           : sum(rows.map(row => row.otherStages)),
-      total: officeTotal,
+      total: companyTotal,
       unlisted,
       unlistedByStage: unlisted > 0 ? unlistedByStage : {},
       share: 0
     })
   }
 
-  const officesTotal = sum(offices.map(office => office.total))
-  const total = Math.max(count(totals, totalKey()), officesTotal)
+  const companiesTotal = sum(companies.map(company => company.total))
+  const total = Math.max(count(totals, totalKey()), companiesTotal)
   // Под отбором нет ни одной сделки — показывать нечего, и «скрыто 4 пустых стадии» здесь было
   // бы шумом: экран в этом случае говорит «сделок нет», а не рисует таблицу из заголовков.
   if (total === 0) return emptyManagerLoad()
-  for (const office of offices) office.share = total > 0 ? office.total / total : 0
-  // «Не указана» — не офис, а незаполненное поле, поэтому она всегда последняя, даже когда
-  // сделок в ней больше всех (на боевом портале так и есть). Иначе таблица начиналась бы с
-  // строки о качестве данных, а не с офиса, ради которого её открыли.
-  offices.sort((a, b) => {
-    if ((a.officeId === OFFICE_UNSET) !== (b.officeId === OFFICE_UNSET)) return a.officeId === OFFICE_UNSET ? 1 : -1
-    return b.total - a.total || a.officeName.localeCompare(b.officeName, 'ru') || a.officeId - b.officeId
-  })
+  for (const company of companies) company.share = total > 0 ? company.total / total : 0
+  // ⚠ «Не указана» идёт в общем порядке — по числу сделок, как все остальные. Раньше она стояла
+  // последней как «незаполненное поле»; решение владельца от 2026-09-05: это такая же группа, а
+  // выбор «смотреть её или нет» отдан фильтру «Моя компания» в панели. Отдельное место в
+  // сортировке означало бы, что отчёт спорит с фильтром, который человек только что выставил.
+  companies.sort((a, b) =>
+    b.total - a.total || a.companyName.localeCompare(b.companyName, 'ru') || a.companyId - b.companyId
+  )
 
   // Пустые колонки убираем: у направления заказчика 16 стадий, из них «в работе» четыре, и
   // двенадцать пустых столбцов сделали бы таблицу нечитаемой. Сколько скрыто — говорим подписью.
   const stages = input.stages.filter(stage => (byStage[stage.id] ?? 0) > 0)
 
   return {
-    offices,
+    companies,
     stages,
     hiddenStages: input.stages.length - stages.length,
     byStage,
-    otherStages: sum(offices.map(office => office.otherStages)),
-    // Сделки вне строк: не разложенные по менеджерам внутри офисов плюс не попавшие ни в один
-    // офис (офис не перечислился) — одним числом, потому что показываются одной подписью.
-    unlisted: sum(offices.map(office => office.unlisted)) + Math.max(0, total - officesTotal),
+    otherStages: sum(companies.map(company => company.otherStages)),
+    // Сделки вне строк: не разложенные по менеджерам внутри компаний плюс не попавшие ни в один
+    // компания (компания не перечислился) — одним числом, потому что показываются одной подписью.
+    unlisted: sum(companies.map(company => company.unlisted)) + Math.max(0, total - companiesTotal),
     total,
     managers: managerIds.size,
-    officeCount: offices.length
+    companyCount: companies.length
   }
 }
 
 /** Пустой отчёт — до первой выборки и когда под отбором нет ни одной сделки. */
 export function emptyManagerLoad(): ManagerLoadReport {
   return {
-    offices: [],
+    companies: [],
     stages: [],
     hiddenStages: 0,
     byStage: {},
@@ -258,6 +279,6 @@ export function emptyManagerLoad(): ManagerLoadReport {
     unlisted: 0,
     total: 0,
     managers: 0,
-    officeCount: 0
+    companyCount: 0
   }
 }

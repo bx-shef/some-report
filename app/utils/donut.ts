@@ -61,8 +61,13 @@ function fullRing(cx: number, cy: number, outer: number, inner: number): string 
   ].join(' ')
 }
 
-/** Дуга кольца (внешняя дуга вперёд, внутренняя назад) как замкнутый контур. */
-function ringSlice(
+/**
+ * Дуга кольца (внешняя дуга вперёд, внутренняя назад) как замкнутый контур.
+ *
+ * Экспортируется ради `sunburst.ts`: у многокольцевой диаграммы та же арифметика дуг, и второй
+ * её экземпляр разошёлся бы с этим ровно на случае «кольцо целиком» (см. `fullRing`).
+ */
+export function ringSlice(
   cx: number,
   cy: number,
   outer: number,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   checkPlacements,
+  extraPlacements,
   installVerdict,
   missingScopes,
   normalizeHandlerUrl,
@@ -52,37 +53,74 @@ describe('parseRegisteredPlacements', () => {
 })
 
 describe('checkPlacements', () => {
-  const expected = ['CRM_ANALYTICS_MENU', 'CRM_ANALYTICS_TOOLBAR']
+  const LEADS = `${OURS}/leads`
+  const MANAGERS = `${OURS}/managers`
+  /** Два пункта в ОДНОЙ точке — по одному на отчёт: ровно то, что регистрирует установка. */
+  const expected = [
+    { code: 'CRM_ANALYTICS_MENU', handler: LEADS, title: 'Аналитика по лидам' },
+    { code: 'CRM_ANALYTICS_MENU', handler: MANAGERS, title: 'Сделки по менеджерам' }
+  ]
 
-  it('считает точку рабочей, когда она привязана на наш адрес', () => {
+  it('считает пункт рабочим, когда он привязан на наш адрес', () => {
     const result = checkPlacements(expected, [
-      { code: 'CRM_ANALYTICS_MENU', handler: OURS },
-      { code: 'CRM_ANALYTICS_TOOLBAR', handler: `${OURS}/` }
-    ], OURS)
+      { code: 'CRM_ANALYTICS_MENU', handler: LEADS },
+      { code: 'CRM_ANALYTICS_MENU', handler: `${MANAGERS}/` }
+    ])
     expect(result.map(r => r.status)).toEqual(['ok', 'ok'])
   })
 
-  it('видит непривязанную точку', () => {
-    const result = checkPlacements(expected, [{ code: 'CRM_ANALYTICS_MENU', handler: OURS }], OURS)
-    expect(result[1]).toEqual({ code: 'CRM_ANALYTICS_TOOLBAR', status: 'missing', foreignHandlers: [] })
+  // ⚠ Главное, ради чего проверка знает про АДРЕСА, а не только про коды точек: привязан один
+  // отчёт из двух. По коду точки это выглядело бы как исправная установка, а человек открыл бы
+  // аналитику и не нашёл там второго отчёта.
+  it('видит непривязанный пункт, когда точка та же', () => {
+    const result = checkPlacements(expected, [{ code: 'CRM_ANALYTICS_MENU', handler: LEADS }])
+    expect(result.map(r => r.status)).toEqual(['ok', 'other-handler'])
+    expect(result[1]?.foreignHandlers).toEqual([LEADS])
+  })
+
+  it('видит точку, которой нет вовсе', () => {
+    const result = checkPlacements(expected, [])
+    expect(result.map(r => r.status)).toEqual(['missing', 'missing'])
+    expect(result[0]?.title).toBe('Аналитика по лидам')
   })
 
   // Переезд домена: пункт в меню есть, а открывает он прошлое приложение. По ответу
   // `placement.bind` это неотличимо от исправной установки — отсюда и проверка.
   it('видит привязку на чужой адрес и показывает его', () => {
-    const old = 'https://old-domain.example.com/app'
-    const result = checkPlacements(expected, [{ code: 'CRM_ANALYTICS_MENU', handler: old }], OURS)
-    expect(result[0]).toEqual({ code: 'CRM_ANALYTICS_MENU', status: 'other-handler', foreignHandlers: [old] })
+    const old = 'https://old-domain.example.com/app/leads'
+    const result = checkPlacements([expected[0]!], [{ code: 'CRM_ANALYTICS_MENU', handler: old }])
+    expect(result[0]?.status).toBe('other-handler')
+    expect(result[0]?.foreignHandlers).toEqual([old])
   })
 
-  it('считает точку рабочей, если наша привязка есть рядом с чужой', () => {
+  it('считает пункт рабочим, если наша привязка есть рядом с чужой', () => {
     const old = 'https://old-domain.example.com/app'
-    const result = checkPlacements(['CRM_ANALYTICS_MENU'], [
+    const result = checkPlacements([expected[0]!], [
       { code: 'CRM_ANALYTICS_MENU', handler: old },
-      { code: 'CRM_ANALYTICS_MENU', handler: OURS }
-    ], OURS)
+      { code: 'CRM_ANALYTICS_MENU', handler: LEADS }
+    ])
     expect(result[0]?.status).toBe('ok')
     expect(result[0]?.foreignHandlers).toEqual([old])
+  })
+})
+
+describe('extraPlacements', () => {
+  const LEADS = `${OURS}/leads`
+  const expected = [{ code: 'CRM_ANALYTICS_MENU', handler: LEADS }]
+
+  // Наследство прошлой версии: пункт на главную приложения и кнопка в шапке аналитики. После
+  // переустановки они остались бы рядом с новыми — три входа вместо двух.
+  it('находит привязки, которых мы больше не регистрируем', () => {
+    const extras = extraPlacements(expected, [
+      { code: 'CRM_ANALYTICS_MENU', handler: LEADS },
+      { code: 'CRM_ANALYTICS_MENU', handler: OURS },
+      { code: 'CRM_ANALYTICS_TOOLBAR', handler: OURS }
+    ])
+    expect(extras.map(row => row.handler)).toEqual([OURS, OURS])
+  })
+
+  it('на чистой установке лишнего не находит', () => {
+    expect(extraPlacements(expected, [{ code: 'CRM_ANALYTICS_MENU', handler: `${LEADS}/` }])).toEqual([])
   })
 })
 
@@ -98,8 +136,8 @@ describe('missingScopes', () => {
 
 describe('installVerdict', () => {
   const okPlacements = [
-    { code: 'CRM_ANALYTICS_MENU', status: 'ok' as const, foreignHandlers: [] },
-    { code: 'CRM_ANALYTICS_TOOLBAR', status: 'ok' as const, foreignHandlers: [] }
+    { code: 'CRM_ANALYTICS_MENU', handler: `${OURS}/leads`, title: 'Аналитика по лидам', status: 'ok' as const, foreignHandlers: [] },
+    { code: 'CRM_ANALYTICS_MENU', handler: `${OURS}/managers`, title: 'Сделки по менеджерам', status: 'ok' as const, foreignHandlers: [] }
   ]
 
   // Порядок проверок — это порядок лечения: пока нет прав, разбираться с точками бессмысленно.
@@ -107,7 +145,7 @@ describe('installVerdict', () => {
     const verdict = installVerdict({
       missing: ['crm'],
       placementsChecked: true,
-      placements: [{ code: 'CRM_ANALYTICS_MENU', status: 'missing', foreignHandlers: [] }],
+      placements: [{ code: 'CRM_ANALYTICS_MENU', handler: OURS, status: 'missing', foreignHandlers: [] }],
       appInstalled: false
     })
     expect(verdict.level).toBe('error')
@@ -127,19 +165,34 @@ describe('installVerdict', () => {
     expect(verdict.title).toContain('неустановленным')
   })
 
-  it('называет непривязанные точки поимённо', () => {
+  // Называем ОТЧЁТ, а не код точки: человеку на странице установки нужно понять, какой из двух
+  // пунктов не появился в меню.
+  it('называет непривязанные пункты по их заголовкам', () => {
     const verdict = installVerdict({
       missing: [],
       appInstalled: true,
       placementsChecked: true,
       placements: [
-        { code: 'CRM_ANALYTICS_MENU', status: 'ok', foreignHandlers: [] },
-        { code: 'CRM_ANALYTICS_TOOLBAR', status: 'missing', foreignHandlers: [] }
+        okPlacements[0]!,
+        { ...okPlacements[1]!, status: 'missing' as const }
       ]
     })
     expect(verdict.level).toBe('error')
-    expect(verdict.title).toContain('CRM_ANALYTICS_TOOLBAR')
-    expect(verdict.title).not.toContain('CRM_ANALYTICS_MENU')
+    expect(verdict.title).toContain('Сделки по менеджерам')
+    expect(verdict.title).not.toContain('Аналитика по лидам')
+  })
+
+  // Лишний пункт из прошлой версии — предупреждение с понятным действием, а не тишина.
+  it('говорит про лишние привязки и зовёт перепривязать', () => {
+    const verdict = installVerdict({
+      missing: [],
+      appInstalled: true,
+      placementsChecked: true,
+      placements: okPlacements,
+      extras: [{ code: 'CRM_ANALYTICS_TOOLBAR', handler: OURS }]
+    })
+    expect(verdict.level).toBe('warning')
+    expect(verdict.hint).toContain('Перепривязать')
   })
 
   it('на чужой адрес предупреждает и показывает его', () => {
@@ -147,7 +200,7 @@ describe('installVerdict', () => {
       missing: [],
       appInstalled: true,
       placementsChecked: true,
-      placements: [{ code: 'CRM_ANALYTICS_MENU', status: 'other-handler', foreignHandlers: ['https://old/app'] }]
+      placements: [{ code: 'CRM_ANALYTICS_MENU', handler: OURS, status: 'other-handler', foreignHandlers: ['https://old/app'] }]
     })
     expect(verdict.level).toBe('warning')
     expect(verdict.hint).toContain('https://old/app')
@@ -184,7 +237,7 @@ describe('installVerdict', () => {
       missing: [],
       appInstalled: true,
       placementsChecked: true,
-      placements: [{ code: 'CRM_ANALYTICS_MENU', status: 'other-handler', foreignHandlers: [''] }]
+      placements: [{ code: 'CRM_ANALYTICS_MENU', handler: OURS, status: 'other-handler', foreignHandlers: [''] }]
     })
     expect(verdict.hint).toContain('другой адрес')
     expect(verdict.hint).not.toContain('открывает .')
