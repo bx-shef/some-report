@@ -65,7 +65,10 @@ function pickCategory(value: unknown): void {
 }
 
 function pickScope(value: unknown): void {
-  if (typeof value !== 'string' || !(value in SCOPE_LABELS)) return
+  // ⚠ `Object.hasOwn`, а не `in`: `in` идёт по цепочке прототипов, и значение `toString` из
+  // списка (или из подделанной настройки) прошло бы проверку, а экран потом падал бы на
+  // `SCOPE_LABELS[scope].toLowerCase()`.
+  if (typeof value !== 'string' || !Object.hasOwn(SCOPE_LABELS, value)) return
   model.value = { ...model.value, scope: value as DealScope }
 }
 

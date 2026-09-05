@@ -1,3 +1,4 @@
+import { share } from '~/utils/metrics'
 import type {
   DealScope,
   ManagerLoadCompany,
@@ -190,7 +191,9 @@ export function buildManagerLoad(input: ManagerLoadInput): ManagerLoadReport {
     const companyTotal = Math.max(count(totals, companyKey(company.id)), rowsTotal)
     if (companyTotal === 0) continue
     rows.sort((a, b) => b.total - a.total || a.managerName.localeCompare(b.managerName, 'ru') || a.managerId - b.managerId)
-    for (const row of rows) row.share = companyTotal > 0 ? row.total / companyTotal : 0
+    // Делим только через `share()` — общее правило проекта: пустой отбор здесь норма, а `x / 0`
+    // в шаблоне печатает «NaN %», после чего отчёт перестают читать целиком.
+    for (const row of rows) row.share = share(row.total, companyTotal)
     // Итог колонки — свой счётчик портала; сумма клеток над ним берётся только если счётчика
     // нет. Разница между ними — сделки строки «вне таблицы»: их стадии известны, а ответственный
     // нет, поэтому раскладываются они здесь, а не в строке менеджера.
@@ -240,7 +243,7 @@ export function buildManagerLoad(input: ManagerLoadInput): ManagerLoadReport {
   // Под отбором нет ни одной сделки — показывать нечего, и «скрыто 4 пустых стадии» здесь было
   // бы шумом: экран в этом случае говорит «сделок нет», а не рисует таблицу из заголовков.
   if (total === 0) return emptyManagerLoad()
-  for (const company of companies) company.share = total > 0 ? company.total / total : 0
+  for (const company of companies) company.share = share(company.total, total)
   // ⚠ «Не указана» идёт в общем порядке — по числу сделок, как все остальные. Раньше она стояла
   // последней как «незаполненное поле»; решение владельца от 2026-09-05: это такая же группа, а
   // выбор «смотреть её или нет» отдан фильтру «Моя компания» в панели. Отдельное место в

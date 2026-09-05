@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ManagerCellRef, ManagerLoadCompany, ManagerLoadReport } from '~/types/managers'
-import { UNLISTED_MANAGER_LABEL } from '~/utils/managerLoad'
+import { companyFullLabel, UNLISTED_MANAGER_LABEL } from '~/utils/managerLoad'
 import { formatCount, formatPercent } from '~/utils/format'
 
 /**
@@ -41,7 +41,11 @@ const peaks = computed(() => {
 
 /** Клик по числу: заголовок списка повторяет то, по чему нажали. */
 function cell(company: ManagerLoadCompany, parts: { managerId?: number, managerName?: string, stageId?: string, stageName?: string, total: number }): ManagerCellRef {
-  const title = [company.companyName, parts.managerName, parts.stageName].filter(Boolean).join(' · ')
+  // ⚠ В заголовке списка группа без компании зовётся «Без моей компании», а не «Не указана»:
+  // в слайдере рядом нет заголовка про «мою компанию», и короткая подпись читалась бы как
+  // «что не указана?». Тот же `companyFullLabel` берёт и диаграмма — иначе одно и то же число
+  // открывало бы список с разными заголовками в зависимости от того, где по нему нажали.
+  const title = [companyFullLabel(company.companyId, company.companyName), parts.managerName, parts.stageName].filter(Boolean).join(' · ')
   return {
     companyId: company.companyId,
     ...(parts.managerId === undefined ? {} : { managerId: parts.managerId }),

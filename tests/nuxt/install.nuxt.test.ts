@@ -192,6 +192,17 @@ describe('страница установки', () => {
     expect(wrapper.text()).toContain('только администратору портала')
   })
 
+  // ⚠ Портал и сам ответит `ACCESS_DENIED`, но лезть к нему незачем: `placement.unbind` от
+  // не-администратора — это запрос, который может пройти частично. Проверяем на клиенте и сразу
+  // переходим к диагностике, она объяснит, что делать и кому.
+  it('не администратор ничего не привязывает — только проверка', async () => {
+    portal.isAdmin = false
+    await mountInstall()
+    expect(portal.calls).not.toContain('placement.unbind')
+    expect(portal.calls).not.toContain('placement.bind')
+    expect(portal.calls).toContain('placement.get')
+  })
+
   // Повторный installFinish на исправной установке ругается ВСЕГДА — красная плашка под зелёным
   // вердиктом сбивала бы с толку каждый раз, когда всё хорошо.
   it('жалобу installFinish при зелёном вердикте не показывает', async () => {

@@ -34,7 +34,11 @@ const MAX_CANVAS_PIXELS = 24e6
 export function snapshotRatio(width: number, height: number, devicePixelRatio = 1): number {
   const bySide = MAX_CANVAS_SIDE / Math.max(width, height)
   const byArea = Math.sqrt(MAX_CANVAS_PIXELS / (width * height))
-  return Math.max(1, Math.min(2, Math.max(1, devicePixelRatio), bySide, byArea))
+  // ⚠ Внешнего `Math.max(1, …)` здесь БЫТЬ НЕ ДОЛЖНО: он поднимал бы обратно до единицы ровно те
+  // случаи, ради которых пределы и заведены, — длинный дашборд, где холст и так больше 16 000 px
+  // по стороне. Тогда вкладка упиралась бы в память браузера при исправном на вид коде. Ниже
+  // единицы масштаб опускается сознательно: лучше чуть более грубый снимок, чем пустой файл.
+  return Math.min(2, Math.max(1, devicePixelRatio), bySide, byArea)
 }
 
 /**

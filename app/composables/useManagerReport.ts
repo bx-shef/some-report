@@ -93,7 +93,7 @@ export function defaultManagerFilters(today: Date): ManagerFilters {
 export function useManagerReport(options: { today?: Date } = {}) {
   const today = options.today ?? new Date()
   const b24 = useB24()
-  const { batchRows, batchTotals } = useB24Batch()
+  const { batchRows, batchRowsChecked, batchTotals } = useB24Batch()
   const { fetchUsers } = useB24Users()
 
   const source = ref<'mock' | 'portal'>('mock')
@@ -181,10 +181,17 @@ export function useManagerReport(options: { today?: Date } = {}) {
   ): Promise<{ ids: number[], truncated: boolean }> {
     const ids: number[] = []
     for (let page = 0; page < maxPages; page++) {
-      const rows = await batchRows<Record<string, unknown>>(distinctChainBatch(field, base, size, ids.at(-1) ?? 0, prefix))
+      const { rows, complete } = await batchRowsChecked<Record<string, unknown>>(
+        distinctChainBatch(field, base, size, ids.at(-1) ?? 0, prefix)
+      )
       if (stale()) return { ids, truncated: false }
       const found = readDistinctChain(rows, field, size, prefix)
       ids.push(...found)
+      // ⚠ Неполный ответ пакета — это НЕ «значения кончились». Пакет уходит с
+      // `isHaltOnError: false`, и команда, упёршаяся в лимит запросов, возвращает пустоту:
+      // цепочка обрывается на ней, и без этой проверки отчёт считал бы, что перечислил всех, —
+      // сделки остальных молча ушли бы в строку «ответственный не найден».
+      if (!complete) return { ids, truncated: true }
       if (found.length < size) return { ids, truncated: false }
     }
     return { ids, truncated: true }

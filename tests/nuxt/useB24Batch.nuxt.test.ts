@@ -89,12 +89,39 @@ describe('useB24Batch', () => {
     await expect(useB24Batch().batchTotals(commands(3))).rejects.toThrow('портал недоступен')
   })
 
-  // Одна команда пакета ответила ошибкой (пакет идёт с `isHaltOnError: false`): её счётчик — ноль,
-  // остальные команды при этом не должны пострадать.
+  /**
+   * Одна команда пакета ответила ошибкой (пакет идёт с `isHaltOnError: false`) — остальные
+   * команды при этом не должны пострадать.
+   *
+   * ⚠ У такой команды ответа НЕТ ВОВСЕ, и это не то же самое, что «ответ с нулём». Счётчику
+   * разницы нет (`collectTotals` пропускает отсутствующий ключ, клетка остаётся нулём), а вот
+   * цепочке перечисления — есть: для неё пустой ответ означает «значения кончились», и молчаливый
+   * ноль обрывал бы список менеджеров на полуслове (см. `batchRowsChecked`).
+   */
   it('сломанный ответ одной команды не роняет весь пакет', async () => {
     portal.broken = 'n1'
     const results = await useB24Batch().batchResults(commands(3))
-    expect(results.n1).toEqual({ data: undefined, total: 0 })
+    expect(results.n1).toBeUndefined()
     expect(results.n2!.total).toBe(2)
+  })
+
+  it('счётчики сломанной команды просто нет — соседние на месте', async () => {
+    portal.broken = 'n1'
+    const totals = await useB24Batch().batchTotals(commands(3))
+    expect(totals).not.toHaveProperty('n1')
+    expect(totals.n2).toBe(2)
+  })
+
+  // ⚠ Ради этого флага метод и заведён: цепочка перечисления обязана отличить «значения
+  // кончились» от «одна команда не ответила», иначе отчёт молча теряет половину менеджеров.
+  it('batchRowsChecked говорит, что ответили не все', async () => {
+    portal.broken = 'n1'
+    const partial = await useB24Batch().batchRowsChecked<{ ID: string }>(commands(3))
+    expect(partial.complete).toBe(false)
+    expect(partial.rows.n2).toEqual([{ ID: 'n2' }])
+
+    portal.broken = undefined
+    const full = await useB24Batch().batchRowsChecked<{ ID: string }>(commands(3))
+    expect(full.complete).toBe(true)
   })
 })

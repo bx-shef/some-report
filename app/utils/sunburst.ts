@@ -128,7 +128,12 @@ export function sunburstArcs(
     const inner = geometry.innerRadius + geometry.ringThickness * item.depth
     // Зазор режется ИЗНУТРИ сектора, но не больше трети его ширины: у тонких дуг он съел бы их
     // целиком, и кольцо стало бы пунктиром из ничего.
-    const gap = Math.min(geometry.gapDegrees, span / 3)
+    //
+    // ⚠ У сектора, занимающего ВЕСЬ круг, зазора нет вовсе: отрезать его не от чего — соседей у
+    // такого сектора нет, а прорезь на двенадцати часах читается как дефект отрисовки. Случай
+    // живой: у заказчика «моя компания» заполнена у 8 % сделок, и направление с одной компанией
+    // (или с одним менеджером внутри неё) — обычное дело.
+    const gap = span >= 359.99 ? 0 : Math.min(geometry.gapDegrees, span / 3)
     arcs.push({
       key: item.node.key,
       label: item.node.label,

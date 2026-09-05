@@ -118,22 +118,37 @@ function pickString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
 }
 
-/** Состояние каждого ожидаемого пункта против того, что реально зарегистрировано в портале. */
+/**
+ * Состояние каждого ожидаемого пункта против того, что реально зарегистрировано в портале.
+ *
+ * ⚠ Соседний пункт НАШЕГО ЖЕ приложения чужим не считается, и это не мелочь. Оба отчёта висят на
+ * одном коде точки (`CRM_ANALYTICS_MENU`), и наивная проверка «строки с этим кодом, кроме моей»
+ * объявляла бы адрес второго отчёта «чужим»: при частичной регистрации (второй `bind` упёрся в
+ * лимит запросов) диагноз читался бы как «пункт открывает другой адрес» с нашим же исправным
+ * адресом в подсказке — вместо «второй отчёт не зарегистрирован».
+ */
 export function checkPlacements(
   expected: readonly ExpectedPlacement[],
   registered: readonly RegisteredPlacement[]
 ): PlacementCheck[] {
+  const mine = new Set(expected.map(item => `${item.code}|${normalizeHandlerUrl(item.handler)}`))
   return expected.map((item) => {
-    const rows = registered.filter(row => row.code === item.code)
     const ours = normalizeHandlerUrl(item.handler)
     const base = { code: item.code, handler: item.handler, ...(item.title ? { title: item.title } : {}) }
-    if (rows.length === 0) return { ...base, status: 'missing', foreignHandlers: [] }
+    const rows = registered.filter(row => row.code === item.code)
+    if (rows.some(row => normalizeHandlerUrl(row.handler) === ours)) {
+      // Наша привязка есть — пункт рабочий, даже если рядом в той же точке висит чужая.
+      const foreignHandlers = rows
+        .filter(row => !mine.has(`${row.code}|${normalizeHandlerUrl(row.handler)}`))
+        .map(row => row.handler)
+      return { ...base, status: 'ok', foreignHandlers }
+    }
     const foreignHandlers = rows
-      .filter(row => normalizeHandlerUrl(row.handler) !== ours)
+      .filter(row => !mine.has(`${row.code}|${normalizeHandlerUrl(row.handler)}`))
       .map(row => row.handler)
-    // Наша привязка есть — пункт рабочий, даже если рядом в той же точке висит чужая.
-    if (foreignHandlers.length < rows.length) return { ...base, status: 'ok', foreignHandlers }
-    return { ...base, status: 'other-handler', foreignHandlers }
+    // Точка занята ЧУЖИМ адресом — переезд домена или прошлая установка. Если чужого нет, то
+    // пункта просто нет: рядом стоит только наш же второй отчёт.
+    return { ...base, status: foreignHandlers.length ? 'other-handler' : 'missing', foreignHandlers }
   })
 }
 
@@ -226,15 +241,10 @@ export function installVerdict(state: InstallState): InstallVerdict {
     }
   }
 
-  const extras = state.extras ?? []
-  if (extras.length > 0) {
-    return {
-      level: 'warning',
-      title: 'В портале остались лишние пункты приложения',
-      hint: `Кроме двух наших отчётов портал помнит ещё ${extras.length}: ${extras.map(row => row.code).join(', ')}. Так бывает после обновления с прежней версии, где пункт был один. Нажмите «Перепривязать точки» — лишние снимутся.`
-    }
-  }
-
+  // ⚠ Про ЧУЖОЙ адрес говорим РАНЬШЕ, чем про лишние пункты. При переезде домена верно и то, и
+  // другое: наши пункты не найдены, а прежние висят «лишними». Но причина у этого одна — адрес
+  // приложения сменился, — и назвать её надо ею, а не «наследством прошлой версии»: лечится это
+  // одинаково, а понимается по-разному.
   const foreign = state.placements.filter(item => item.status === 'other-handler')
   if (foreign.length > 0) {
     return {
@@ -244,6 +254,15 @@ export function installVerdict(state: InstallState): InstallVerdict {
       // без адреса. Подставлять её в подсказку значит напечатать «открывает .» — поэтому берём
       // первый НЕПУСТОЙ адрес, а если такого нет, говорим словами.
       hint: `Пункт в портале есть, но открывает ${foreign.flatMap(item => item.foreignHandlers).find(url => url.trim() !== '') ?? 'другой адрес'}. Нажмите «Перепривязать точки», чтобы заменить адрес на текущий.`
+    }
+  }
+
+  const extras = state.extras ?? []
+  if (extras.length > 0) {
+    return {
+      level: 'warning',
+      title: 'В портале остались лишние пункты приложения',
+      hint: `Кроме двух наших отчётов портал помнит ещё ${extras.length}: ${extras.map(row => row.handler || row.code).join(', ')}. Так бывает после обновления с прежней версии, где пункт был один. Нажмите «Перепривязать точки» — лишние снимутся.`
     }
   }
 

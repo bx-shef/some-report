@@ -49,13 +49,16 @@ pnpm smoke:image http://localhost:8080   # то же на поднятом ко�
 ## Архитектура
 
 ```
-Битрикс24 (CRM-аналитика) ──▶ iframe с /app ──▶ выбор отчёта
-                                    │
-                    ┌───────────────┴────────────────┐
-              /app/leads                       /app/managers
-       useReportData → metrics.ts        useManagerReport → managerLoad.ts
-                    └───────────────┬────────────────┘
-                            b24jssdk ──▶ REST портала (только чтение)
+Битрикс24: два пункта CRM-аналитики        плитка «Приложения»
+        │                    │                     │
+        ▼                    ▼                     ▼
+   /app/leads           /app/managers            /app  (выбор отчёта)
+useReportData          useManagerReport
+      │                       │
+   metrics.ts            managerLoad.ts + sunburst.ts
+      └───────────┬───────────┘
+          b24jssdk ──▶ REST портала: CRM только читаем,
+                       свой отбор пишем в user.option
 ```
 
 Backend'а нет и не планируется: отчёт только читает CRM и считает на клиенте. Появится он тогда и

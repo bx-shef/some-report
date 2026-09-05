@@ -96,6 +96,22 @@ describe('ManagerDistribution', () => {
     expect(cellKey(company.companyId, row.managerId, stageId)).toContain(stageId)
   })
 
+  /**
+   * Свёрнутый хвост менеджеров («Остальные») — сектор БЕЗ списка.
+   *
+   * ⚠ Он не должен быть ни кнопкой, ни точкой табуляции: «остальные менеджеры» фильтром REST не
+   * выразить, а число без совпадающего списка в этом отчёте не кликабельно. Со скринридера и с
+   * клавиатуры такой сектор выглядел бы сломанной кнопкой.
+   */
+  it('сектор без списка не кликабелен и не в табуляции', async () => {
+    const wrapper = await mount()
+    const dead = wrapper.findAll('svg path').filter(path => path.attributes('role') === undefined)
+    expect(dead.length).toBeGreaterThan(0)
+    for (const path of dead) expect(path.attributes('tabindex')).toBeUndefined()
+    await dead[0]!.trigger('click')
+    expect(wrapper.emitted('drill')).toBeUndefined()
+  })
+
   it('пустой отчёт не рисует круг из ничего и говорит словами', async () => {
     const wrapper = await mountSuspended(ManagerDistribution, {
       props: {

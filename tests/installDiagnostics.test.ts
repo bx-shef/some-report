@@ -69,13 +69,32 @@ describe('checkPlacements', () => {
     expect(result.map(r => r.status)).toEqual(['ok', 'ok'])
   })
 
-  // ⚠ Главное, ради чего проверка знает про АДРЕСА, а не только про коды точек: привязан один
-  // отчёт из двух. По коду точки это выглядело бы как исправная установка, а человек открыл бы
-  // аналитику и не нашёл там второго отчёта.
+  /**
+   * ⚠ Главное, ради чего проверка знает про АДРЕСА, а не только про коды точек: привязан один
+   * отчёт из двух. По коду точки это выглядело бы как исправная установка, а человек открыл бы
+   * аналитику и не нашёл там второго отчёта.
+   *
+   * ⚠ И статус именно `missing`, а не `other-handler`: соседний пункт — НАШ ЖЕ второй отчёт, и
+   * называть его «чужим адресом» значит показать администратору подсказку «пункт открывает
+   * https://…/app/leads» с совершенно исправным адресом вместо «второй отчёт не зарегистрирован».
+   */
   it('видит непривязанный пункт, когда точка та же', () => {
     const result = checkPlacements(expected, [{ code: 'CRM_ANALYTICS_MENU', handler: LEADS }])
+    expect(result.map(r => r.status)).toEqual(['ok', 'missing'])
+    expect(result[0]?.foreignHandlers).toEqual([])
+    expect(result[1]?.foreignHandlers).toEqual([])
+  })
+
+  // Переезд домена при двух пунктах: чужой адрес — действительно чужой, и его надо показать.
+  it('чужой адрес рядом с нашим не путается с соседним пунктом', () => {
+    const old = 'https://old-domain.example.com/app'
+    const result = checkPlacements(expected, [
+      { code: 'CRM_ANALYTICS_MENU', handler: LEADS },
+      { code: 'CRM_ANALYTICS_MENU', handler: old }
+    ])
     expect(result.map(r => r.status)).toEqual(['ok', 'other-handler'])
-    expect(result[1]?.foreignHandlers).toEqual([LEADS])
+    expect(result[0]?.foreignHandlers).toEqual([old])
+    expect(result[1]?.foreignHandlers).toEqual([old])
   })
 
   it('видит точку, которой нет вовсе', () => {
@@ -180,6 +199,22 @@ describe('installVerdict', () => {
     expect(verdict.level).toBe('error')
     expect(verdict.title).toContain('Сделки по менеджерам')
     expect(verdict.title).not.toContain('Аналитика по лидам')
+  })
+
+  // ⚠ Переезд домена: верно и «наши пункты не найдены», и «прежние висят лишними». Причина одна —
+  // сменился адрес приложения, — и назвать надо её, а не «наследство прошлой версии»: лечится
+  // одинаково, а понимается по-разному.
+  it('о чужом адресе говорит раньше, чем о лишних пунктах', () => {
+    const old = 'https://old-domain.example.com/app/leads'
+    const verdict = installVerdict({
+      missing: [],
+      appInstalled: true,
+      placementsChecked: true,
+      placements: [{ ...okPlacements[0]!, status: 'other-handler' as const, foreignHandlers: [old] }],
+      extras: [{ code: 'CRM_ANALYTICS_MENU', handler: old }]
+    })
+    expect(verdict.title).toContain('другой адрес')
+    expect(verdict.hint).toContain(old)
   })
 
   // Лишний пункт из прошлой версии — предупреждение с понятным действием, а не тишина.

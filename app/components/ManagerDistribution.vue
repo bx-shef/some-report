@@ -57,6 +57,9 @@ const legend = computed(() =>
   }))
 )
 
+/** За какими секторами есть список: у свёрнутого хвоста «Остальные» его нет — см. `managerChart`. */
+const pickable = computed(() => Object.keys(chart.value.refs))
+
 function pick(key: string): void {
   const ref = chart.value.refs[key]
   if (ref) emit('drill', ref)
@@ -76,6 +79,7 @@ function pick(key: string): void {
         <SunburstChart
           :nodes="chart.nodes"
           :color-by-root="colorByRoot"
+          :pickable="pickable"
           :center-value="formatCount(report.total)"
           center-label="сделок"
           aria-label="Распределение сделок по «моим компаниям», менеджерам и стадиям"

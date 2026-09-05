@@ -636,8 +636,13 @@ export function adaptUnlinkedWonDeals(
   let unconverted = 0
   for (const row of rows) {
     const id = toNumber(row.ID)
-    if (seen.has(id)) continue
-    seen.add(id)
+    // ⚠ Отсеиваем ПОВТОРЫ, а не записи без идентификатора: `toNumber` отдаёт 0 и для пустого, и
+    // для непонятного `ID`, и «пропускать нулевой как виденный» значило бы выбросить из итога и
+    // выручки все такие строки, кроме первой, — молча и без единого признака.
+    if (id > 0) {
+      if (seen.has(id)) continue
+      seen.add(id)
+    }
     const dealCurrency = toText(row.CURRENCY_ID) || currencyId
     const { value, converted } = toBaseAmount(toNumber(row.OPPORTUNITY), dealCurrency, rates)
     if (!converted && dealCurrency !== currencyId) unconverted++

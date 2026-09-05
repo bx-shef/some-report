@@ -102,6 +102,35 @@ describe('отчёт по менеджерам', () => {
     expect(decodeManagersState(JSON.stringify({ scope: 'lost' })).scope).toBe('lost')
   })
 
+  /**
+   * ⚠ Свойства прототипа — не значения охвата. Проверка через `in` пропускала бы `toString` и
+   * `constructor`, а экран печатает `SCOPE_LABELS[scope].toLowerCase()` — то есть падал бы на
+   * пустом месте, показав вместо отчёта белый экран.
+   */
+  it.each(['toString', 'constructor', 'hasOwnProperty'])('охват «%s» из прототипа не проходит', (scope) => {
+    expect(decodeManagersState(JSON.stringify({ scope })).scope).toBeUndefined()
+  })
+
+  /**
+   * ⚠ `Number()` превращает `null` в 0, `true` в 1, а `[5]` в 5. Сохранённое `{"companyId": true}`
+   * восстановилось бы фильтром по компании №1, которого человек не выбирал, — ровно тот дефект,
+   * от которого написан весь модуль.
+   */
+  it.each([
+    ['null', null],
+    ['true', true],
+    ['false', false],
+    ['пустой массив', []],
+    ['массив с числом', [5]],
+    ['объект', { id: 5 }],
+    ['дробное', 1.5],
+    ['отрицательное', -3]
+  ])('%s в компании и направлении не восстанавливается', (_name, value) => {
+    const state = decodeManagersState(JSON.stringify({ companyId: value, categoryId: value }))
+    expect(state.companyId).toBeUndefined()
+    expect(state.categoryId).toBeUndefined()
+  })
+
   it('мусор в настройке — открываемся с умолчанием', () => {
     expect(decodeManagersState('{')).toEqual({})
     expect(decodeManagersState(null)).toEqual({})

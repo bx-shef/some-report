@@ -67,9 +67,16 @@ function readPeriod(value: unknown): ReportPeriod | undefined {
   return validatePeriod(period) ? undefined : period
 }
 
-/** Натуральное число или `undefined`. `0` допустим только там, где он значение (см. компанию). */
+/**
+ * Натуральное число или `undefined`. `0` допустим только там, где он значение (см. компанию).
+ *
+ * ⚠ На вход берём ТОЛЬКО число или строку. `Number()` радостно превращает `null` в 0, `true` в 1,
+ * а `[5]` в 5 — и сохранённое `{"companyId": true}` восстановилось бы фильтром по компании №1,
+ * которого человек не выбирал. Ровно то, от чего этот модуль и написан.
+ */
 function readNumber(value: unknown, allowZero = false): number | undefined {
-  const number = typeof value === 'number' ? value : Number(value)
+  if (typeof value !== 'number' && typeof value !== 'string') return undefined
+  const number = typeof value === 'number' ? value : Number(value.trim())
   if (!Number.isFinite(number) || !Number.isInteger(number)) return undefined
   if (number < 0) return undefined
   return number === 0 && !allowZero ? undefined : number
@@ -137,7 +144,10 @@ export function decodeManagersState(raw: unknown): SavedManagersState {
   const companyId = readNumber(data.companyId, true)
   return {
     ...(categoryId === undefined ? {} : { categoryId }),
-    ...(scope !== undefined && scope in SCOPE_LABELS ? { scope: scope as ManagerFilters['scope'] } : {}),
+    // ⚠ `Object.hasOwn`, а не `in`: `in` идёт по цепочке прототипов, и сохранённое
+    // `{"scope":"toString"}` прошло бы проверку. Дальше экран печатает
+    // `SCOPE_LABELS[scope].toLowerCase()` — то есть падал бы на пустом месте.
+    ...(scope !== undefined && Object.hasOwn(SCOPE_LABELS, scope) ? { scope: scope as ManagerFilters['scope'] } : {}),
     ...(period ? { period } : {}),
     ...(companyId === undefined ? {} : { companyId })
   }

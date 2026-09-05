@@ -1,6 +1,6 @@
 import type { ManagerFilters } from '~/types/managers'
 import type { BatchCommand } from '~/utils/b24Query'
-import { periodFilter } from '~/utils/b24Query'
+import { countCommand, periodFilter } from '~/utils/b24Query'
 import { cellKey, companyKey, companyStageKey, pairKey, scopeSemantic, totalKey } from '~/utils/managerLoad'
 
 /**
@@ -225,7 +225,10 @@ export function countBatch(requests: readonly CountRequest[]): {
   const keyByCommand: Record<string, string> = {}
   requests.forEach((request, index) => {
     const name = `n${index}`
-    commands[name] = { method: 'crm.deal.list', params: { select: ['ID'], filter: request.filter, start: 0 } }
+    // Форму вопроса «сколько» держит `countCommand` (`b24Query.ts`) — там же и объяснение, почему
+    // `start: 0`: при `start: -1` портал не считает `total` вовсе. Своя копия здесь означала бы,
+    // что однажды один отчёт починят, а второй молча начнёт возвращать нули по каждой клетке.
+    commands[name] = countCommand('crm.deal.list', request.filter)
     keyByCommand[name] = request.key
   })
   return { commands, keyByCommand }

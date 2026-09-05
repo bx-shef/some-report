@@ -82,6 +82,27 @@ describe('sunburstArcs', () => {
   })
 
   /**
+   * ⚠ И БЕЗ ПРОРЕЗИ: у сектора на весь круг соседей нет, отрезать зазор не от чего, а щель на
+   * двенадцати часах читается как дефект отрисовки. Случай живой — направление с одной «моей
+   * компанией» или с одним менеджером внутри неё. Сравниваем с кольцом, нарисованным при нулевом
+   * зазоре: пути обязаны совпасть.
+   */
+  it('кольцо целиком идёт без зазора', () => {
+    const single = [{ key: 'only', label: 'Одна', value: 5 }]
+    const withGap = sunburstArcs(single, { ...DEFAULT_SUNBURST, gapDegrees: 12 })
+    const withoutGap = sunburstArcs(single, { ...DEFAULT_SUNBURST, gapDegrees: 0 })
+    expect(withGap[0]!.path).toBe(withoutGap[0]!.path)
+  })
+
+  // Единственный ребёнок, покрывающий родителя целиком, — тот же случай кольцом дальше от центра.
+  it('единственный ребёнок на весь сектор родителя тоже без зазора', () => {
+    const tree = [{ key: 'p', label: 'Родитель', value: 5, children: [{ key: 'c', label: 'Ребёнок', value: 5 }] }]
+    const withGap = sunburstArcs(tree, { ...DEFAULT_SUNBURST, gapDegrees: 12 })
+    const withoutGap = sunburstArcs(tree, { ...DEFAULT_SUNBURST, gapDegrees: 0 })
+    expect(withGap.map(arc => arc.path)).toEqual(withoutGap.map(arc => arc.path))
+  })
+
+  /**
    * ⚠ Одна сделка из тысячи — это треть градуса. После вычета зазоров такая дуга становится
    * отрицательной, а SVG разворачивает её «в другую сторону» на весь круг: клякса поверх всей
    * диаграммы. Поэтому слишком узкие сектора не рисуются вовсе.

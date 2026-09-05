@@ -16,6 +16,15 @@ const props = withDefaults(defineProps<{
   nodes: SunburstNode[]
   /** Цвета корней по ключу — палитру задаёт вызывающая сторона, у диаграммы своей нет. */
   colorByRoot: Record<string, string>
+  /**
+   * Ключи секторов, за которыми есть список.
+   *
+   * ⚠ Обязательный список, а не «кликабельно всё». У свёрнутого хвоста менеджеров («Остальные»)
+   * списка нет — «остальные менеджеры» фильтром REST не выразить. Такой сектор не должен быть
+   * ни кнопкой, ни точкой табуляции: со скринридера и с клавиатуры он выглядел бы сломанной
+   * кнопкой, а правило отчёта — число без совпадающего списка НЕ кликабельно.
+   */
+  pickable: readonly string[]
   /** Крупное число в центре. */
   centerValue?: string
   centerLabel?: string
@@ -32,6 +41,12 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{ pick: [string] }>()
 
 const arcs = computed(() => sunburstArcs(props.nodes, DEFAULT_SUNBURST))
+
+const pickableKeys = computed(() => new Set(props.pickable))
+
+function pick(key: string): void {
+  if (pickableKeys.value.has(key)) emit('pick', key)
+}
 
 /**
  * Прозрачность кольца: 1 — внутреннее, дальше светлее.
@@ -74,13 +89,14 @@ function ringOpacity(depth: number): number {
         :d="arc.path"
         :fill="colorByRoot[arc.rootKey] ?? 'var(--chart-1)'"
         :fill-opacity="ringOpacity(arc.depth)"
-        class="cursor-pointer outline-none transition-opacity hover:opacity-80 focus-visible:opacity-80"
-        tabindex="0"
-        role="button"
-        :aria-label="`${arc.label}: ${arc.value}`"
-        @click="emit('pick', arc.key)"
-        @keydown.enter.prevent="emit('pick', arc.key)"
-        @keydown.space.prevent="emit('pick', arc.key)"
+        class="outline-none transition-opacity"
+        :class="pickableKeys.has(arc.key) ? 'cursor-pointer hover:opacity-80 focus-visible:opacity-80' : ''"
+        :tabindex="pickableKeys.has(arc.key) ? 0 : undefined"
+        :role="pickableKeys.has(arc.key) ? 'button' : undefined"
+        :aria-label="pickableKeys.has(arc.key) ? `${arc.label}: ${arc.value}` : undefined"
+        @click="pick(arc.key)"
+        @keydown.enter.prevent="pick(arc.key)"
+        @keydown.space.prevent="pick(arc.key)"
       >
         <title>{{ arc.label }}: {{ arc.value }}</title>
       </path>

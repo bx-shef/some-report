@@ -232,6 +232,17 @@ async function install() {
   resetDiagnosis()
   if (!await ready()) return
 
+  // ⚠ Не-администратору привязку портал всё равно запретит (`ACCESS_DENIED`), но спрашивать его
+  // об этом незачем: `placement.unbind` для не-админа — это запрос, который может и пройти
+  // частично. Проверяем сами и сразу переходим к диагностике: она объяснит, что делать и кому.
+  try {
+    isAdmin.value = b24.getOrThrow().auth.isAdmin
+  } catch { /* не смогли узнать — идём обычным путём, портал рассудит сам */ }
+  if (isAdmin.value === false) {
+    await verify()
+    return
+  }
+
   // Сначала снимаем своё прежнее — см. шапку: `bind` с новым адресом ДОБАВЛЯЕТ пункт, а не
   // заменяет, и без этого установка поверх старой версии множит их в меню.
   await unbindPlacements()
@@ -471,17 +482,20 @@ onMounted(install)
       >
         <li
           v-for="check in placementChecks"
-          :key="check.code"
+          :key="`${check.code}|${check.handler}`"
         >
-          <code>{{ check.code }}</code> —
+          <!-- ⚠ Пункт называем ЗАГОЛОВКОМ, а ключ строки собираем с адресом: оба отчёта висят на
+               одном коде точки, и по коду строки диагностики были бы неразличимы, а `:key` —
+               дублирующимся (Vue переиспользовал бы не ту строку при обновлении). -->
+          <b>{{ check.title ?? check.code }}</b> <code class="opacity-70">{{ check.code }}</code> —
           <template v-if="check.status === 'ok'">
-            привязана на наш адрес
+            привязан на наш адрес
           </template>
           <template v-else-if="check.status === 'missing'">
-            не зарегистрирована
+            не зарегистрирован
           </template>
           <template v-else>
-            привязана на другой адрес: {{ check.foreignHandlers.join(', ') }}
+            точка занята другим адресом: {{ check.foreignHandlers.join(', ') }}
           </template>
         </li>
       </ul>
