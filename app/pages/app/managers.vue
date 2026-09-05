@@ -12,15 +12,20 @@ import { formatCount } from '~/utils/format'
  * сектором диаграммы) открывается список сделок.
  *
  * Идея и вид взяты из прежнего отчёта «Незакрытые заказы» на самом портале: крупная кольцевая
- * диаграмма «компания → ответственный → стадия», столбик чисел рядом и таблица под ними. Но
- * считает он СДЕЛКИ и живёт снаружи, в приложении: доступа к базе портала у нас нет, а счётчики
- * REST на боевых объёмах отвечают за секунды (`docs/PORTAL.md`).
+ * диаграмма, столбик чисел рядом и таблица под ними. Но считает он СДЕЛКИ и живёт снаружи, в
+ * приложении: доступа к базе портала у нас нет, а счётчики REST на боевых объёмах отвечают за
+ * секунды (`docs/PORTAL.md`).
+ *
+ * ⚠ «Моя компания» на экране ОДНА — та, что выбрана фильтром (решение владельца 2026-09-05).
+ * Пока человек не выбрал сам, отчёт открывает самую крупную под текущим отбором, и `filters`
+ * страницы остаётся без `companyId`: это не «ничего не выбрано», а «выбирай сам» — панель
+ * подсвечивает применённую компанию по `appliedFilters`.
  */
 const b24 = useB24()
 const today = new Date()
 
 const {
-  report, categories, companyOptions, stages, dictionaries, filters: appliedFilters,
+  report, categories, companyOptions, companyTotals, stages, dictionaries, filters: appliedFilters,
   pending, step, error, truncatedManagers, truncatedCompanies,
   stagesDeferred, stagesEstimateSeconds, startStages, isDemo, load
 } = useManagerReport({ today })
@@ -84,7 +89,7 @@ const outsideNote = computed(() => {
     notes.push('Сотрудников в этом направлении больше, чем отчёт перечисляет за один проход: часть сделок ушла в строку «вне таблицы». Сузьте отбор — направлением, охватом или периодом.')
   }
   if (truncatedCompanies.value) {
-    notes.push('«Моих компаний» у сделок больше, чем отчёт перечисляет за один проход: часть из них в таблицу не попала, их сделки видны только в общем итоге.')
+    notes.push('«Моих компаний» у сделок больше, чем отчёт перечисляет за один проход: часть из них не попала даже в фильтр, и открыть их нечем. Сузьте отбор — направлением, охватом или периодом.')
   }
   if (report.value.hiddenStages > 0) {
     notes.push(`Пустых стадий скрыто: ${report.value.hiddenStages} — в них нет ни одной сделки под этим отбором.`)
@@ -129,6 +134,7 @@ async function fit() {
         :categories="categories"
         :stages="stages"
         :companies="companyOptions"
+        :company-totals="companyTotals"
         :applied-filters="booting ? undefined : appliedFilters"
         :is-demo="!booting && isDemo"
         :today="today"
@@ -141,7 +147,7 @@ async function fit() {
         </p>
         <p class="pb-6 text-center text-sm opacity-70">
           Считаем сделки портала по «моим компаниям», менеджерам и стадиям. На боевом портале это
-          около шестнадцати секунд.
+          около шести секунд за месяц.
         </p>
       </B24Card>
 
@@ -150,7 +156,7 @@ async function fit() {
           v-if="pending"
           class="text-sm opacity-70"
         >
-          {{ step ?? 'Считаем…' }} На боевом портале это около шестнадцати секунд.
+          {{ step ?? 'Считаем…' }} На боевом портале это около шести секунд за месяц.
         </p>
 
         <B24Alert

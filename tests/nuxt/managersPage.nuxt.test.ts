@@ -60,7 +60,7 @@ describe('страница «Сделки по менеджерам» вне п�
     expect(text).toContain('Распределение')
     expect(text).toContain('Сделок')
     expect(text).toContain('Менеджеров')
-    expect(text).toContain('Моих компаний')
+    expect(text).toContain('Без ответственного')
     expect(wrapper.findAll('svg path').length).toBeGreaterThan(0)
   })
 })

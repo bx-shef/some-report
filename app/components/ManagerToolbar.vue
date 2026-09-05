@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { CategoryRef, DealScope, ManagerFilters, CompanyRef, StageRef } from '~/types/managers'
 import { COMPANY_UNSET, COMPANY_UNSET_FULL_LABEL, SCOPE_LABELS, stagesForScope } from '~/utils/managerLoad'
-import { formatDate } from '~/utils/format'
+import { formatCount, formatDate } from '~/utils/format'
 
 /**
  * Панель отчёта «Сделки по менеджерам»: направление, охват, «моя компания» и период создания.
@@ -20,8 +20,10 @@ const props = defineProps<{
   categories: CategoryRef[]
   /** Все стадии выбранного направления — чтобы подписать, сколько их в охвате. */
   stages: StageRef[]
-  /** Какие «мои компании» встречаются у сделок — список для фильтра. */
+  /** Какие «мои компании» встречаются у сделок — по убыванию числа сделок. */
   companies: CompanyRef[]
+  /** Сколько сделок у каждой из них под этим отбором — числа на кнопках. */
+  companyTotals?: Record<number, number>
   /** Отбор, под которым посчитаны числа на экране. Подпись строится по нему, а не по выбранному. */
   appliedFilters?: ManagerFilters
   isDemo: boolean
@@ -33,29 +35,26 @@ const props = defineProps<{
 
 const model = defineModel<ManagerFilters>({ required: true })
 
-/** «Все компании» — отсутствие фильтра. Ноль занят: это «Без моей компании». */
-const ALL_COMPANIES = -1
-
 const categoryItems = computed(() => props.categories.map(category => ({ id: category.id, label: category.name })))
 
 const scopeItems = (Object.keys(SCOPE_LABELS) as DealScope[]).map(scope => ({ id: scope, label: SCOPE_LABELS[scope] }))
 
 /**
- * Пункты фильтра «Моя компания»: все, каждая компания и «Без моей компании».
+ * Кнопки фильтра «Моя компания» — как кнопки периода, и по той же причине: их видно все сразу,
+ * вместе с числами, и выбор — одно нажатие вместо «открыть список, найти, нажать».
  *
- * ⚠ «Без моей компании» — такой же пункт, как остальные, а не служебная строка внизу экрана.
- * Решение владельца от 2026-09-05: на боевом портале поле заполнено у 8 % сделок, и человек сам
- * решает, смотреть их отдельно или вместе со всеми.
+ * ⚠ Компания показывается ОДНА за раз (решение владельца от 2026-09-05). Пункта «все» нет: круг,
+ * поделённый между компаниями, отдавал одной почти всё (на боевом портале 599 сделок против
+ * одной), и менеджеры — то, ради чего отчёт открывают, — сжимались в штриховку по краю.
+ *
+ * ⚠ «Без моей компании» — такая же кнопка, как остальные, а не служебная строка внизу экрана: на
+ * боевом портале за всё время это самая крупная группа, и человек сам решает, смотреть её или нет.
  */
-const companyItems = computed(() => [
-  { id: ALL_COMPANIES, label: 'Все компании' },
-  ...props.companies.map(company => ({
-    id: company.id,
-    label: company.id === COMPANY_UNSET ? COMPANY_UNSET_FULL_LABEL : company.name
-  }))
-])
-
-const companyValue = computed(() => model.value.companyId ?? ALL_COMPANIES)
+const companyButtons = computed(() => props.companies.map(company => ({
+  id: company.id,
+  label: company.id === COMPANY_UNSET ? COMPANY_UNSET_FULL_LABEL : company.name,
+  total: props.companyTotals?.[company.id]
+})))
 
 function pickCategory(value: unknown): void {
   const categoryId = Number(value)
@@ -74,20 +73,28 @@ function pickScope(value: unknown): void {
 /**
  * Выбор «моей компании».
  *
- * ⚠ Ноль — полноценное значение («Без моей компании»), поэтому «все» помечены `-1`, а ключ
- * `companyId` при выборе «всех» УДАЛЯЕТСЯ из отбора: `companyId: undefined` в объекте отличается
- * от отсутствия ключа при сравнении отборов и при сохранении их в настройки пользователя.
+ * ⚠ Ноль — полноценное значение («Без моей компании»), а не «не задано»: сравнение идёт с
+ * `undefined`. Повторное нажатие на уже выбранную кнопку в портал не уходит — это полная выборка
+ * отчёта, секунды запросов, ради того же самого экрана.
  */
-function pickCompany(value: unknown): void {
-  const companyId = Number(value)
-  if (!Number.isFinite(companyId)) return
-  if (companyId === ALL_COMPANIES) {
-    const { companyId: _all, ...rest } = model.value
-    model.value = rest
-    return
-  }
+function pickCompany(companyId: number): void {
+  if (props.disabled || selectedCompany.value === companyId) return
   model.value = { ...model.value, companyId }
 }
+
+/**
+ * Какая кнопка подсвечена.
+ *
+ * ⚠ Не `model.companyId`, а «выбранная человеком ИЛИ применённая отчётом». Компанию можно не
+ * выбирать вовсе — тогда её выбирает отчёт (самую крупную под отбором) и присылает в
+ * `appliedFilters`. По одному `model` не была бы подсвечена ни одна кнопка при том, что на экране
+ * конкретная компания, а первое нажатие на неё же считалось бы сменой отбора и уходило бы в
+ * портал за тем же самым экраном.
+ *
+ * ⚠ Порядок именно такой: выбор человека важнее применённого. Иначе, пока идёт выборка, кнопка
+ * оставалась бы подсвеченной на прошлой компании — той, которую уже не показывают.
+ */
+const selectedCompany = computed(() => model.value.companyId ?? props.appliedFilters?.companyId)
 
 /** Подпись под панелью: по чему именно посчитаны числа на экране. */
 const appliedText = computed(() => {
@@ -96,7 +103,7 @@ const appliedText = computed(() => {
   const category = props.categories.find(item => item.id === applied.categoryId)?.name ?? `направление #${applied.categoryId}`
   const inScope = stagesForScope(props.stages, applied.scope).length
   const company = applied.companyId === undefined
-    ? 'все компании'
+    ? 'компания не выбрана'
     : applied.companyId === COMPANY_UNSET
       ? COMPANY_UNSET_FULL_LABEL.toLowerCase()
       : (props.companies.find(item => item.id === applied.companyId)?.name ?? `компания #${applied.companyId}`)
@@ -156,20 +163,35 @@ const appliedText = computed(() => {
         class="w-40"
         @update:model-value="pickScope"
       />
-      <B24SelectMenu
-        :model-value="companyValue"
-        :items="companyItems"
-        value-key="id"
-        label-key="label"
-        placeholder="Моя компания"
-        aria-label="Моя компания"
-        size="sm"
-        :search-input="false"
-        :disabled="disabled || companyItems.length < 2"
-        class="w-56"
-        data-testid="company-filter"
-        @update:model-value="pickCompany"
-      />
+    </div>
+
+    <!-- Компания — кнопками, как период: их видно все сразу, вместе с числами. -->
+    <div
+      v-if="companyButtons.length"
+      role="group"
+      aria-label="Моя компания"
+      class="flex flex-wrap items-center gap-2"
+      data-export-exclude
+      data-testid="company-filter"
+    >
+      <span class="text-xs opacity-60">Моя компания:</span>
+      <button
+        v-for="company in companyButtons"
+        :key="company.id"
+        type="button"
+        class="rounded-lg border border-[color:var(--chart-track)] px-2.5 py-1 text-sm transition-colors"
+        :class="selectedCompany === company.id
+          ? 'bg-[color:var(--chart-1)] text-[color:var(--chart-1-ink)]'
+          : 'hover:bg-[color:var(--chart-track)]'"
+        :aria-pressed="selectedCompany === company.id"
+        :disabled="disabled"
+        @click="pickCompany(company.id)"
+      >
+        {{ company.label }}<span
+          v-if="company.total !== undefined"
+          class="ml-1.5 tabular-nums opacity-70"
+        >{{ formatCount(company.total) }}</span>
+      </button>
     </div>
 
     <PeriodPicker

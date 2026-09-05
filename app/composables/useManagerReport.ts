@@ -6,11 +6,13 @@ import { adaptCategories, adaptStages, stageNames, type B24CategoryRow } from '~
 import {
   buildManagerLoad,
   emptyManagerLoad,
+  companyKey,
   COMPANY_UNSET,
   COMPANY_UNSET_LABEL,
   pairKey,
   stageCountSeconds,
-  stagesForScope
+  stagesForScope,
+  totalKey
 } from '~/utils/managerLoad'
 import {
   cellCountRequests,
@@ -29,7 +31,16 @@ import {
   stageListParams,
   type LoadPair
 } from '~/utils/managerQuery'
-import { buildMockManagerReport, MOCK_CATEGORIES, MOCK_COMPANIES, MOCK_MANAGERS, MOCK_STAGES } from '~/utils/mockManagers'
+import {
+  buildMockManagerReport,
+  mockCompanyTotals,
+  mockManagerDeals,
+  MOCK_CATEGORIES,
+  MOCK_COMPANIES,
+  MOCK_MANAGERS,
+  MOCK_STAGES,
+  pickLargestMockCompany
+} from '~/utils/mockManagers'
 import { resolvePreset } from '~/utils/period'
 
 /**
@@ -38,13 +49,18 @@ import { resolvePreset } from '~/utils/period'
  * Слои те же, что в отчёте по лидам: `managerQuery.ts` знает, что спросить, `managerLoad.ts` —
  * как посчитать, здесь только склейка, состояния загрузки и защита от гонки ответов.
  *
- * Порядок выборки (замер по боевому порталу 2026-09-05, ≈ 16 с на направление):
+ * Порядок выборки (замер по боевому порталу 2026-09-05, ≈ 6 с и 18 запросов на месяц):
  * 1. направления и стадии выбранного направления — справочники;
  * 2. ПЕРЕЧИСЛЕНИЕ компаний и менеджеров цепочкой в пакете — по самим сделкам, а не по списку
  *    сотрудников: у уволенных сделки остаются, а `user.get` их не отдаёт;
- * 3. счётчики «сколько» по компаниям и парам «компания + менеджер»;
- * 4. счётчики по клеткам — только для непустых пар (иначе вопросов было бы в разы больше);
+ * 3. счётчики по КАЖДОЙ компании — числа на кнопках фильтра и ответ на вопрос, какую компанию
+ *    открыть первой;
+ * 4. счётчики пар «компания + менеджер» и клеток — уже только для ВЫБРАННОЙ компании;
  * 5. имена: компании — из CRM, сотрудники — из `user.get` (право `user_brief`).
+ *
+ * ⚠ Шаги 4 и 5 идут по ОДНОЙ компании (решение владельца 2026-09-05), и это не мелочь про экран:
+ * двумя компаниями клеток на боевом портале было бы 812 при пороге `CELL_AUTO_MAX` = 800 —
+ * отчёт уходил бы в режим «стадии по кнопке» и показывал одни итоги.
  *
  * ⚠ Вне портала остаётся демонстрационный набор, и `isDemo` обязан это показывать: отчёт, молча
  * выдающий чужие числа за данные клиента, хуже отсутствующего отчёта.
@@ -63,11 +79,13 @@ export const COMPANY_CHAIN_PAGES = 5
 /**
  * Сколько вопросов «сколько» по клеткам матрицы отчёт задаёт САМ, не спрашивая человека.
  *
- * ⚠ Клетки — это «пары × стадии», и число их растёт произведением. На боевом портале в охвате
- * «в работе» их 384 (8 пакетов, 5 секунд), а в охвате «все стадии» на том же направлении было бы
- * около трёх тысяч — минуты ожидания под обещание «пятнадцать секунд». Поэтому выше порога
- * стадии считаются ПО КНОПКЕ, а до неё на экране матрица с итогами: это честнее, чем молча
- * заставить ждать (тот же приём, что у фоновых выборок отчёта по лидам).
+ * ⚠ Клетки — это «пары × стадии», и число их растёт произведением. На боевом портале заказчика
+ * порог теперь не достаётся: одна компания за месяц — 406 клеток (9 пакетов, 2,3 с), она же за
+ * год во всех стадиях — 512. Убирать предохранитель поэтому нельзя: у портала с сотней
+ * ответственных те же 16 стадий дают полторы тысячи вопросов — минуты ожидания под обещание
+ * «несколько секунд». Выше порога стадии считаются ПО КНОПКЕ, а до неё на экране матрица с
+ * итогами: это честнее, чем молча заставить ждать (тот же приём, что у фоновых выборок отчёта
+ * по лидам).
  */
 export const CELL_AUTO_MAX = 800
 
@@ -109,9 +127,17 @@ export function useManagerReport(options: { today?: Date } = {}) {
    * Какие «мои компании» вообще встречаются у сделок отбора — список для фильтра в панели.
    *
    * ⚠ Собирается БЕЗ учёта выбранной компании (`managerScanFilter`): иначе, выбрав одну, человек
-   * получил бы список из неё одной и не смог бы вернуться ко всем.
+   * получил бы список из неё одной и не смог бы вернуться к другим.
    */
   const companyOptions = ref<CompanyRef[]>([])
+  /**
+   * Сколько сделок у каждой «моей компании» под отбором — числа на кнопках фильтра.
+   *
+   * ⚠ Считаются ВСЕГДА, даже когда компания уже выбрана. Стоит это одного пакета счётчиков
+   * (компаний единицы), а даёт две вещи: человек видит, что лежит за соседней кнопкой, ещё не
+   * нажав её, и отчёт знает, какую компанию открыть первой.
+   */
+  const companyTotals = ref<Record<number, number>>({})
   /**
    * Справочники для подписей списка по клику: источники сделок, имена стадий направления и
    * сотрудники. Сам отчёт в них не нуждается — числа считает портал, — но список сделок без них
@@ -283,10 +309,17 @@ export function useManagerReport(options: { today?: Date } = {}) {
     await b24.init()
     if (!b24.isInit()) {
       const demoStages = MOCK_STAGES[next.categoryId] ?? []
+      const demoDeals = mockManagerDeals(today)
+      // Компания и здесь ОДНА: предпросмотр обязан показывать то же устройство экрана, что и
+      // портал, — иначе он учит человека тому, чего в отчёте нет.
+      const demoCompanyId = next.companyId ?? pickLargestMockCompany(demoDeals, next)
+      const demoFilters: ManagerFilters = { ...next, companyId: demoCompanyId }
       categories.value = MOCK_CATEGORIES
       stages.value = demoStages
-      companyOptions.value = MOCK_COMPANIES
-      report.value = buildMockManagerReport(next, today)
+      companyTotals.value = mockCompanyTotals(demoDeals, next)
+      companyOptions.value = [...MOCK_COMPANIES]
+        .sort((a, b) => (companyTotals.value[b.id] ?? 0) - (companyTotals.value[a.id] ?? 0) || a.name.localeCompare(b.name, 'ru'))
+      report.value = buildMockManagerReport(demoFilters, today)
       dictionaries.value = {
         sources: {},
         junkReasons: {},
@@ -294,7 +327,7 @@ export function useManagerReport(options: { today?: Date } = {}) {
         dealStages: stageNames(demoStages),
         users: Object.fromEntries(MOCK_MANAGERS.map(manager => [String(manager.id), manager.name]))
       }
-      filters.value = next
+      filters.value = demoFilters
       return
     }
 
@@ -319,8 +352,9 @@ export function useManagerReport(options: { today?: Date } = {}) {
         ? next.categoryId
         : categoryList[0]!.id
       const applied: ManagerFilters = { ...next, categoryId }
-      const base = managerDealFilter(applied)
-      // Перечисление компаний идёт по отбору БЕЗ компании — см. `companyOptions`.
+      // ⚠ Перечисление компаний и их итоги идут по отбору БЕЗ компании: иначе, выбрав одну,
+      // человек получил бы кнопку из неё одной и не смог бы переключиться на другую. Фильтр с
+      // компанией (`managerDealFilter`) собирается ниже, когда она уже выбрана.
       const scan = managerScanFilter(applied)
 
       // Стадии направления и источники — одним пакетом: два круга по сети вместо одного стоят
@@ -333,30 +367,59 @@ export function useManagerReport(options: { today?: Date } = {}) {
       const allStages = adaptStages(books.stages ?? [])
       const scopeStages = stagesForScope(allStages, applied.scope)
 
-      step.value = 'Ищем компании и менеджеров'
+      step.value = 'Ищем «мои компании»'
       const companyChain = await enumerate(COMPANY_FIELD, scan, COMPANY_CHAIN_SIZE, COMPANY_CHAIN_PAGES, 'o', stale)
       if (stale()) return
-      const managerChain = await enumerate(MANAGER_FIELD, base, CHAIN_SIZE, MANAGER_CHAIN_PAGES, 'm', stale)
-      if (stale()) return
       // «Не указана» цепочкой не находится (перечисление идёт со значений больше нуля) — это
-      // отдельная группа, и на боевом портале она самая крупная.
+      // отдельная группа, и за всё время она на боевом портале самая крупная.
       const knownCompanyIds = [...companyChain.ids, COMPANY_UNSET]
-      // Считаем только то, что показываем: под выбранной компанией вопросы по остальным — это
-      // сотни лишних счётчиков ради чисел, которых на экране не будет.
-      const companyIds = applied.companyId === undefined ? knownCompanyIds : [applied.companyId]
+
+      // Итоги по каждой компании — один пакет. Из них берутся и числа на кнопках фильтра, и
+      // ответ на вопрос «какую компанию открыть, если человек ещё не выбирал».
+      const companyBatch = countBatch(companyCountRequests(knownCompanyIds, scan))
+      const scanTotals: Record<string, number> = {}
+      collectTotals(await batchTotals(companyBatch.commands), companyBatch.keyByCommand, scanTotals)
+      if (stale()) return
+      const totalsByCompany: Record<number, number> = {}
+      for (const id of knownCompanyIds) totalsByCompany[id] = scanTotals[companyKey(id)] ?? 0
+
+      /**
+       * Компания на экране — ОДНА (решение владельца от 2026-09-05).
+       *
+       * ⚠ Выбор человека не подменяем даже когда под ним ноль сделок: экран честно скажет «под
+       * этим отбором сделок нет», а молчаливая подмена выглядела бы как «отчёт показывает не то,
+       * что я выбрал». Сами выбираем только когда не выбрал никто — самую крупную.
+       */
+      const companyId = applied.companyId ?? [...knownCompanyIds]
+        .sort((a, b) => (totalsByCompany[b] ?? 0) - (totalsByCompany[a] ?? 0) || a - b)[0] ?? COMPANY_UNSET
+      const picked: ManagerFilters = { ...applied, companyId }
+      const pickedBase = managerDealFilter(picked)
+      const companyIds = [companyId]
+
+      step.value = 'Ищем менеджеров'
+      const managerChain = await enumerate(MANAGER_FIELD, pickedBase, CHAIN_SIZE, MANAGER_CHAIN_PAGES, 'm', stale)
+      if (stale()) return
 
       step.value = `Считаем сделки: ${managerChain.ids.length} сотрудников`
+      // ⚠ Счётчики перечисления сюда НЕ переносим. Там `totalKey` — итог по ВСЕМ компаниям, а
+      // `collectTotals` складывает значения по ключу: итог отбора удвоился бы, сложившись с
+      // итогом выбранной компании. Числа для кнопок фильтра живут отдельно (`totalsByCompany`).
       const totals: Record<string, number> = {}
-      // Итоги компаний, итоги колонок и пары «компания + менеджер» — одним заходом. Итоги колонок
+      // Итог отбора, итоги колонок и пары «компания + менеджер» — одним заходом. Итоги колонок
       // спрашиваются отдельно, а не суммируются из клеток: в сумму не попали бы сделки без
       // ответственного, и клик по итогу колонки открывал бы список длиннее числа над ним.
+      //
+      // ⚠ Итог компании порталу НЕ задаётся: компания в отборе одна, и `MYCOMPANY_ID` уже стоит
+      // в `pickedBase` — вопрос «сколько всего» и вопрос «сколько у этой компании» стали одним и
+      // тем же фильтром. Отдельный счётчик был бы вторым проходом портала по тому же множеству.
       const pairsBatch = countBatch([
-        ...companyCountRequests(companyIds, base),
-        ...companyStageCountRequests(companyIds, scopeStages.map(stage => stage.id), base),
-        ...pairCountRequests(companyIds, managerChain.ids, base)
+        { key: totalKey(), filter: { ...pickedBase } },
+        ...companyStageCountRequests(companyIds, scopeStages.map(stage => stage.id), pickedBase),
+        ...pairCountRequests(companyIds, managerChain.ids, pickedBase)
       ])
       collectTotals(await batchTotals(pairsBatch.commands), pairsBatch.keyByCommand, totals)
       if (stale()) return
+      totals[companyKey(companyId)] = totals[totalKey()] ?? 0
 
       // Вопросы по стадиям — только для пар, у которых сделки есть. Пустые пары дали бы столько
       // же вопросов, сколько непустые, и на пустом направлении отчёт ждал бы минуту впустую.
@@ -373,7 +436,7 @@ export function useManagerReport(options: { today?: Date } = {}) {
       const countCells = cells > 0 && cells <= CELL_AUTO_MAX
       if (countCells) {
         step.value = `Считаем стадии: ${pairs.length} строк × ${scopeStages.length}`
-        await countStages(pairs, scopeStages, base, totals, mine)
+        await countStages(pairs, scopeStages, pickedBase, totals, mine)
         if (stale()) return
       } else if (cells > 0) {
         stagesDeferred.value = true
@@ -386,15 +449,31 @@ export function useManagerReport(options: { today?: Date } = {}) {
 
       const nameOf = (id: number): string =>
         id === COMPANY_UNSET ? COMPANY_UNSET_LABEL : (companyNames[id] ?? `Компания #${id}`)
+
       const companies: CompanyRef[] = companyIds.map(id => ({ id, name: nameOf(id) }))
       const managers: ManagerRef[] = managerChain.ids.map(id => ({ id, name: users[String(id)] ?? `Сотрудник #${id}` }))
 
       // Отложенные стадии — таблица БЕЗ колонок, а не с пустыми: иначе каждая строка показала бы
       // все свои сделки как «прочие стадии», то есть неправду.
       report.value = buildManagerLoad({ companies, managers, stages: stagesDeferred.value ? [] : scopeStages, totals })
-      if (stagesDeferred.value) deferred = { companies, managers, stages: scopeStages, pairs, base, totals, mine }
+      if (stagesDeferred.value) deferred = { companies, managers, stages: scopeStages, pairs, base: pickedBase, totals, mine }
       stages.value = allStages
-      companyOptions.value = knownCompanyIds.map(id => ({ id, name: nameOf(id) }))
+      // Кнопки: крупные компании первыми, при равенстве — по имени. Порядок по идентификатору
+      // выглядел бы случайным: у портала он про время создания компании, а не про её вес.
+      //
+      // ⚠ Выбранная компания остаётся кнопкой, даже если под новым отбором сделок у неё нет:
+      // перечисление идёт ПО СДЕЛКАМ, и пустая компания в нём не находится. Без этой строки
+      // человек, сменивший период, терял бы кнопку своего же выбора — отчёт показывал бы «сделок
+      // нет» и ни одной подсвеченной кнопки, а вернуться было бы нечем.
+      const buttonIds = knownCompanyIds.includes(companyId) ? knownCompanyIds : [...knownCompanyIds, companyId]
+      companyOptions.value = buttonIds
+        .map(id => ({ id, name: nameOf(id) }))
+        .sort((a, b) =>
+          (totalsByCompany[b.id] ?? 0) - (totalsByCompany[a.id] ?? 0)
+          || a.name.localeCompare(b.name, 'ru')
+          || a.id - b.id
+        )
+      companyTotals.value = { ...totalsByCompany, [companyId]: totalsByCompany[companyId] ?? 0 }
       dictionaries.value = {
         sources: statusNames(books.sources ?? []),
         junkReasons: {},
@@ -402,7 +481,7 @@ export function useManagerReport(options: { today?: Date } = {}) {
         dealStages: stageNames(allStages),
         users
       }
-      filters.value = applied
+      filters.value = picked
       truncatedManagers.value = managerChain.truncated
       truncatedCompanies.value = companyChain.truncated
       source.value = 'portal'
@@ -422,6 +501,7 @@ export function useManagerReport(options: { today?: Date } = {}) {
     report,
     categories,
     companyOptions,
+    companyTotals,
     stages,
     dictionaries,
     filters,
