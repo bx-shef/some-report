@@ -175,13 +175,36 @@ export function mockTotals(deals: readonly MockManagerDeal[]): Record<string, nu
   return totals
 }
 
-/** Демонстрационный отчёт под текущим отбором. */
+/** Сколько сделок у каждой «моей компании» под отбором — числа на кнопках фильтра. */
+export function mockCompanyTotals(deals: readonly MockManagerDeal[], filters: ManagerFilters): Record<number, number> {
+  const out: Record<number, number> = {}
+  for (const company of MOCK_COMPANIES) {
+    out[company.id] = filterMockDeals(deals, { ...filters, companyId: company.id }).length
+  }
+  return out
+}
+
+/** Какая «моя компания» крупнее под этим отбором — её демо-отчёт и открывает. */
+export function pickLargestMockCompany(deals: readonly MockManagerDeal[], filters: ManagerFilters): number {
+  const counts = MOCK_COMPANIES.map(company => ({
+    id: company.id,
+    total: filterMockDeals(deals, { ...filters, companyId: company.id }).length
+  }))
+  return counts.sort((a, b) => b.total - a.total || a.id - b.id)[0]?.id ?? COMPANY_UNSET
+}
+
+/**
+ * Демонстрационный отчёт под текущим отбором.
+ *
+ * ⚠ Компания ОДНА, как на живом портале: не выбрана — берём самую крупную. Иначе предпросмотр
+ * показывал бы устройство экрана, которого в портале не бывает.
+ */
 export function buildMockManagerReport(filters: ManagerFilters, today: Date): ManagerLoadReport {
-  const deals = filterMockDeals(mockManagerDeals(today), filters)
+  const all = mockManagerDeals(today)
+  const companyId = filters.companyId ?? pickLargestMockCompany(all, filters)
+  const deals = filterMockDeals(all, { ...filters, companyId })
   return buildManagerLoad({
-    // ⚠ Компании берём ВСЕ, а не только выбранную: пустые группы ядро и так отбрасывает, а
-    // список «какие компании вообще есть» на живом портале тоже собирается без учёта фильтра.
-    companies: MOCK_COMPANIES,
+    companies: MOCK_COMPANIES.filter(company => company.id === companyId),
     managers: MOCK_MANAGERS,
     stages: stagesForScope(MOCK_STAGES[filters.categoryId] ?? [], filters.scope),
     totals: mockTotals(deals)

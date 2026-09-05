@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildMockManagerReport,
+  pickLargestMockCompany,
   filterMockDeals,
   MOCK_CATEGORIES,
   MOCK_STAGES,
@@ -73,9 +74,15 @@ describe('демо-набор', () => {
     expect(unset.every(d => d.companyId === COMPANY_UNSET)).toBe(true)
   })
 
-  // Ровно то, ради чего набор задан сделками: сумма клеток сходится с итогом строки и компании.
+  /**
+   * Ровно то, ради чего набор задан сделками: сумма клеток сходится с итогом строки и компании.
+   *
+   * ⚠ Компания на экране ОДНА (решение владельца от 2026-09-05), поэтому и сверяем с её сделками,
+   * а не со всеми: отчёт показывает выбранную компанию, а не сумму по портфелю.
+   */
   it('итоги отчёта сходятся со сделками набора', () => {
-    const filters = { categoryId: 0, scope: 'in-work' as const, period: MONTH }
+    const base = { categoryId: 0, scope: 'in-work' as const, period: MONTH }
+    const filters = { ...base, companyId: pickLargestMockCompany(deals, base) }
     const selected = filterMockDeals(deals, filters)
     const report = buildMockManagerReport(filters, TODAY)
     expect(report.total).toBe(selected.length)
@@ -92,12 +99,22 @@ describe('демо-набор', () => {
     expect(mockTotals(selected).t).toBe(selected.length)
   })
 
-  // Группа «Не указана» в наборе есть — как на боевом портале. Особого места в порядке у неё
-  // больше нет (решение владельца от 2026-09-05): сортируется по числу сделок, как все.
-  it('группа «без моей компании» в наборе есть и стоит в общем порядке', () => {
-    const report = buildMockManagerReport({ categoryId: 0, scope: 'in-work', period: MONTH }, TODAY)
-    const unset = report.companies.find(company => company.companyId === COMPANY_UNSET)
-    expect(unset?.total).toBeGreaterThan(0)
-    expect(report.companies.map(company => company.total)).toEqual([...report.companies.map(company => company.total)].sort((a, b) => b - a))
+  // Группа «Не указана» в наборе есть — как на боевом портале, и открывается такой же кнопкой
+  // фильтра, как любая компания.
+  it('группу «без моей компании» можно открыть фильтром', () => {
+    const report = buildMockManagerReport({ categoryId: 0, scope: 'in-work', period: MONTH, companyId: COMPANY_UNSET }, TODAY)
+    expect(report.companies.map(company => company.companyId)).toEqual([COMPANY_UNSET])
+    expect(report.total).toBeGreaterThan(0)
+  })
+
+  /**
+   * ⚠ Компания на экране ОДНА. Не выбрана — берём самую крупную: показывать «всё сразу» нельзя,
+   * иначе предпросмотр показывал бы устройство экрана, которого в портале не бывает.
+   */
+  it('без выбора компании отчёт открывает самую крупную', () => {
+    const filters = { categoryId: 0, scope: 'in-work' as const, period: MONTH }
+    const report = buildMockManagerReport(filters, TODAY)
+    expect(report.companies).toHaveLength(1)
+    expect(report.companies[0]!.companyId).toBe(pickLargestMockCompany(deals, filters))
   })
 })

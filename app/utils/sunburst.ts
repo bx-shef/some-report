@@ -20,6 +20,12 @@ import { ringSlice } from '~/utils/donut'
 export interface SunburstNode {
   key: string
   label: string
+  /**
+   * Короткая подпись для сектора, если полная туда не влезет: «Авдеева М.» вместо «Авдеева
+   * Мария». В подсказке и в легенде всё равно остаётся `label` — сокращение нужно только там,
+   * где место меряется миллиметрами кольца.
+   */
+  short?: string
   value: number
   children?: SunburstNode[]
 }
@@ -41,12 +47,18 @@ export interface SunburstGeometry {
   minDegrees: number
 }
 
-/** Кольца в единицах viewBox 100 × 100: центр 50, внешний радиус 49. */
+/**
+ * Кольца в единицах viewBox 100 × 100: центр 50, внешний радиус 48.
+ *
+ * ⚠ Кольца ТОЛСТЫЕ не для красоты: в них пишутся подписи — имена менеджеров и названия стадий,
+ * как в прежнем отчёте заказчика. При тонком кольце в сектор влезало бы три буквы, и подписи
+ * пришлось бы убрать, оставив человека наедине с цветными дугами и легендой сбоку.
+ */
 export const DEFAULT_SUNBURST: SunburstGeometry = {
-  innerRadius: 17,
-  ringThickness: 10.5,
-  gapDegrees: 1.2,
-  minDegrees: 0.6
+  innerRadius: 11,
+  ringThickness: 18.5,
+  gapDegrees: 0.8,
+  minDegrees: 0.4
 }
 
 export interface SunburstArc {
@@ -57,10 +69,21 @@ export interface SunburstArc {
   share: number
   /** Номер кольца: 0 — внутреннее. */
   depth: number
-  /** Ключ корневого предка: по нему берётся цвет, чтобы кольца одной компании были одного тона. */
+  /** Ключ корневого предка: по нему берётся цвет, чтобы кольца одной ветки были одного тона. */
   rootKey: string
+  /** Подпись для сектора: короткая, если она задана узлом. */
+  short: string
   /** Готовый атрибут `d` для `<path>`. */
   path: string
+  /**
+   * Куда и как писать подпись прямо в секторе — как в прежнем отчёте заказчика, где имена
+   * менеджеров и названия стадий читались с самой диаграммы, а не только из легенды.
+   *
+   * ⚠ Влезет ли текст, решает НЕ этот модуль: здесь только место в единицах viewBox — `along`
+   * вдоль радиуса (это толщина кольца) и `across` поперёк (длина дуги по середине кольца).
+   * Размер шрифта и обрезку знает компонент: тут о шрифте ничего не известно.
+   */
+  labelAt: { x: number, y: number, rotate: number, along: number, across: number }
 }
 
 interface Layout {
@@ -134,14 +157,29 @@ export function sunburstArcs(
     // живой: у заказчика «моя компания» заполнена у 8 % сделок, и направление с одной компанией
     // (или с одним менеджером внутри неё) — обычное дело.
     const gap = span >= 359.99 ? 0 : Math.min(geometry.gapDegrees, span / 3)
+    // Подпись ставится по СЕРЕДИНЕ кольца и поворачивается вдоль радиуса: так её ширина
+    // ограничена толщиной кольца, а не длиной дуги, и одинаково читается в любой части круга.
+    const middle = (item.start + item.end) / 2
+    const midRadius = (inner + outer) / 2
+    const radians = ((middle - 90) * Math.PI) / 180
     arcs.push({
       key: item.node.key,
       label: item.node.label,
+      short: item.node.short ?? item.node.label,
       value: item.node.value,
       share: item.node.value / total,
       depth: item.depth,
       rootKey: item.rootKey,
-      path: ringSlice(center, center, outer, inner, item.start + gap / 2, item.end - gap / 2)
+      path: ringSlice(center, center, outer, inner, item.start + gap / 2, item.end - gap / 2),
+      labelAt: {
+        x: center + midRadius * Math.cos(radians),
+        y: center + midRadius * Math.sin(radians),
+        // ⚠ В левой половине круга текст переворачиваем: иначе он идёт вверх ногами, а такое
+        // читается не лучше, чем его отсутствие.
+        rotate: middle > 180 ? middle + 90 : middle - 90,
+        along: outer - inner,
+        across: (span * Math.PI / 180) * midRadius
+      }
     })
   }
   return arcs

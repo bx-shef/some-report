@@ -199,17 +199,45 @@ beforeEach(() => {
 })
 
 describe('useManagerReport: живая выборка', () => {
-  it('строит матрицу компания → менеджер → стадия по счётчикам портала', async () => {
+  /**
+   * ⚠ Компания на экране ОДНА (решение владельца от 2026-09-05), и не выбранную человеком отчёт
+   * подбирает сам — самую крупную. В модели портала это «Минск»: три сделки против одной у
+   * «Гомеля» и одной без компании.
+   */
+  it('строит матрицу менеджер → стадия по самой крупной компании', async () => {
     const state = useManagerReport({ today: TODAY })
     await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
 
-    expect(state.report.value.total).toBe(5)
-    expect(state.report.value.companies.map(company => company.companyId)).toEqual([10, 20, COMPANY_UNSET])
+    expect(state.filters.value.companyId).toBe(10)
+    expect(state.report.value.companies.map(company => company.companyId)).toEqual([10])
+    expect(state.report.value.total).toBe(3)
     const minsk = state.report.value.companies[0]!
     expect(minsk.companyName).toBe('Минск')
-    expect(minsk.total).toBe(3)
     expect(minsk.rows.map(row => [row.managerName, row.total])).toEqual([['Иванов Иван', 2], ['Петров Пётр', 1]])
     expect(minsk.rows[0]!.byStage).toEqual({ NEW: 1, 1: 1 })
+  })
+
+  /**
+   * ⚠ Список компаний и числа на кнопках собираются БЕЗ фильтра компании: иначе, выбрав одну,
+   * человек получил бы кнопку из неё одной и не смог бы переключиться на другую.
+   */
+  it('кнопки фильтра знают все компании и их числа', async () => {
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD, companyId: 20 })
+
+    expect(state.report.value.total).toBe(1)
+    expect(state.companyOptions.value.map(company => company.id)).toEqual([10, 20, COMPANY_UNSET])
+    expect(state.companyTotals.value).toEqual({ 10: 3, 20: 1, [COMPANY_UNSET]: 1 })
+  })
+
+  // Выбор человека не подменяем даже когда под ним ноль сделок: экран честно скажет «сделок
+  // нет», а молчаливая подмена читалась бы как «отчёт показывает не то, что я выбрал».
+  it('пустая компания остаётся выбранной, а не подменяется крупной', async () => {
+    portal.deals = [deal(1, 10, 1, 'NEW')]
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD, companyId: COMPANY_UNSET })
+    expect(state.filters.value.companyId).toBe(COMPANY_UNSET)
+    expect(state.report.value.total).toBe(0)
   })
 
   it('колонки — только стадии охвата, успешная стадия в «в работе» не попадает', async () => {
@@ -259,7 +287,7 @@ describe('useManagerReport: живая выборка', () => {
     const state = useManagerReport({ today: TODAY })
     await state.load({ categoryId: 42, scope: 'in-work', period: PERIOD })
     expect(state.filters.value.categoryId).toBe(0)
-    expect(state.report.value.total).toBe(5)
+    expect(state.report.value.total).toBe(3)
   })
 
   it('без списка сотрудников отчёт остаётся, а строки подписаны номером', async () => {
@@ -303,8 +331,9 @@ describe('useManagerReport: сколько стоит выборка', () => {
   it('пакетов ровно столько, сколько шагов выборки', async () => {
     const state = useManagerReport({ today: TODAY })
     await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
-    // справочники + цепочка компаний + цепочка менеджеров + счётчики (компании, колонки, пары) + клетки
-    expect(portal.batches).toBe(5)
+    // справочники + цепочка компаний + счётчики компаний (числа кнопок и выбор крупнейшей) +
+    // цепочка менеджеров + счётчики (итог, колонки, пары) + клетки
+    expect(portal.batches).toBe(6)
   })
 
   it('счётчики клеток спрашиваются только по непустым парам', async () => {
@@ -312,7 +341,7 @@ describe('useManagerReport: сколько стоит выборка', () => {
     // Направление 1: одна сделка, значит одна пара — клеток столько же, сколько стадий охвата.
     await state.load({ categoryId: 1, scope: 'in-work', period: PERIOD })
     expect(state.report.value.total).toBe(1)
-    expect(portal.batches).toBe(5)
+    expect(portal.batches).toBe(6)
   })
 })
 

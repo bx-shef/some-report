@@ -20,7 +20,7 @@ const b24 = useB24()
 const today = new Date()
 
 const {
-  report, categories, companyOptions, stages, dictionaries, filters: appliedFilters,
+  report, categories, companyOptions, companyTotals, stages, dictionaries, filters: appliedFilters,
   pending, step, error, truncatedManagers, truncatedCompanies,
   stagesDeferred, stagesEstimateSeconds, startStages, isDemo, load
 } = useManagerReport({ today })
@@ -129,6 +129,7 @@ async function fit() {
         :categories="categories"
         :stages="stages"
         :companies="companyOptions"
+        :company-totals="companyTotals"
         :applied-filters="booting ? undefined : appliedFilters"
         :is-demo="!booting && isDemo"
         :today="today"
