@@ -107,7 +107,7 @@ export function placementHandlers(siteUrl: string): Array<{ code: string, title:
  * ⚠ Ссылку на раздел даём обычным `<a>`, а не через `slider.openPath`: тот открывает только
  * ограниченный список путей (карточки CRM, маркетплейс, профили) и на `/report/analytics/`
  * молча ничего не сделает. Значение подтверждено самим порталом: он присылает этот путь в
- * `PLACEMENT_OPTIONS.URI` при открытии обеих наших точек.
+ * `PLACEMENT_OPTIONS.URI` при открытии любой из наших точек.
  */
 export const PORTAL_ANALYTICS_PATH = '/report/analytics/'
 

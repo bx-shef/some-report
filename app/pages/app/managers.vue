@@ -5,6 +5,7 @@ import { managerDealFilter } from '~/utils/managerQuery'
 import { SCOPE_LABELS } from '~/utils/managerLoad'
 import { decodeManagersState, encodeManagersState, MANAGERS_OPTION_KEY } from '~/utils/savedFilters'
 import { formatCount } from '~/utils/format'
+import { reportTitle } from '~/utils/pageTitle'
 
 /**
  * Отчёт «Сделки по менеджерам»: сколько сделок у каждого менеджера в каждой «моей компании» и на
@@ -49,7 +50,7 @@ const {
 // числом над ним, хуже отсутствия списка.
 provideDrillEnabled(computed(() => b24.isInit() && !isDemo.value))
 
-useHead({ title: 'Сделки по менеджерам' })
+useHead({ title: reportTitle('/app/managers') })
 
 /**
  * До первой выборки на экране НИЧЕГО, кроме «Загрузка».

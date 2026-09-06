@@ -2,7 +2,7 @@
   "name": "some-report",
   "type": "module",
   "private": true,
-  "description": "Аналитика по лидам — отчёт для Битрикс24 (Nuxt SSG, встройка в CRM-аналитику)",
+  "description": "Отчёты по CRM для Битрикс24: аналитика по лидам, сделки по менеджерам, активность пользователей (Nuxt SSG, встройка в CRM-аналитику)",
   "license": "MIT",
   "author": "ИП Шевчик И. С.",
   "homepage": "https://github.com/bx-shef/some-report#readme",

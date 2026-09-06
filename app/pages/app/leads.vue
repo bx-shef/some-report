@@ -5,6 +5,7 @@ import { formatDate } from '~/utils/format'
 import { periodLengthDays, resolvePreset, samePeriod } from '~/utils/period'
 import { decodeLeadsState, encodeLeadsState, LEADS_OPTION_KEY } from '~/utils/savedFilters'
 import { PROCESSING_MINUTES_PER_MONTH, UNLINKED_MINUTES_PER_MONTH } from '~/composables/useReportData'
+import { reportTitle } from '~/utils/pageTitle'
 
 /**
  * Отчёт «Аналитика по лидам»: путь лида от поступления до закрытия сделки.
@@ -53,7 +54,7 @@ const {
 // числом над ним, хуже отсутствия списка.
 provideDrillEnabled(computed(() => b24.isInit() && !isDemo.value))
 
-useHead({ title: 'Отчёт' })
+useHead({ title: reportTitle('/app/leads') })
 
 /**
  * До первой выборки на экране НИЧЕГО, кроме «Загрузка».
