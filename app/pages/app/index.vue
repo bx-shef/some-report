@@ -58,7 +58,7 @@ const drillReason = ref<string | undefined>(undefined)
 /** Портал не открыл карточку: клик без последствий читается как поломка отчёта. */
 const openError = ref<string | undefined>(undefined)
 
-useHead({ title: 'Отчёты' })
+useHead({ title: 'Выбор отчёта' })
 
 /** Ссылка на отчёт с сохранением запроса: `?preview=1` вне портала и есть признак предпросмотра. */
 function target(path: string) {
