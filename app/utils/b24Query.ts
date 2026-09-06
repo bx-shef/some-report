@@ -198,17 +198,19 @@ export function leadIdsParams(period: ReportPeriod, leadFilter: Record<string, s
 }
 
 /**
- * Сотрудники портала — постранично через `start`.
+ * Сотрудники портала — один проход, страницы листает SDK (`callList`).
  *
- * `user.get` — не список CRM: у него свои `sort`/`order` и `FILTER`, курсор по `>ID` через
- * `filter` не подходит. Сотрудников сотни, не тысячи, — десяток страниц по 50.
+ * ⛔ `start` здесь НЕ передаётся намеренно. `callList` ставит его сам (`{...params, start: 0}`) и
+ * дальше идёт по `next` через `getNext()`. Самодельное листание по `start` в этом проекте уже
+ * ломалось молча: `AjaxResult.getData()` поля `next` не отдаёт вовсе, и цикл заканчивался после
+ * первой страницы — в отчёт попадали 50 сотрудников из всех.
  *
  * ⚠ `active: false` даёт УВОЛЕННЫХ, и читать их отдельным проходом обязательно. По умолчанию
  * портал отдаёт только активных, а сделки уволенного никуда не деваются: без второго прохода
  * его строка в отчёте подписана «Сотрудник #5562» — числа верные, а чьи они, непонятно.
  */
-export function userListParams(start = 0, active = true) {
-  return { sort: 'ID', order: 'ASC', FILTER: { ACTIVE: active, USER_TYPE: 'employee' }, start }
+export function userListParams(active = true) {
+  return { sort: 'ID', order: 'ASC', FILTER: { ACTIVE: active, USER_TYPE: 'employee' } }
 }
 
 /** Поля записи истории: чей лид, куда перешёл и когда. Создание (`TYPE_ID = 1`) не берём — см. фильтр. */

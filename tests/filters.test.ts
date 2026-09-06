@@ -123,9 +123,15 @@ describe('параметры запросов под фильтром', () => {
     expect(() => dealsFromLeadsParams(AUGUST, {}, [])).toThrow('пустой список')
   })
 
-  it('сотрудники — активные штатные, по ID, страницами через start', () => {
-    expect(userListParams()).toEqual({ sort: 'ID', order: 'ASC', FILTER: { ACTIVE: true, USER_TYPE: 'employee' }, start: 0 })
-    expect(userListParams(50).start).toBe(50)
+  /**
+   * ⛔ `start` здесь БОЛЬШЕ НЕТ, и это не упрощение. Листает `callList` SDK: он ставит `start: 0`
+   * сам и идёт по `next` через `getNext()`. Самодельное листание тут уже ломалось молча —
+   * `AjaxResult.getData()` поля `next` не отдаёт вовсе, и цикл заканчивался после первой
+   * страницы: в отчёт попадали 50 сотрудников из всех, остальные шли «Сотрудник #5562».
+   */
+  it('сотрудники — активные штатные, по ID, без своего листания', () => {
+    expect(userListParams()).toEqual({ sort: 'ID', order: 'ASC', FILTER: { ACTIVE: true, USER_TYPE: 'employee' } })
+    expect(userListParams()).not.toHaveProperty('start')
   })
 
   /**
@@ -134,8 +140,8 @@ describe('параметры запросов под фильтром', () => {
    * помечен «уволен». Ни один unit-тест этого не ловил бы, кроме этого.
    */
   it('уволенные — тот же запрос, но с ACTIVE: false', () => {
-    expect(userListParams(0, false).FILTER).toEqual({ ACTIVE: false, USER_TYPE: 'employee' })
-    expect(userListParams(50, false).start).toBe(50)
+    expect(userListParams(false).FILTER).toEqual({ ACTIVE: false, USER_TYPE: 'employee' })
+    expect(userListParams(true).FILTER).toEqual({ ACTIVE: true, USER_TYPE: 'employee' })
   })
 })
 

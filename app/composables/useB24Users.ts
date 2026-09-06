@@ -1,9 +1,6 @@
 import { adaptUsers, type B24UserRow } from '~/utils/b24Adapter'
 import { userListParams } from '~/utils/b24Query'
 
-/** Предел страниц `user.get` — защита от бесконечного `next`, а не от больших порталов. */
-const MAX_USER_PAGES = 100
-
 /** Сотрудники портала: имена по идентификатору и кто из них уволен. */
 export interface PortalUsers {
   /** id → «Фамилия Имя». Уволенные здесь ТОЖЕ есть — их сделки никуда не делись. */
@@ -15,8 +12,15 @@ export interface PortalUsers {
 /**
  * Сотрудники портала — общая выборка обоих отчётов.
  *
- * Право `user_brief`; читается страницами по 50 (`user.get`) и запоминается на время жизни
- * страницы: сотрудники за минуту не меняются.
+ * Право `user_brief`; читается ПОЛНОСТЬЮ (`callList` SDK) и запоминается на время жизни страницы:
+ * сотрудники за минуту не меняются.
+ *
+ * ⛔ Листать `user.get` руками НЕЛЬЗЯ, и это не стиль, а выученный урок. `AjaxResult.getData()`
+ * отдаёт `Object.freeze({ result, time })` — поля `next` там НЕТ ВОВСЕ, оно доступно только через
+ * `isMore()`/`getNext()`. Самодельный цикл читал `data.next`, всегда получал `undefined` и после
+ * ПЕРВОЙ страницы объявлял выборку законченной: в отчёт попадали ровно 50 сотрудников, а
+ * остальные шли под подписью «Сотрудник #5562». Числа при этом были верные — потому и не
+ * замечалось. `callList` листает сам, тем же механизмом, которым отчёт читает лиды и сделки.
  *
  * ⚠ Проходов ДВА: активные и уволенные. Портал по умолчанию отдаёт только активных, а сделки
  * уволенного остаются — это и есть тот случай, ради которого менеджеры отчёта 2 перечисляются по
@@ -42,28 +46,25 @@ export function useB24Users() {
   function fetchUsers(): Promise<PortalUsers> {
     if (cache) return cache
     const attempt = (async () => {
-      /** Один проход по сотрудникам: строки и дошли ли мы до конца. */
+      /**
+       * Один проход по сотрудникам: ВСЕ строки и дошли ли мы до конца.
+       *
+       * ⚠ `callList`, а не `call` со `start`: он листает до конца сам (см. шапку про `next`).
+       * «Дошли до конца» здесь и значит «метод ответил успехом»: частичного успеха у него нет.
+       */
       async function readAll(active: boolean): Promise<{ rows: B24UserRow[], complete: boolean }> {
-        const rows: B24UserRow[] = []
         try {
-          for (let start = 0, pages = 0; pages < MAX_USER_PAGES; pages++) {
-            const result = await b24.getOrThrow().actions.v2.call.make<B24UserRow[]>({
-              method: 'user.get',
-              params: userListParams(start, active)
-            })
-            if (!result.isSuccess) return { rows, complete: false }
-            const data = result.getData() as { result?: unknown, next?: unknown } | undefined
-            if (!Array.isArray(data?.result)) return { rows, complete: false }
-            rows.push(...(data.result as B24UserRow[]))
-            if (typeof data.next !== 'number' || data.result.length === 0) return { rows, complete: true }
-            start = data.next
-          }
+          const result = await b24.getOrThrow().actions.v2.callList.make<B24UserRow>({
+            method: 'user.get',
+            params: userListParams(active)
+          })
+          if (!result.isSuccess) return { rows: [], complete: false }
+          const rows = result.getData()
+          return Array.isArray(rows) ? { rows: rows as B24UserRow[], complete: true } : { rows: [], complete: false }
         } catch {
           // См. шапку: список — удобство подписи, а не данные отчёта.
-          return { rows, complete: false }
+          return { rows: [], complete: false }
         }
-        // Страницы кончились по предохранителю — значит, прочитали не всё.
-        return { rows, complete: false }
       }
 
       const active = await readAll(true)

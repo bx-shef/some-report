@@ -44,6 +44,10 @@ const portal = vi.hoisted(() => ({
   /** Сколько раз портал спросили пакетом — по этому числу видно, что счётчиков не стало вдвое больше. */
   batches: 0,
   usersFail: false,
+  /** Штат портала: активные сотрудники. */
+  users: [{ ID: '1', NAME: 'Иван', LAST_NAME: 'Иванов' }, { ID: '2', NAME: 'Пётр', LAST_NAME: 'Петров' }] as Array<Record<string, unknown>>,
+  /** Сколько раз спрашивали сотрудников: два прохода на открытие, страницы листает SDK. */
+  userFetches: 0,
   /** Заголовки, с которыми страница просила портал открыть слайдер детализации. */
   sliderTitles: [] as string[],
   /** Уволенные — портал отдаёт их только по `user.get` с `ACTIVE: false`. */
@@ -148,21 +152,35 @@ mockNuxtImport('useB24', () => () => ({
             return { isSuccess: true, getData: () => data, getErrorMessages: () => [] }
           }
         },
+        /**
+         * Полная выборка SDK: он листает сам и отдаёт ВСЕ строки одним массивом.
+         *
+         * ⛔ Сотрудников читать можно ТОЛЬКО так. `AjaxResult.getData()` отдаёт
+         * `Object.freeze({ result, time })` — поля `next` там нет вовсе, оно доступно лишь через
+         * `isMore()`. Самодельное листание по `start` из-за этого обрывалось после первой
+         * страницы, и на боевом портале в отчёт попадали ровно 50 сотрудников из всех.
+         */
+        callList: {
+          make: async ({ method, params }: { method: string, params: Record<string, unknown> }) => {
+            if (method !== 'user.get') throw new Error(`неожиданный callList ${method}`)
+            portal.userFetches++
+            if (portal.usersFail) throw new Error('insufficient_scope')
+            // ⚠ Как живой портал: `ACTIVE: false` — это отдельный список УВОЛЕННЫХ. Стенд,
+            // отдающий на оба запроса одно и то же, пометил бы уволенными всех подряд.
+            const active = (params as { FILTER?: { ACTIVE?: unknown } }).FILTER?.ACTIVE !== false
+            const rows = active ? portal.users : portal.dismissedUsers
+            return { isSuccess: true, getData: () => rows, getErrorMessages: () => [] }
+          }
+        },
         call: {
           make: async ({ method, params }: { method: string, params: Record<string, unknown> }) => {
             const ok = (result: unknown) => ({ isSuccess: true, getData: () => ({ result }), getErrorMessages: () => [] })
             if (method === 'crm.category.list') return ok({ categories: portal.categories })
             if (method === 'crm.status.list') return ok(portal.stages)
             if (method === 'crm.company.list') return ok([{ ID: '10', TITLE: 'Минск' }, { ID: '20', TITLE: 'Гомель' }])
-            if (method === 'user.get') {
-              if (portal.usersFail) throw new Error('insufficient_scope')
-              // ⚠ Как живой портал: `ACTIVE: false` — это отдельный список УВОЛЕННЫХ. Стенд,
-              // отдающий на оба запроса одно и то же, пометил бы уволенными всех подряд.
-              const active = (params as { FILTER?: { ACTIVE?: unknown } }).FILTER?.ACTIVE !== false
-              return ok(active
-                ? [{ ID: '1', NAME: 'Иван', LAST_NAME: 'Иванов' }, { ID: '2', NAME: 'Пётр', LAST_NAME: 'Петров' }]
-                : portal.dismissedUsers)
-            }
+            // ⛔ Одиночный `user.get` — ловушка: сотрудников читает `callList`. Возврат сюда
+            // означал бы ручное листание, а оно на боевом теряло всех после пятидесятого.
+            if (method === 'user.get') throw new Error('user.get одиночным вызовом: сотрудников читает callList')
             if (method === 'crm.deal.list') return ok(dealList(params).rows)
             if (method === 'user.option.get') return ok(portal.options)
             if (method === 'user.option.set') {
@@ -194,6 +212,8 @@ beforeEach(() => {
   portal.initialized = true
   portal.batches = 0
   portal.usersFail = false
+  portal.users = [{ ID: '1', NAME: 'Иван', LAST_NAME: 'Иванов' }, { ID: '2', NAME: 'Пётр', LAST_NAME: 'Петров' }]
+  portal.userFetches = 0
   portal.sliderTitles = []
   portal.dismissedUsers = []
   portal.batchFails = false
@@ -279,6 +299,30 @@ describe('useManagerReport: живая выборка', () => {
    * и отчёт обязан показать имя, а не «Сотрудник #3»: сделки уволенного никуда не делись, и
    * именно ради них менеджеры перечисляются по сделкам, а не по списку сотрудников.
    */
+  /**
+   * ⛔ Больше пятидесяти сотрудников — тот самый случай, на котором отчёт молча ломался на боевом.
+   *
+   * Самодельное листание читало `next` из `getData()`, где его нет вовсе (`AjaxResult.getData()`
+   * отдаёт `Object.freeze({ result, time })`), и обрывалось после первой страницы: с 51-го
+   * сотрудника строки шли под подписью «Сотрудник #N» при совершенно верных числах. Стенд тогда
+   * был ЩЕДРЕЕ реальности — отдавал `next`, — и тест на 60 сотрудников был зелёным.
+   *
+   * ⚠ Проверяем не «страницы», а результат: имя есть у того, кто во второй сотне.
+   */
+  it('сотрудников больше пятидесяти — имя есть и у того, кто во второй сотне', async () => {
+    portal.users = Array.from({ length: 120 }, (_, i) => ({ ID: String(i + 1), NAME: 'Имя', LAST_NAME: `Фамилия${i + 1}` }))
+    // Сделки у сотрудников с номерами по обе стороны от пятидесятого — до правки имя было
+    // только у первого, а второй шёл «Сотрудник #77».
+    portal.deals = [deal(1, 10, 7, 'NEW'), deal(2, 10, 77, 'NEW')]
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    const rows = state.report.value.companies[0]!.rows
+    expect(rows.find(row => row.managerId === 7)?.managerName).toBe('Фамилия7 Имя')
+    expect(rows.find(row => row.managerId === 77)?.managerName).toBe('Фамилия77 Имя')
+    // Два прохода на открытие — активные и уволенные. Страницы внутри каждого листает SDK.
+    expect(portal.userFetches).toBe(2)
+  })
+
   it('уволенный подписан фамилией и помечен, а не превращается в «Сотрудник #N»', async () => {
     portal.dismissedUsers = [{ ID: '3', NAME: 'Анна', LAST_NAME: 'Авдеева', ACTIVE: false }]
     portal.deals = [deal(1, 10, 3, 'NEW')]
