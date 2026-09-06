@@ -18,20 +18,26 @@ const portal = vi.hoisted(() => ({
   /** Страницы, открытые НАСТОЯЩИМ слайдером портала, — с параметрами вызова. */
   sliderPages: [] as Array<Record<string, unknown>>,
   /** Слайдер отказал (мобильное приложение): панель внутри отчёта обязана подхватить. */
-  sliderFails: false
+  sliderFails: false,
+  /** Задержка ответа на просьбу открыть слайдер — ею проверяется вытеснение клика. */
+  openGate: Promise.resolve() as Promise<void>
 }))
 
 // Настоящий слайдер портала: страница детализации живёт в отдельном фрейме, и композабл лишь
 // просит портал его открыть.
 mockNuxtImport('usePortalSlider', () => () => ({
-  // ⚠ Синхронный, как и настоящий: промис `openSliderAppPage` разрешается при ЗАКРЫТИИ слайдера,
-  // поэтому ждать его нельзя, и `openDrill` возвращает не промис, а «вызов ушёл».
-  openDrill: (payload: { title: string, filter: Record<string, unknown> }) => {
+  // ⚠ Асинхронный, как и настоящий: перед открытием слайдера условие ПИШЕТСЯ в `user.option`, и
+  // запись ждут. Именно в это окно человек успевает нажать другое число — поэтому тест умеет
+  // задержать ответ (`portal.openGate`) и проверить, что вытесненный клик портал не беспокоит.
+  openDrill: async (payload: { title: string, filter: Record<string, unknown> }, stillWanted: () => boolean = () => true) => {
+    await portal.openGate
     if (portal.sliderFails) return false
+    // ⚠ Сторож спрашивается ПОСЛЕ записи и ДО открытия — так же, как в настоящем композабле.
+    if (!stillWanted()) return true
     portal.sliderPages.push({ place: 'app-drill', ...payload })
     return true
   },
-  drillPayload: () => undefined,
+  readDrill: async () => ({ ok: false as const, reason: 'не детализация' }),
   drillRequested: () => false
 }))
 
@@ -66,6 +72,7 @@ mockNuxtImport('useB24', () => () => ({
 beforeEach(() => {
   portal.calls = []
   portal.pending = []
+  portal.openGate = Promise.resolve()
   portal.opened = []
   portal.sliderPages = []
   portal.sliderFails = false
@@ -250,9 +257,10 @@ describe('useDrilldown', () => {
    * каноничное имя, а слайдер — отдельный фрейм и пересчитать сведение не может. Потеряй их — и
    * строка «Отказ - Дорого: 15» открыла бы список из пятнадцати `C4:APOLOGY`.
    */
-  it('слайдер согласился — панель молчит, а условие и подписи уехали целиком', () => {
+  it('слайдер согласился — панель молчит, а условие и подписи уехали целиком', async () => {
     const d = live({ dictionaries: { ...buildMockDataset().dictionaries, lossReasons: { LOSE: 'Отказ - Дорого' }, lossReasonCodes: { LOSE: ['LOSE', 'C4:APOLOGY'] } } })
     d.show(drill.lossReason('LOSE', 'Отказ - Дорого', { LOSE: ['LOSE', 'C4:APOLOGY'] }))
+    await vi.waitFor(() => expect(portal.sliderPages).toHaveLength(1))
     expect(d.open.value).toBe(false)
     expect(portal.calls).toEqual([])
     const sent = portal.sliderPages[0]!
@@ -265,9 +273,34 @@ describe('useDrilldown', () => {
   })
 
   // Списку ЛИДОВ подписи причин провала не нужны: у лида стадии свои, и лишнее в нагрузке — вес.
-  it('лидам подписи стадий сделок не отправляются', () => {
+  it('лидам подписи стадий сделок не отправляются', async () => {
     const d = live()
     d.show(drill.junk())
+    await vi.waitFor(() => expect(portal.sliderPages).toHaveLength(1))
     expect(portal.sliderPages[0]?.stageNames).toBeUndefined()
+  })
+
+  /**
+   * ⚠ Между кликом и открытием слайдера есть ОКНО: условие пишется в `user.option`, и запись
+   * ждут. Нажали в это окно другое число — первый клик обязан отвалиться МОЛЧА, не потревожив
+   * портал. Иначе в портале всплывают два слайдера, и хуже того: запись второго клика могла лечь
+   * раньше первой, и «условие устарело» показал бы слайдер НУЖНОГО нажатия, а лишний открылся бы
+   * с данными.
+   *
+   * ⚠ Сторож стоит ВНУТРИ `openDrill`, между записью и открытием, — проверка у вызывающего после
+   * возврата опоздала бы: портал к тому моменту уже попросили.
+   */
+  it('клик, вытесненный другим, портал не беспокоит', async () => {
+    let open = (): void => {}
+    portal.openGate = new Promise<void>((resolve) => {
+      open = resolve
+    })
+    const d = live()
+    d.show(drill.junk())
+    d.show(drill.processed())
+    open()
+    await vi.waitFor(() => expect(portal.sliderPages).toHaveLength(1))
+    // Открылся ровно ОДИН слайдер — и это второе нажатие.
+    expect(portal.sliderPages[0]?.title).toBe('Обработано')
   })
 })

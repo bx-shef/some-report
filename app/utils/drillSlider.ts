@@ -36,8 +36,10 @@ export interface DrillSliderPayload {
    * прочитанный им справочник ОДНОГО направления дал бы либо чужое название, либо голый код.
    * Строка «Отказ - Дорого: 15» открывала бы список из пятнадцати `C4:APOLOGY`.
    *
-   * ⚠ Едут подписи только тех кодов, что стоят в фильтре, — их единицы. Класть сюда весь
-   * справочник нельзя: нагрузка идёт через параметры вызова портала, и длинную по дороге усечёт.
+   * ⚠ Едут подписи только тех кодов, что стоят в фильтре, — их единицы. Прежнее обоснование
+   * («канал усечёт длинное») больше не действует: условие едет через `user.option`, размер ему не
+   * помеха. Потолок остался по другой причине — запись приходит обратно через портал и разбирается
+   * как недоверенная, а у недоверенного ввода границы обязаны быть.
    */
   stageNames?: Record<string, string>
   /** Заголовок слайдера — та же подпись, что у числа, по которому нажали. */
@@ -192,7 +194,7 @@ export function drillNonceFrom(rawOptions: unknown, search = ''): string | undef
   return undefined
 }
 
-/** Имена, которые нельзя класть ключом в обычный объект, — см. шапку `decodeDrillPayload`. */
+/** Имена, которые нельзя класть ключом в обычный объект, — см. шапку `readDrillPayload`. */
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
 /**
@@ -226,7 +228,7 @@ function filterField(key: string): string {
   return key.replace(/^[!<>=]+/, '')
 }
 
-/** Пределы нагрузки: см. `decodeDrillPayload`. С запасом к самому широкому нашему фильтру. */
+/** Пределы нагрузки: см. `readDrillPayload`. С запасом к самому широкому нашему фильтру. */
 const MAX_FILTER_KEYS = 50
 const MAX_LIST_ITEMS = 1000
 /**
@@ -334,16 +336,23 @@ function bad(reason: string): DrillPayloadResult {
  * данных и не могут объяснить.
  */
 export function readDrillPayload(stored: unknown, nonce: string): DrillPayloadResult {
-  if (typeof stored !== 'string' || !stored.trim()) {
-    return bad(`условия в user.option нет (${typeof stored}) — портал не отдал запись или её не успели записать`)
-  }
-
   let parsed: unknown
-  try {
-    parsed = JSON.parse(stored)
-  } catch {
-    // Длина важнее текста ошибки: она отличает «обрезано по дороге» от «записан мусор».
-    return bad(`условие не разбирается, длина ${stored.length} символов`)
+  if (typeof stored === 'string') {
+    if (!stored.trim()) return bad('условие в user.option пусто')
+    try {
+      parsed = JSON.parse(stored)
+    } catch {
+      // Длина важнее текста ошибки: она отличает «обрезано по дороге» от «записан мусор».
+      return bad(`условие не разбирается, длина ${stored.length} символов`)
+    }
+  } else if (typeof stored === 'object' && stored !== null && !Array.isArray(stored)) {
+    // ⚠ Портал волен отдать запись УЖЕ РАЗОБРАННОЙ: `user.option.get` документирует значение как
+    // `object | string | null`, и `savedFilters.ts` — второй читатель того же хранилища — терпит
+    // обе формы с самого начала. Прими мы только строку, каждое открытие списка падало бы с
+    // «условия нет» — ровно тем симптомом, ради которого этот транспорт и переделан.
+    parsed = stored
+  } else {
+    return bad(`условия в user.option нет (${typeof stored}) — портал не отдал запись или её не успели записать`)
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return bad('условие не объект')
   const handoff = parsed as Record<string, unknown>
@@ -360,16 +369,17 @@ export function readDrillPayload(stored: unknown, nonce: string): DrillPayloadRe
   const data = handoff.payload as Record<string, unknown>
 
   const entity = data.entity
-  if (entity !== 'lead' && entity !== 'deal') return bad(`неизвестная сущность: ${String(entity)}`)
+  // ⚠ Тип, а не ЗНАЧЕНИЕ: причина отказа не выносит наружу содержимого записи. `entity` сам по
+  // себе безобиден, но копировать этот шаблон в поле с данными CRM нельзя, и образца быть не должно.
+  if (entity !== 'lead' && entity !== 'deal') return bad(`неизвестная сущность (${typeof entity})`)
   const title = typeof data.title === 'string' ? data.title.trim() : ''
   if (!title) return bad('нет заголовка списка')
   if (typeof data.filter !== 'object' || data.filter === null || Array.isArray(data.filter)) return bad('нет условия списка')
 
   const source = data.filter as Record<string, unknown>
-  // ⚠ Потолок на размер: нагрузка едет через портал, и очень длинный фильтр по дороге может быть
-  // усечён — а усечённый JSON разбор отвергнет уже здесь, целиком, вместо того чтобы показать
-  // список по половине условия. Числа взяты с запасом: у самого широкого нашего фильтра девять
-  // ключей и списки в десятки кодов.
+  // ⚠ Потолок на размер: запись возвращается через портал и разбирается как недоверенная, а у
+  // недоверенного ввода границы обязаны быть. Числа взяты с запасом: у самого широкого нашего
+  // фильтра девять ключей и списки в десятки кодов.
   if (Object.keys(source).length > MAX_FILTER_KEYS) return bad(`в условии ${Object.keys(source).length} полей — больше потолка`)
   const filter: DrillFilter = {}
   for (const key of Object.keys(source)) {

@@ -139,7 +139,7 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
         ...(next.dealScope === undefined ? {} : { dealScope: next.dealScope }),
         ...(stageNames === undefined ? {} : { stageNames }),
         ...(next.total === undefined ? {} : { total: next.total })
-      })
+      }, () => mine === seq)
       // ⚠ Пока ждали запись, могли нажать другое число: тогда эта панель уже не наша.
       if (mine !== seq) return
       // Случай 3: попросить не вышло — показываем панель, как раньше.

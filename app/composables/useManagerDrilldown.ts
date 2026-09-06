@@ -77,7 +77,7 @@ export function useManagerDrilldown(input: {
       title: next.title,
       filter: params.filter,
       ...(next.total === undefined ? {} : { total: next.total })
-    })
+    }, () => mine === seq)
     // ⚠ Пока ждали запись, могли нажать другое число: тогда эта панель уже не наша.
     if (mine !== seq) return
     if (asked) {

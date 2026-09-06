@@ -1,5 +1,6 @@
 // @vitest-environment nuxt
 import { describe, expect, it } from 'vitest'
+import { defineComponent, h } from 'vue'
 import { mountSuspended } from '@nuxt/test-utils/runtime'
 import ManagerMatrix from '~/components/ManagerMatrix.vue'
 import type { ManagerCellRef } from '~/types/managers'
@@ -18,6 +19,24 @@ const report = buildFixtureReport()
 
 async function mount() {
   return mountSuspended(ManagerMatrix, { props: { report } })
+}
+
+/**
+ * Матрица ВНУТРИ страницы, которая объявила детализацию выключенной, — то есть вне портала или на
+ * демо-наборе.
+ *
+ * ⚠ Обёртка нужна потому, что ответ приходит инъекцией ОТ СТРАНИЦЫ (`useDrillEnabled`), а не из
+ * пропсов. Без неё умолчание — «кликабельно», и ни один тест матрицы никогда не видел выключенного
+ * состояния: ровно поэтому исторический дефект «вне портала пропадало само число» и жил незамеченным.
+ */
+async function mountDisabled() {
+  const Host = defineComponent({
+    setup() {
+      provideDrillEnabled(computed(() => false))
+      return () => h(ManagerMatrix, { report })
+    }
+  })
+  return mountSuspended(Host)
 }
 
 describe('ManagerMatrix', () => {
@@ -139,6 +158,23 @@ describe('ManagerMatrix', () => {
     // ⚠ И тот же заголовок, что у таблицы: разойдись они, одно и то же число открывало бы список
     // с разными подписями в зависимости от ширины экрана.
     expect(fromCard.title).toContain('Иванов Иван')
+  })
+
+  /**
+   * ⚠ Вне портала ЧИСЛО ОСТАЁТСЯ, пропадает только ссылка. Спрятать число значило бы соврать, что
+   * сделок нет. Этот дефект в проекте уже был: ветку «число есть, но не кликабельно» теряли в двух
+   * копиях разметки из четырёх, и ни один тест этого не видел, потому что выключенного состояния
+   * ни один тест не создавал.
+   */
+  it('детализация выключена — числа остаются текстом, а кнопок нет', async () => {
+    const wrapper = await mountDisabled()
+    expect(wrapper.findAll('button')).toHaveLength(0)
+    const row = report.companies[0]!.rows[0]!
+    const text = wrapper.text()
+    expect(text).toContain(row.managerName)
+    // Само число на месте — и в таблице, и в карточке телефона.
+    expect(text).toContain(String(row.total))
+    expect(text).toContain('Итого по компании')
   })
 
   it('у работающего сотрудника пометки нет', async () => {

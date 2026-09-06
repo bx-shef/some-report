@@ -31,7 +31,9 @@ const sdk = vi.hoisted(() => ({
   stored: undefined as unknown,
   /** Портал не принял запись условия. */
   writeFails: false,
-  writes: 0
+  writes: 0,
+  /** Условие стёрли после прочтения. */
+  cleared: false
 }))
 
 mockNuxtImport('useB24', () => () => ({
@@ -45,7 +47,9 @@ mockNuxtImport('useB24', () => () => ({
 mockNuxtImport('useUserOptions', () => () => ({
   read: async () => undefined,
   readFresh: async (key: string) => (key === DRILL_OPTION_KEY ? sdk.stored : undefined),
-  write: () => {},
+  write: (key: string, value: string) => {
+    if (key === DRILL_OPTION_KEY && value === '') sdk.cleared = true
+  },
   writeNow: async (key: string, value: string) => {
     sdk.writes++
     if (sdk.writeFails) return false
@@ -88,6 +92,7 @@ beforeEach(() => {
   sdk.stored = undefined
   sdk.writeFails = false
   sdk.writes = 0
+  sdk.cleared = false
 })
 
 describe('usePortalSlider', () => {
@@ -121,6 +126,48 @@ describe('usePortalSlider', () => {
     expect(await usePortalSlider().openDrill(PAYLOAD)).toBe(false)
     expect(sdk.writes).toBe(1)
     expect(sdk.calls).toHaveLength(0)
+  })
+
+  /**
+   * ⚠ Клик, вытесненный другим нажатием, портал НЕ беспокоит. Проверка стоит между записью и
+   * открытием: сделай её у вызывающего после возврата — портал к тому моменту уже попросили, и в
+   * окне всплыли бы два слайдера.
+   */
+  it('вытесненный клик не просит портал открывать слайдер', async () => {
+    sdk.frame = frame(new Promise(() => {}))
+    expect(await usePortalSlider().openDrill(PAYLOAD, () => false)).toBe(true)
+    expect(sdk.calls).toHaveLength(0)
+    // Условие при этом записано — второе нажатие его тут же перезапишет своим.
+    expect(sdk.writes).toBe(1)
+  })
+
+  /**
+   * ⚠ Отказ портала приходит ПОЗЖЕ ответа `openDrill`: промис `openSliderAppPage` разрешается при
+   * закрытии слайдера, ждать его нельзя. Необработанным он всплывать не должен.
+   */
+  it('отказ портала после записи не выбрасывает исключение', async () => {
+    sdk.frame = frame(Promise.reject(new Error('слайдер закрыт')))
+    expect(await usePortalSlider().openDrill(PAYLOAD)).toBe(true)
+    await Promise.resolve()
+  })
+
+  /**
+   * ⚠ Запись стирается ПРОЧИТАВ СВОЁ. Иначе фильтр CRM лежал бы в портале до следующего нажатия и
+   * после выхода из отчёта; а стирать чужую, ещё не прочитанную, значило бы сломать соседний
+   * слайдер, который вот-вот откроется.
+   */
+  it('прочитанное условие стирается, чужое — нет', async () => {
+    const nonce = 'ключ-5'
+    sdk.stored = encodeDrillHandoff(nonce, PAYLOAD)
+    openedWith({ place: DRILL_SLIDER_PLACE, [DRILL_PAYLOAD_KEY]: nonce })
+    expect((await usePortalSlider().readDrill()).ok).toBe(true)
+    expect(sdk.cleared).toBe(true)
+
+    sdk.cleared = false
+    sdk.stored = encodeDrillHandoff('ключ-чужой', PAYLOAD)
+    openedWith({ place: DRILL_SLIDER_PLACE, [DRILL_PAYLOAD_KEY]: nonce })
+    expect((await usePortalSlider().readDrill()).ok).toBe(false)
+    expect(sdk.cleared).toBe(false)
   })
 
   it.each([
@@ -196,6 +243,22 @@ describe('usePortalSlider', () => {
     const reason = read.ok ? '' : read.reason
     expect(reason).not.toContain('секрет-клиента')
     expect(reason).not.toContain('Иванова')
+  })
+
+  /**
+   * ⚠ Портал волен отдать запись УЖЕ РАЗОБРАННОЙ: `user.option.get` документирует значение как
+   * `object | string | null`, и `savedFilters.ts` — второй читатель того же хранилища — терпит обе
+   * формы с самого начала. Прими мы только строку, каждое открытие падало бы с «условия нет» —
+   * ровно тем симптомом, ради которого этот транспорт и переделан.
+   */
+  it('условие читается и объектом, и строкой', async () => {
+    const nonce = 'ключ-6'
+    for (const value of [encodeDrillHandoff(nonce, PAYLOAD), { nonce, payload: PAYLOAD }]) {
+      sdk.stored = value
+      openedWith({ place: DRILL_SLIDER_PLACE, [DRILL_PAYLOAD_KEY]: nonce })
+      const read = await usePortalSlider().readDrill()
+      expect(read.ok && read.payload).toEqual(PAYLOAD)
+    }
   })
 
   it('чужие параметры вызова — не детализация', async () => {

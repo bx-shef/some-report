@@ -8,6 +8,7 @@ import {
   encodeDrillCall,
   encodeDrillHandoff,
   isDrillFrame,
+  newDrillNonce,
   parsePlacementOptions,
   type DrillSliderPayload
 } from '~/utils/drillSlider'
@@ -123,6 +124,37 @@ describe('нагрузка слайдера детализации', () => {
       const decoded = decode(stored({ ...PAYLOAD, filter: { [key]: key === '!LEAD_ID' ? null : '1' } }))
       expect(decoded?.filter).toHaveProperty(key)
     }
+  })
+
+  /**
+   * ⚠ Ключ различает «моё условие» и «условие соседнего нажатия», а не охраняет доступ — доступ
+   * охраняет авторизация портала: `user.option` привязан к паре «наше приложение + этот человек».
+   * Поэтому от ключа нужна неповторяемость в пределах пары кликов, а не стойкость к подбору. Но
+   * ЗАПАСНОЙ путь без `crypto` обязан работать: без него `openDrill` падал бы там, где нет
+   * защищённого контекста, — то есть нигде в тестах и вдруг на чьём-то устройстве.
+   */
+  it('ключ неповторяем и собирается даже без crypto', () => {
+    expect(new Set(Array.from({ length: 50 }, () => newDrillNonce())).size).toBe(50)
+    const crypto = globalThis.crypto
+    try {
+      Object.defineProperty(globalThis, 'crypto', { value: undefined, configurable: true })
+      const fallback = Array.from({ length: 50 }, () => newDrillNonce())
+      expect(fallback.every(value => value.length > 8)).toBe(true)
+      expect(new Set(fallback).size).toBe(50)
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', { value: crypto, configurable: true })
+    }
+  })
+
+  /**
+   * ⚠ Запись возвращается из портала объектом ЛИБО строкой: `user.option.get` документирует
+   * значение как `object | string | null`, и `savedFilters.ts` — второй читатель того же
+   * хранилища — терпит обе формы. Прими мы только строку, каждое открытие списка падало бы с
+   * «условия нет» — тем самым симптомом, ради которого транспорт и переделан.
+   */
+  it('условие читается и объектом, и строкой', () => {
+    expect(decode({ nonce: NONCE, payload: PAYLOAD })).toEqual(PAYLOAD)
+    expect(decode(encodeDrillHandoff(NONCE, PAYLOAD))).toEqual(PAYLOAD)
   })
 
   it('собранное читается обратно без потерь', () => {
