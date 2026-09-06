@@ -49,7 +49,7 @@ function healthyPortal() {
   portal.answers = {
     'placement.bind': true,
     'app.info': { INSTALLED: true },
-    'scope': ['crm', 'placement', 'user_brief'],
+    'scope': ['crm', 'placement', 'user_brief', 'telephony'],
     'placement.get': [
       { placement: 'CRM_ANALYTICS_MENU', handler: LEADS_HANDLER },
       { placement: 'CRM_ANALYTICS_MENU', handler: MANAGERS_HANDLER }
@@ -111,9 +111,21 @@ describe('страница установки', () => {
   })
 
   it('без права placement называет его поимённо', async () => {
-    portal.answers.scope = ['crm', 'user_brief']
+    portal.answers.scope = ['crm', 'user_brief', 'telephony']
     const wrapper = await mountInstall()
     expect(wrapper.text()).toContain('placement')
+    expect(wrapper.text()).toContain('не выдано право')
+  })
+
+  /**
+   * ⚠ `telephony` добавлено 2026-09-06, и на уже установленных порталах его НЕТ, пока приложение
+   * не переустановят. Страница обязана назвать право поимённо: без него отчёт «Активность
+   * пользователей» покажет нули по звонкам при исправном портале, и разбираться будут долго.
+   */
+  it('без права telephony называет его поимённо', async () => {
+    portal.answers.scope = ['crm', 'placement', 'user_brief']
+    const wrapper = await mountInstall()
+    expect(wrapper.text()).toContain('telephony')
     expect(wrapper.text()).toContain('не выдано право')
   })
 
