@@ -124,14 +124,43 @@ describe('параметры запросов под фильтром', () => {
   })
 
   /**
-   * ⛔ `start` здесь БОЛЬШЕ НЕТ, и это не упрощение. Листает `callList` SDK: он ставит `start: 0`
-   * сам и идёт по `next` через `getNext()`. Самодельное листание тут уже ломалось молча —
-   * `AjaxResult.getData()` поля `next` не отдаёт вовсе, и цикл заканчивался после первой
-   * страницы: в отчёт попадали 50 сотрудников из всех, остальные шли «Сотрудник #5562».
+   * ⛔ Условия — в СТРОЧНОМ `filter`, и это не стиль. Листает `callList` SDK, а он листает не по
+   * `next`, а курсором: дописывает `'>ID'` в `params.filter` (строчный), ставит свой `order` и
+   * `start: -1`. Положи условия в заглавный `FILTER`, как их описывает документация `user.get`, —
+   * и в запросе окажутся ДВА разных ключа. Замер на живом портале (2026-09-06): при обоих сразу
+   * заглавный игнорируется ЦЕЛИКОМ, `ACTIVE` и `USER_TYPE` молча пропадают.
    */
-  it('сотрудники — активные штатные, по ID, без своего листания', () => {
-    expect(userListParams()).toEqual({ sort: 'ID', order: 'ASC', FILTER: { ACTIVE: true, USER_TYPE: 'employee' } })
+  it('сотрудники — условия строчным filter, без своего листания и сортировки', () => {
+    expect(userListParams()).toEqual({ filter: { ACTIVE: true, USER_TYPE: 'employee' } })
+    expect(userListParams()).not.toHaveProperty('FILTER')
     expect(userListParams()).not.toHaveProperty('start')
+    // Свой `order` `callList` всё равно перезапишет курсорным — оставленный только сбивал бы с толку.
+    expect(userListParams()).not.toHaveProperty('order')
+  })
+
+  /**
+   * ⚠ Прогоняем параметры через ТУ ЖЕ трансформацию, что делает `CallListV2.make()` в SDK, вместо
+   * того чтобы верить, что они ему подойдут.
+   *
+   * Ревью PR #50 отметило главное: оба стенда подменяют `callList` ЦЕЛИКОМ, поэтому его настоящая
+   * логика (куда ляжет курсор, уцелеют ли наши условия) не выполняется в тестах ни разу. Это та
+   * же ловушка, из-за которой прошлый дефект дожил до боевого: стенд решал за платформу. Здесь
+   * платформу не спрашиваем — воспроизводим ровно её преобразование параметров.
+   */
+  it('после подстановки курсора `callList` условия отбора остаются на месте', () => {
+    const params = userListParams(false) as Record<string, unknown>
+    // Дословно из `node_modules/@bitrix24/b24jssdk/.../actions/v2/call-list.mjs`.
+    const { order: _ignored, ...rest } = params
+    const sent = {
+      ...rest,
+      order: { ID: 'ASC' },
+      filter: { ...(params.filter as Record<string, unknown>), '>ID': 0 },
+      start: -1
+    }
+    // Курсор и условия — в ОДНОМ ключе, иначе портал возьмёт только курсор.
+    expect(sent.filter).toEqual({ 'ACTIVE': false, 'USER_TYPE': 'employee', '>ID': 0 })
+    // И никакого второго ключа с условиями, который портал молча выбросит.
+    expect(sent).not.toHaveProperty('FILTER')
   })
 
   /**
@@ -140,8 +169,8 @@ describe('параметры запросов под фильтром', () => {
    * помечен «уволен». Ни один unit-тест этого не ловил бы, кроме этого.
    */
   it('уволенные — тот же запрос, но с ACTIVE: false', () => {
-    expect(userListParams(false).FILTER).toEqual({ ACTIVE: false, USER_TYPE: 'employee' })
-    expect(userListParams(true).FILTER).toEqual({ ACTIVE: true, USER_TYPE: 'employee' })
+    expect(userListParams(false).filter).toEqual({ ACTIVE: false, USER_TYPE: 'employee' })
+    expect(userListParams(true).filter).toEqual({ ACTIVE: true, USER_TYPE: 'employee' })
   })
 })
 

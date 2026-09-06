@@ -98,9 +98,14 @@ mockNuxtImport('useB24', () => () => ({
           }
         },
         callList: {
-          make: ({ params }: { params: { filter: Record<string, string> } }) => new Promise((resolve) => {
-            portal.pending[params.filter['>=DATE_CREATE'] ?? '?'] = rows => resolve({ isSuccess: true, getData: () => rows, getErrorMessages: () => [] })
-          })
+          make: ({ method, params }: { method: string, params: { filter: Record<string, string> } }) => {
+            // ⚠ Сотрудников тоже читает `callList`. Этой странице их имена не нужны — но ответить
+            // ему надо, иначе выборка сотрудников встаёт в очередь выборок отчёта и ломает счёт.
+            if (method === 'user.get') return Promise.resolve({ isSuccess: true, getData: () => [], getErrorMessages: () => [] })
+            return new Promise((resolve) => {
+              portal.pending[params.filter['>=DATE_CREATE'] ?? '?'] = rows => resolve({ isSuccess: true, getData: () => rows, getErrorMessages: () => [] })
+            })
+          }
         }
       }
     }

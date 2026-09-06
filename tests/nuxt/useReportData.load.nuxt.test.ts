@@ -24,7 +24,10 @@ const portal = vi.hoisted(() => ({
   batchFilters: {} as Record<string, Record<string, unknown>>,
   /** Уволенные — их портал отдаёт только по `user.get` с `ACTIVE: false`. */
   dismissedUsers: [] as Array<Record<string, unknown>>,
-  /** Сотрудники, которых отдаёт `user.get` страницами по 50. */
+  /**
+   * Штат портала. Читает его `callList` (полная выборка SDK); одиночный `user.get` — ловушка,
+   * отдающая только первую полусотню, чтобы возврат к ручному листанию было видно.
+   */
   users: [] as Array<{ ID: string, NAME?: string, LAST_NAME?: string }>,
   /** `user.get` падает (нет права) — отчёт от этого страдать не должен. */
   usersFail: false,
@@ -89,7 +92,7 @@ mockNuxtImport('useB24', () => () => ({
               // одну страницу, и тест ниже покраснеет.
               portal.calls.push('user.get:одиночный')
               if (portal.usersFail) return Promise.reject(new Error('insufficient_scope'))
-              const active = (params as { FILTER?: { ACTIVE?: unknown } }).FILTER?.ACTIVE !== false
+              const active = (params as { filter?: { ACTIVE?: unknown } }).filter?.ACTIVE !== false
               const page = (active ? portal.users : portal.dismissedUsers).slice(0, 50)
               return Promise.resolve({ isSuccess: true, getData: () => ({ result: page }), getErrorMessages: () => [] })
             }
@@ -124,7 +127,7 @@ mockNuxtImport('useB24', () => () => ({
               if (portal.usersFail) return Promise.reject(new Error('insufficient_scope'))
               // ⚠ Как живой портал: `ACTIVE` в фильтре разделяет работающих и уволенных. Стенд,
               // отдающий на оба запроса один список, пометил бы уволенными всех подряд.
-              const active = (params as unknown as { FILTER?: { ACTIVE?: unknown } }).FILTER?.ACTIVE !== false
+              const active = (params as unknown as { filter?: { ACTIVE?: unknown } }).filter?.ACTIVE !== false
               const all = active ? portal.users : portal.dismissedUsers
               return Promise.resolve({ isSuccess: true, getData: () => all, getErrorMessages: () => [] })
             }

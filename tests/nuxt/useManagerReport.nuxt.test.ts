@@ -167,7 +167,7 @@ mockNuxtImport('useB24', () => () => ({
             if (portal.usersFail) throw new Error('insufficient_scope')
             // ⚠ Как живой портал: `ACTIVE: false` — это отдельный список УВОЛЕННЫХ. Стенд,
             // отдающий на оба запроса одно и то же, пометил бы уволенными всех подряд.
-            const active = (params as { FILTER?: { ACTIVE?: unknown } }).FILTER?.ACTIVE !== false
+            const active = (params as { filter?: { ACTIVE?: unknown } }).filter?.ACTIVE !== false
             const rows = active ? portal.users : portal.dismissedUsers
             return { isSuccess: true, getData: () => rows, getErrorMessages: () => [] }
           }
