@@ -3,7 +3,7 @@ import { pageTitle } from '~/utils/pageTitle'
 
 useHead({
   htmlAttrs: { lang: 'ru' },
-  titleTemplate: title => pageTitle(title ?? undefined)
+  titleTemplate: title => pageTitle(title)
 })
 </script>
 
