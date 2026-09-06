@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import type { ActivityFilters, ActivityUser } from '~/types/activity'
 import { DEFAULT_CALL_THRESHOLD_SECONDS } from '~/types/activity'
 import {
+  CALL_TYPE_CODE,
   DEED_DIRECTION,
   DEED_TYPE_ID,
   activityCounterBatch,
+  callDrillFilter,
   callListParams,
   deedFilter,
   leadCountFilter,
@@ -201,5 +203,75 @@ describe('callListParams', () => {
   it('листается смещением, начиная с нуля', () => {
     expect(callListParams(period).start).toBe(0)
     expect(callListParams(period, 150).start).toBe(150)
+  })
+})
+
+describe('callDrillFilter', () => {
+  /**
+   * ⛔ Это единственное место, где правило ядра переписано на язык REST, и точность здесь
+   * проверена замером боевого портала за август: `CALL_FAILED_CODE: '200'` → 12 375, обратное
+   * условие → 6 640 (в сумме 19 015 — все звонки), `>CALL_DURATION: 29` → 10 404, `<=` → 1 971
+   * (в сумме 12 375), по направлениям 5 661 + 4 743 = 10 404. Разойдись перевод хоть в одном
+   * условии — под числом отчёта открылся бы список другой длины.
+   */
+  it('разговоры: состоялся и ДОЛЬШЕ порога', () => {
+    expect(callDrillFilter(period, 'talks', 29, { userId: 7 })).toEqual({
+      '>=CALL_START_DATE': '2026-08-01',
+      '<CALL_START_DATE': '2026-09-01',
+      'PORTAL_USER_ID': 7,
+      'CALL_FAILED_CODE': '200',
+      '>CALL_DURATION': 29
+    })
+  })
+
+  it('недозвоны — отрицание кода, без порога вовсе', () => {
+    const filter = callDrillFilter(period, 'failed', 29, { userId: 7 })
+    expect(filter['!CALL_FAILED_CODE']).toBe('200')
+    expect(filter).not.toHaveProperty('CALL_FAILED_CODE')
+    expect(filter).not.toHaveProperty('>CALL_DURATION')
+    expect(filter).not.toHaveProperty('<=CALL_DURATION')
+  })
+
+  it('короткие — состоялся, но НЕ дольше порога', () => {
+    const filter = callDrillFilter(period, 'tooShort', 29, { userId: 7 })
+    expect(filter.CALL_FAILED_CODE).toBe('200')
+    expect(filter['<=CALL_DURATION']).toBe(29)
+    expect(filter).not.toHaveProperty('>CALL_DURATION')
+  })
+
+  /**
+   * ⛔ У телефонии `CALL_TYPE: 1` — ИСХОДЯЩИЙ, а у дел CRM `DIRECTION: 1` — входящее. Две обратные
+   * шкалы в одном отчёте: перепутать — открыть под числом входящих список исходящих, и по длине
+   * списка это НЕ видно, оба правдоподобны.
+   */
+  it('направление звонка обратно направлению дела CRM', () => {
+    expect(CALL_TYPE_CODE).toEqual({ out: 1, in: 2 })
+    expect(callDrillFilter(period, 'talks', 29, { direction: 'out' }).CALL_TYPE).toBe(1)
+    expect(callDrillFilter(period, 'talks', 29, { direction: 'in' }).CALL_TYPE).toBe(2)
+    // Та же пара у дел CRM — ровно наоборот.
+    expect(DEED_DIRECTION.out).toBe(2)
+    expect(DEED_DIRECTION.in).toBe(1)
+  })
+
+  /**
+   * ⚠ Ядро направление недозвонов и коротких не считает, столбца такого на экране нет — и в
+   * фильтре его быть не должно: список оказался бы короче числа над ним.
+   */
+  it('у недозвонов и коротких направления в условии нет', () => {
+    expect(callDrillFilter(period, 'failed', 29, { userId: 7, direction: 'in' })).not.toHaveProperty('CALL_TYPE')
+    expect(callDrillFilter(period, 'tooShort', 29, { userId: 7, direction: 'in' })).not.toHaveProperty('CALL_TYPE')
+  })
+
+  /**
+   * ⚠ `userId: 0` — это «звонок без сотрудника», ЗНАЧЕНИЕ фильтра. Привычное `userId ? …` молча
+   * превратило бы строку «Без сотрудника» во «все звонки портала».
+   */
+  it('нулевой сотрудник — условие, а не его отсутствие', () => {
+    expect(callDrillFilter(period, 'failed', 29, { userId: 0 }).PORTAL_USER_ID).toBe(0)
+    expect(callDrillFilter(period, 'failed', 29)).not.toHaveProperty('PORTAL_USER_ID')
+  })
+
+  it('порог берётся из отбора, а не из умолчания', () => {
+    expect(callDrillFilter(period, 'talks', 120)['>CALL_DURATION']).toBe(120)
   })
 })

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import type { ActivityReport, ActivityRow } from '~/types/activity'
+import type { ActivityReport, ActivityRow, CallDirection, DeedKind } from '~/types/activity'
+import type { ActivityCell } from '~/utils/activityDrill'
 import { averageCallSeconds, totalCalls } from '~/utils/activityLoad'
 import { formatCount, formatSeconds } from '~/utils/format'
 
@@ -7,9 +8,9 @@ import { formatCount, formatSeconds } from '~/utils/format'
  * Таблица отчёта «Активность пользователей»: строка на сотрудника.
  *
  * Компонент только рисует: ни одной формулы здесь нет — всё посчитано ядром
- * (`app/utils/activityLoad.ts`).
+ * (`app/utils/activityLoad.ts`), а условие списка за числом собирает страница.
  *
- * ⚠ Раскладок ДВЕ, как у матрицы отчёта 2, и по той же причине. Одиннадцать столбцов в строку
+ * ⚠ Раскладок ДВЕ, как у матрицы отчёта 2, и по той же причине. Тринадцать столбцов в строку
  * требуют около 900 пикселей, на телефоне их 390: от таблицы был бы виден один столбец
  * «Сотрудник», а числа уезжали бы за край. До `lg` — карточка на сотрудника, с `lg` — таблица; она
  * прокручивается ВНУТРИ карточки, а не растягивает страницу (горизонтальный скролл всей страницы
@@ -21,35 +22,42 @@ import { formatCount, formatSeconds } from '~/utils/format'
  * ⚠ В карточке подпись ПЕРЕНОСИТСЯ, а число — нет. Наоборот было хуже обоих вариантов: «2 ч 14
  * мин» уезжало на вторую строку и карточка росла вдвое, а обрезка подписи давала нечитаемое
  * «Нагово…». Перенос подписи стоит одной лишней строки там, где она длинная.
+ *
+ * ⚠ Итоговая строка и столбцы длительности НЕкликабельны, и это не забытая кнопка: итог — сумма
+ * ПОКАЗАННЫХ сотрудников, а тот же фильтр без условия по человеку вернул бы весь портал; за
+ * длительностью же стоит не «столько записей», а сумма секунд. Список, не сходящийся с числом над
+ * ним, хуже отсутствия списка (`activityDrill.ts`).
  */
 const props = defineProps<{
   report: ActivityReport
 }>()
 
+const emit = defineEmits<{ drill: [{ row: ActivityRow, cell: ActivityCell, total: number }] }>()
+
 /** Прочерк — единственное честное «мы этого не знаем». */
 const DASH = '—'
 
-/** Звонки посчитаны — можно печатать числа. */
+/** Звонки посчитаны — их числа известны. */
 const callsKnown = computed(() => props.report.callsKnown)
 
-/** Число звонка: до прихода телефонии — прочерк. */
-function callNumber(value: number): string {
-  return callsKnown.value ? formatCount(value) : DASH
+/** Клик по числу: наверх едет строка, что за число и сколько в нём — заголовок повторит подпись. */
+function pick(row: ActivityRow, cell: ActivityCell, total: number): void {
+  emit('drill', { row, cell, total })
 }
 
-/** Число дела: у строки, которую отчёт не спрашивал, — прочерк. */
-function deedNumber(row: ActivityRow, value: number): string {
-  return row.deedsKnown ? formatCount(value) : DASH
+const talks = (row: ActivityRow, direction?: CallDirection): ActivityCell =>
+  ({ kind: 'talks', ...(direction ? { direction } : {}) })
+const deed = (deedKind: DeedKind, direction?: CallDirection): ActivityCell =>
+  ({ kind: 'deed', deed: deedKind, ...(direction ? { direction } : {}) })
+
+/** Наговорил всего — текстом: за длительностью списка нет. */
+function talkTime(row: ActivityRow): string {
+  return callsKnown.value ? formatSeconds(totalCalls(row).seconds) : DASH
 }
 
 /** Средний разговор строки. */
 function average(row: ActivityRow): string {
   return callsKnown.value ? formatSeconds(averageCallSeconds(totalCalls(row))) : DASH
-}
-
-/** Наговорил всего. */
-function talkTime(row: ActivityRow): string {
-  return callsKnown.value ? formatSeconds(totalCalls(row).seconds) : DASH
 }
 
 /**
@@ -101,7 +109,13 @@ function barWidth(row: ActivityRow): string {
                 Разговоров
               </dt>
               <dd class="shrink-0 whitespace-nowrap tabular-nums">
-                {{ callNumber(totalCalls(row).count) }}
+                <ActivityCellNumber
+                  :value="totalCalls(row).count"
+                  :known="callsKnown"
+                  drillable
+                  :title="`Разговоры · ${row.userName}`"
+                  @pick="pick(row, talks(row), totalCalls(row).count)"
+                />
               </dd>
             </div>
             <div class="flex min-w-0 items-baseline justify-between gap-2">
@@ -117,7 +131,13 @@ function barWidth(row: ActivityRow): string {
                 Входящие
               </dt>
               <dd class="shrink-0 whitespace-nowrap tabular-nums">
-                {{ callNumber(row.calls.in.count) }}
+                <ActivityCellNumber
+                  :value="row.calls.in.count"
+                  :known="callsKnown"
+                  drillable
+                  :title="`Входящие разговоры · ${row.userName}`"
+                  @pick="pick(row, talks(row, 'in'), row.calls.in.count)"
+                />
               </dd>
             </div>
             <div class="flex min-w-0 items-baseline justify-between gap-2">
@@ -125,7 +145,13 @@ function barWidth(row: ActivityRow): string {
                 Исходящие
               </dt>
               <dd class="shrink-0 whitespace-nowrap tabular-nums">
-                {{ callNumber(row.calls.out.count) }}
+                <ActivityCellNumber
+                  :value="row.calls.out.count"
+                  :known="callsKnown"
+                  drillable
+                  :title="`Исходящие разговоры · ${row.userName}`"
+                  @pick="pick(row, talks(row, 'out'), row.calls.out.count)"
+                />
               </dd>
             </div>
             <div class="flex min-w-0 items-baseline justify-between gap-2">
@@ -133,7 +159,13 @@ function barWidth(row: ActivityRow): string {
                 Не дозвонился
               </dt>
               <dd class="shrink-0 whitespace-nowrap tabular-nums">
-                {{ callNumber(row.failed) }}
+                <ActivityCellNumber
+                  :value="row.failed"
+                  :known="callsKnown"
+                  drillable
+                  :title="`Не дозвонились · ${row.userName}`"
+                  @pick="pick(row, { kind: 'failed' }, row.failed)"
+                />
               </dd>
             </div>
             <div class="flex min-w-0 items-baseline justify-between gap-2">
@@ -141,15 +173,33 @@ function barWidth(row: ActivityRow): string {
                 Короткие
               </dt>
               <dd class="shrink-0 whitespace-nowrap tabular-nums">
-                {{ callNumber(row.tooShort) }}
+                <ActivityCellNumber
+                  :value="row.tooShort"
+                  :known="callsKnown"
+                  drillable
+                  :title="`Короткие разговоры · ${row.userName}`"
+                  @pick="pick(row, { kind: 'tooShort' }, row.tooShort)"
+                />
               </dd>
             </div>
             <div class="flex min-w-0 items-baseline justify-between gap-2">
               <dt class="opacity-60">
-                Письма
+                Письма исх. / вх.
               </dt>
               <dd class="shrink-0 whitespace-nowrap tabular-nums">
-                {{ deedNumber(row, row.deeds.email.out) }} / {{ deedNumber(row, row.deeds.email.in) }}
+                <ActivityCellNumber
+                  :value="row.deeds.email.out"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Исходящие письма · ${row.userName}`"
+                  @pick="pick(row, deed('email', 'out'), row.deeds.email.out)"
+                /> / <ActivityCellNumber
+                  :value="row.deeds.email.in"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Входящие письма · ${row.userName}`"
+                  @pick="pick(row, deed('email', 'in'), row.deeds.email.in)"
+                />
               </dd>
             </div>
             <div class="flex min-w-0 items-baseline justify-between gap-2">
@@ -157,7 +207,13 @@ function barWidth(row: ActivityRow): string {
                 Встречи
               </dt>
               <dd class="shrink-0 whitespace-nowrap tabular-nums">
-                {{ deedNumber(row, row.deeds.meeting) }}
+                <ActivityCellNumber
+                  :value="row.deeds.meeting"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Встречи · ${row.userName}`"
+                  @pick="pick(row, deed('meeting'), row.deeds.meeting)"
+                />
               </dd>
             </div>
             <div class="flex min-w-0 items-baseline justify-between gap-2">
@@ -165,7 +221,13 @@ function barWidth(row: ActivityRow): string {
                 Задачи
               </dt>
               <dd class="shrink-0 whitespace-nowrap tabular-nums">
-                {{ deedNumber(row, row.deeds.task) }}
+                <ActivityCellNumber
+                  :value="row.deeds.task"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Задачи · ${row.userName}`"
+                  @pick="pick(row, deed('task'), row.deeds.task)"
+                />
               </dd>
             </div>
             <div class="flex min-w-0 items-baseline justify-between gap-2">
@@ -173,7 +235,13 @@ function barWidth(row: ActivityRow): string {
                 Просрочено
               </dt>
               <dd class="shrink-0 whitespace-nowrap tabular-nums">
-                {{ deedNumber(row, row.deeds.overdue) }}
+                <ActivityCellNumber
+                  :value="row.deeds.overdue"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Просроченные дела · ${row.userName}`"
+                  @pick="pick(row, { kind: 'overdue' }, row.deeds.overdue)"
+                />
               </dd>
             </div>
             <div class="flex min-w-0 items-baseline justify-between gap-2">
@@ -181,7 +249,13 @@ function barWidth(row: ActivityRow): string {
                 Лидов создал
               </dt>
               <dd class="shrink-0 whitespace-nowrap tabular-nums">
-                {{ deedNumber(row, row.leads.created) }}
+                <ActivityCellNumber
+                  :value="row.leads.created"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Созданные лиды · ${row.userName}`"
+                  @pick="pick(row, { kind: 'lead', outcome: 'created' }, row.leads.created)"
+                />
               </dd>
             </div>
             <div class="col-span-2 flex min-w-0 items-baseline justify-between gap-2">
@@ -189,7 +263,19 @@ function barWidth(row: ActivityRow): string {
                 Лиды: успех / провал
               </dt>
               <dd class="shrink-0 whitespace-nowrap tabular-nums">
-                {{ deedNumber(row, row.leads.won) }} / {{ deedNumber(row, row.leads.lost) }}
+                <ActivityCellNumber
+                  :value="row.leads.won"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Успешно закрытые лиды · ${row.userName}`"
+                  @pick="pick(row, { kind: 'lead', outcome: 'won' }, row.leads.won)"
+                /> / <ActivityCellNumber
+                  :value="row.leads.lost"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Проваленные лиды · ${row.userName}`"
+                  @pick="pick(row, { kind: 'lead', outcome: 'lost' }, row.leads.lost)"
+                />
               </dd>
             </div>
           </dl>
@@ -317,13 +403,31 @@ function barWidth(row: ActivityRow): string {
                 />
               </th>
               <td class="py-2 pr-3 text-right font-semibold tabular-nums">
-                {{ callNumber(totalCalls(row).count) }}
+                <ActivityCellNumber
+                  :value="totalCalls(row).count"
+                  :known="callsKnown"
+                  drillable
+                  :title="`Разговоры · ${row.userName}`"
+                  @pick="pick(row, talks(row), totalCalls(row).count)"
+                />
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ callNumber(row.calls.in.count) }}
+                <ActivityCellNumber
+                  :value="row.calls.in.count"
+                  :known="callsKnown"
+                  drillable
+                  :title="`Входящие разговоры · ${row.userName}`"
+                  @pick="pick(row, talks(row, 'in'), row.calls.in.count)"
+                />
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ callNumber(row.calls.out.count) }}
+                <ActivityCellNumber
+                  :value="row.calls.out.count"
+                  :known="callsKnown"
+                  drillable
+                  :title="`Исходящие разговоры · ${row.userName}`"
+                  @pick="pick(row, talks(row, 'out'), row.calls.out.count)"
+                />
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
                 {{ talkTime(row) }}
@@ -332,29 +436,91 @@ function barWidth(row: ActivityRow): string {
                 {{ average(row) }}
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ callNumber(row.failed) }}
+                <ActivityCellNumber
+                  :value="row.failed"
+                  :known="callsKnown"
+                  drillable
+                  :title="`Не дозвонились · ${row.userName}`"
+                  @pick="pick(row, { kind: 'failed' }, row.failed)"
+                />
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ callNumber(row.tooShort) }}
+                <ActivityCellNumber
+                  :value="row.tooShort"
+                  :known="callsKnown"
+                  drillable
+                  :title="`Короткие разговоры · ${row.userName}`"
+                  @pick="pick(row, { kind: 'tooShort' }, row.tooShort)"
+                />
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ deedNumber(row, row.deeds.email.out) }} / {{ deedNumber(row, row.deeds.email.in) }}
+                <ActivityCellNumber
+                  :value="row.deeds.email.out"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Исходящие письма · ${row.userName}`"
+                  @pick="pick(row, deed('email', 'out'), row.deeds.email.out)"
+                /> / <ActivityCellNumber
+                  :value="row.deeds.email.in"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Входящие письма · ${row.userName}`"
+                  @pick="pick(row, deed('email', 'in'), row.deeds.email.in)"
+                />
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ deedNumber(row, row.deeds.meeting) }}
+                <ActivityCellNumber
+                  :value="row.deeds.meeting"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Встречи · ${row.userName}`"
+                  @pick="pick(row, deed('meeting'), row.deeds.meeting)"
+                />
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ deedNumber(row, row.deeds.task) }}
+                <ActivityCellNumber
+                  :value="row.deeds.task"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Задачи · ${row.userName}`"
+                  @pick="pick(row, deed('task'), row.deeds.task)"
+                />
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ deedNumber(row, row.deeds.overdue) }}
+                <ActivityCellNumber
+                  :value="row.deeds.overdue"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Просроченные дела · ${row.userName}`"
+                  @pick="pick(row, { kind: 'overdue' }, row.deeds.overdue)"
+                />
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ deedNumber(row, row.leads.created) }} / {{ deedNumber(row, row.leads.won) }} / {{ deedNumber(row, row.leads.lost) }}
+                <ActivityCellNumber
+                  :value="row.leads.created"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Созданные лиды · ${row.userName}`"
+                  @pick="pick(row, { kind: 'lead', outcome: 'created' }, row.leads.created)"
+                /> / <ActivityCellNumber
+                  :value="row.leads.won"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Успешно закрытые лиды · ${row.userName}`"
+                  @pick="pick(row, { kind: 'lead', outcome: 'won' }, row.leads.won)"
+                /> / <ActivityCellNumber
+                  :value="row.leads.lost"
+                  :known="row.deedsKnown"
+                  drillable
+                  :title="`Проваленные лиды · ${row.userName}`"
+                  @pick="pick(row, { kind: 'lead', outcome: 'lost' }, row.leads.lost)"
+                />
               </td>
             </tr>
           </tbody>
           <tfoot>
+            <!-- ⚠ Итоги НЕкликабельны: это сумма показанных сотрудников, а тот же фильтр без
+                 условия по человеку вернул бы весь портал. См. шапку компонента. -->
             <tr class="border-t-2 border-[color:var(--chart-track)] font-semibold">
               <th
                 scope="row"
@@ -363,13 +529,13 @@ function barWidth(row: ActivityRow): string {
                 Итого
               </th>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ callNumber(totalCalls(report.totals).count) }}
+                {{ callsKnown ? formatCount(totalCalls(report.totals).count) : DASH }}
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ callNumber(report.totals.calls.in.count) }}
+                {{ callsKnown ? formatCount(report.totals.calls.in.count) : DASH }}
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ callNumber(report.totals.calls.out.count) }}
+                {{ callsKnown ? formatCount(report.totals.calls.out.count) : DASH }}
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
                 {{ callsKnown ? formatSeconds(totalCalls(report.totals).seconds) : DASH }}
@@ -378,10 +544,10 @@ function barWidth(row: ActivityRow): string {
                 {{ callsKnown ? formatSeconds(averageCallSeconds(totalCalls(report.totals))) : DASH }}
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ callNumber(report.totals.failed) }}
+                {{ callsKnown ? formatCount(report.totals.failed) : DASH }}
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
-                {{ callNumber(report.totals.tooShort) }}
+                {{ callsKnown ? formatCount(report.totals.tooShort) : DASH }}
               </td>
               <td class="py-2 pr-3 text-right tabular-nums">
                 {{ formatCount(report.totals.deeds.email.out) }} / {{ formatCount(report.totals.deeds.email.in) }}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { crmPath, dealDrillRow, drill, drillListParams, leadDrillRow, plainDealListParams } from '~/utils/drilldown'
+import type { ReportDictionaries } from '~/types/report'
+import { activityDrillRow, callDrillRow, crmPath, dealDrillRow, drill, drillListParams, leadDrillRow, ownerSection, plainDealListParams } from '~/utils/drilldown'
 import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
 import { buildMockDataset } from '~/utils/mockReport'
 
@@ -112,5 +113,87 @@ describe('plainDealListParams: готовый фильтр отчёта «Сде
   it('через общий разбор запроса получается то же самое', () => {
     const viaDispatch = drillListParams(request, { from: '2026-08-01', to: '2026-08-31' }, { sourceId: 'CALL' }, {})
     expect(viaDispatch).toEqual(plainDealListParams(request))
+  })
+})
+
+describe('строки дел CRM и звонков', () => {
+  const dictionaries: ReportDictionaries = {
+    sources: {}, junkReasons: {}, lossReasons: {},
+    users: { 16: 'Петров Пётр' }
+  }
+
+  it('дело подписано видом и направлением, а открывается карточкой своей записи', () => {
+    const row = activityDrillRow({
+      ID: '4440660',
+      SUBJECT: 'Счет № 00КА-058665',
+      CREATED: '2026-08-03T08:40:08+03:00',
+      TYPE_ID: '4',
+      DIRECTION: '2',
+      RESPONSIBLE_ID: '16',
+      OWNER_ID: '270825',
+      OWNER_TYPE_ID: '1'
+    }, dictionaries)
+    expect(row.title).toBe('Счет № 00КА-058665')
+    expect(row.stage).toBe('Письмо, исходящее')
+    expect(row.manager).toBe('Петров Пётр')
+    // Карточки самого дела в портале нет — открывается лид, к которому оно привязано.
+    expect(row.path).toBe('/crm/lead/details/270825/')
+  })
+
+  /** ⚠ У встреч и задач портал ставит `DIRECTION: 0` — «направление: —» было бы шумом. */
+  it('у встречи направление не печатается', () => {
+    expect(activityDrillRow({ ID: '1', TYPE_ID: '1', DIRECTION: '0' }, dictionaries).stage).toBe('Встреча')
+  })
+
+  /**
+   * ⚠ Просроченное дело показывает СРОК, а не дату создания: число посчитано по сроку и без нижней
+   * границы периода. Иначе под ним встали бы даты трёхлетней давности.
+   */
+  it('просроченное дело показывает срок, а не дату создания', () => {
+    const raw = { ID: '1', TYPE_ID: '3', CREATED: '2023-01-10T10:00:00+03:00', END_TIME: '2026-08-20T10:00:00+03:00' }
+    expect(activityDrillRow(raw, dictionaries, 'created').when).toBe('2023-01-10T10:00:00+03:00')
+    expect(activityDrillRow(raw, dictionaries, 'overdue').when).toBe('2026-08-20T10:00:00+03:00')
+  })
+
+  /**
+   * ⛔ Неизвестный тип владельца — строка БЕЗ ссылки. Догадка увела бы человека в чужую карточку:
+   * типов у портала больше четырёх (счета, смарт-процессы), и `/crm/lead/` для смарт-процесса
+   * открыл бы существующий и совершенно посторонний лид с тем же номером.
+   */
+  it('дело неизвестного владельца остаётся без ссылки', () => {
+    expect(activityDrillRow({ ID: '1', TYPE_ID: '4', OWNER_ID: '5', OWNER_TYPE_ID: '31' }, dictionaries).path).toBeUndefined()
+    expect(activityDrillRow({ ID: '1', TYPE_ID: '4', OWNER_TYPE_ID: '1' }, dictionaries).path).toBeUndefined()
+    expect(ownerSection('2')).toBe('deal')
+    expect(ownerSection('99')).toBeUndefined()
+  })
+
+  /** ⛔ У звонка `CALL_TYPE: 1` — ИСХОДЯЩИЙ: обратно шкале дел CRM. */
+  it('звонок подписан номером, направлением и длительностью', () => {
+    const row = callDrillRow({
+      ID: '1517503',
+      PORTAL_USER_ID: '16',
+      PHONE_NUMBER: '+375297006553',
+      CALL_TYPE: '1',
+      CALL_DURATION: '120',
+      CALL_FAILED_CODE: '200',
+      CALL_START_DATE: '2026-08-02T10:39:46+03:00'
+    }, dictionaries)
+    expect(row.title).toBe('+375297006553')
+    expect(row.stage).toBe('Исходящий')
+    expect(row.amount).toBe(120)
+    expect(row.manager).toBe('Петров Пётр')
+    // Карточки у звонка нет — ссылки быть не должно.
+    expect(row.path).toBeUndefined()
+  })
+
+  it('входящий и недозвон подписаны как есть', () => {
+    expect(callDrillRow({ ID: '1', CALL_TYPE: '2', CALL_FAILED_CODE: '200' }, dictionaries).stage).toBe('Входящий')
+    expect(callDrillRow({ ID: '1', CALL_TYPE: '1', CALL_FAILED_CODE: '304' }, dictionaries).stage)
+      .toBe('Исходящий, не дозвонились')
+  })
+
+  /** Скрытый номер портал отдаёт пустым — пустая строка в списке неотличима от отступа. */
+  it('звонок без номера подписан своим идентификатором', () => {
+    expect(callDrillRow({ ID: '77', PHONE_NUMBER: '' }, dictionaries).title).toBe('Звонок #77')
   })
 })

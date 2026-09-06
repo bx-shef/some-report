@@ -3,11 +3,16 @@ import { statusNames, type B24StatusRow } from '~/utils/b24Adapter'
 import { dictionaryBatch } from '~/utils/b24Query'
 import { stageListParams } from '~/utils/managerQuery'
 import {
+  type B24DrillActivityRow,
+  type B24DrillCallRow,
   type B24DrillDealRow,
   type B24DrillLeadRow,
   type DrillRow,
+  DRILL_ACTIVITY_SELECT,
   DRILL_DEAL_SELECT,
   DRILL_LEAD_SELECT,
+  activityDrillRow,
+  callDrillRow,
   dealDrillRow,
   leadDrillRow
 } from '~/utils/drilldown'
@@ -28,6 +33,9 @@ import { DRILL_PAGE_SIZE } from '~/composables/useDrilldown'
  * ⚠ Листание — курсором по `ID`, как во всех выборках отчёта: `start: -1` с фильтром `>ID`.
  * Смещением (`start: N`) портал на больших списках отдаёт дубли и пропуски.
  */
+/** Любая строка, которую умеет показать список. */
+type DrillPortalRow = B24DrillLeadRow | B24DrillDealRow | B24DrillActivityRow | B24DrillCallRow
+
 export function useDrillPage() {
   const b24 = useB24()
   const { batchRows } = useB24Batch()
@@ -42,7 +50,7 @@ export function useDrillPage() {
    * «Сотрудник #7», вторая приехала бы с фамилией, и один список получил бы две системы подписей
    * без единого объяснения на экране. Теперь опоздавший справочник перерисовывает ВСЮ таблицу.
    */
-  const raw = ref<Array<B24DrillLeadRow | B24DrillDealRow>>([])
+  const raw = ref<DrillPortalRow[]>([])
   const dictionaries = ref<ReportDictionaries>({ sources: {}, junkReasons: {}, lossReasons: {} })
   const payload = ref<DrillSliderPayload | undefined>(undefined)
   const pending = ref(false)
@@ -52,14 +60,21 @@ export function useDrillPage() {
 
   /** Строки списка — сырые записи, подписанные ТЕКУЩИМИ справочниками. */
   const rows = computed<DrillRow[]>(() => {
-    const isLead = payload.value?.entity === 'lead'
+    const entity = payload.value?.entity
     // ⚠ Охват приезжает в нагрузке: у `unlinked` строка берёт дату ЗАКРЫТИЯ, а не создания —
     // иначе сделка, закрытая в сентябре и созданная в мае, попала бы в сентябрьский список с
-    // датой «май», и список разошёлся бы с числом над ним.
+    // датой «май», и список разошёлся бы с числом над ним. У просроченных дел ровно то же с
+    // `END_TIME` — см. `activityScope`.
     const scope = payload.value?.dealScope ?? 'plain'
-    return raw.value.map(row => isLead
-      ? leadDrillRow(row as B24DrillLeadRow, dictionaries.value)
-      : dealDrillRow(row as B24DrillDealRow, dictionaries.value, {}, scope))
+    const deedScope = payload.value?.activityScope ?? 'created'
+    return raw.value.map((row) => {
+      switch (entity) {
+        case 'lead': return leadDrillRow(row as B24DrillLeadRow, dictionaries.value)
+        case 'activity': return activityDrillRow(row as B24DrillActivityRow, dictionaries.value, deedScope)
+        case 'call': return callDrillRow(row as B24DrillCallRow, dictionaries.value)
+        default: return dealDrillRow(row as B24DrillDealRow, dictionaries.value, {}, scope)
+      }
+    })
   })
 
   /**
@@ -90,6 +105,11 @@ export function useDrillPage() {
     if (booksFor === mark) return
     booksFor = mark
 
+    // ⚠ Делам и звонкам справочники CRM не нужны вовсе: стадий и источников у них нет, а
+    // подписывает строки вид дела и направление — они приходят в самой записи. Нужны только имена
+    // сотрудников, и они читаются ниже, отдельно от пакета.
+    const crmBooks = current.entity === 'lead' || current.entity === 'deal'
+
     // ⚠ Имена сотрудников НЕ ждём и подписываем ими строки СРАЗУ, как придут, — до и независимо
     // от справочников. Раньше это стояло после `await` пакета: сбой справочников уводил в `catch`,
     // и совершенно исправный список сотрудников пропадал вместе с ними.
@@ -98,6 +118,8 @@ export function useDrillPage() {
         dictionaries.value = { ...dictionaries.value, users: users.names }
       })
       .catch(() => undefined)
+
+    if (!crmBooks) return
 
     try {
       // Один пакет вместо трёх кругов по сети: справочники нужны все сразу, до первой строки.
@@ -131,6 +153,55 @@ export function useDrillPage() {
     }
   }
 
+  /**
+   * Что спросить у портала за одну страницу списка.
+   *
+   * ⛔ Конвенции у методов РАЗНЫЕ, и это не косметика. Списки CRM берут условие строчным `filter`,
+   * а `voximplant.statistic.get` — ЗАГЛАВНЫМ `FILTER` и своими `SORT`/`ORDER`: положи ему условие
+   * строчным ключом, и он не отвергнет запрос, а вернёт ВЕСЬ портал за всё время — под заголовком
+   * «Разговоры: Иванов» открылись бы чужие звонки за годы (замер, `docs/PORTAL.md`).
+   *
+   * ⚠ Листается всё курсором по `ID`, а не смещением: смещение на больших списках даёт дубли и
+   * пропуски. Телефония курсор понимает — проверено на боевом порталe: с `>ID` в выборке не
+   * оказалось ни одной записи с меньшим идентификатором.
+   *
+   * ⚠ Курсор ставится ПОСЛЕ фильтра нагрузки: пришли бы они наоборот, подделанный `>ID` перебил
+   * бы наш курсор, и список листался бы по чужому условию.
+   */
+  function pageRequest(current: DrillSliderPayload, after: number): { method: string, params: Record<string, unknown> } {
+    switch (current.entity) {
+      case 'call':
+        return {
+          method: 'voximplant.statistic.get',
+          params: {
+            FILTER: { ...current.filter, '>ID': after },
+            SORT: 'ID',
+            ORDER: 'ASC'
+          }
+        }
+      case 'activity':
+        return {
+          method: 'crm.activity.list',
+          params: {
+            filter: { ...current.filter, '>ID': after },
+            select: [...DRILL_ACTIVITY_SELECT],
+            order: { ID: 'ASC' },
+            start: -1
+          }
+        }
+      default:
+        return {
+          method: current.entity === 'lead' ? 'crm.lead.list' : 'crm.deal.list',
+          params: {
+            filter: { ...current.filter, '>ID': after },
+            select: current.entity === 'lead' ? [...DRILL_LEAD_SELECT] : [...DRILL_DEAL_SELECT],
+            order: { ID: 'ASC' },
+            start: -1
+          }
+        }
+    }
+  }
+
   /** Следующая страница списка. Первая — она же. */
   async function loadMore(mine = seq): Promise<void> {
     const current = payload.value
@@ -141,21 +212,11 @@ export function useDrillPage() {
       await readBooks(current)
       if (mine !== seq) return
       const frame = b24.getOrThrow()
-      const isLead = current.entity === 'lead'
-      const result = await frame.actions.v2.call.make<Array<B24DrillLeadRow | B24DrillDealRow>>({
-        method: isLead ? 'crm.lead.list' : 'crm.deal.list',
-        params: {
-          // ⚠ Курсор ПОСЛЕ фильтра нагрузки: пришли бы они наоборот, подделанный `>ID` перебил бы
-          // наш курсор, и список листался бы по чужому условию.
-          filter: { ...current.filter, '>ID': afterId },
-          select: isLead ? [...DRILL_LEAD_SELECT] : [...DRILL_DEAL_SELECT],
-          order: { ID: 'ASC' },
-          start: -1
-        }
-      })
+      const request = pageRequest(current, afterId)
+      const result = await frame.actions.v2.call.make<DrillPortalRow[]>(request)
       if (mine !== seq) return
       if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
-      const page = (result.getData()?.result ?? []) as Array<B24DrillLeadRow | B24DrillDealRow>
+      const page = (result.getData()?.result ?? []) as DrillPortalRow[]
       raw.value = [...raw.value, ...page]
       const last = page.reduce((max, row) => Math.max(max, Number(row.ID) || 0), 0)
       // ⚠ Курсор не сдвинулся — список закрываем. Иначе «Показать ещё» доклеивало бы ту же

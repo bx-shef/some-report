@@ -24,6 +24,14 @@ export interface DrillSliderPayload {
    * отсутствующего списка.
    */
   dealScope?: 'from-leads' | 'unlinked' | 'plain'
+  /**
+   * Как разбирать строки дела CRM: `overdue` берёт СРОК (`END_TIME`), остальные — дату создания.
+   *
+   * ⚠ По той же причине, что и `dealScope`. Число «просрочено» посчитано по сроку и без нижней
+   * границы периода; покажи список дату создания — под ним встали бы даты трёхлетней давности, и
+   * сверить список с числом было бы нечем.
+   */
+  activityScope?: 'created' | 'overdue'
   /** Направление сделок — по нему берутся ИМЕНА стадий: у каждого направления они свои. */
   categoryId?: number
   /**
@@ -210,12 +218,22 @@ const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
  * молча не откроется. Ровно поэтому он лежит здесь, а не «где-нибудь в конфиге»: рядом с разбором.
  */
 const ALLOWED_FILTER_FIELDS = new Set([
-  // Периоды: у лида и сделки — дата создания, у сделок без лида — дата закрытия, у истории — CREATED_TIME.
-  'DATE_CREATE', 'CLOSEDATE', 'CREATED_TIME',
+  // Периоды: у лида и сделки — дата создания, у сделок без лида — дата закрытия, у истории —
+  // CREATED_TIME.
+  //
+  // ⚠ `DATE_CLOSED` — дата закрытия ЛИДА, и это НЕ `CLOSEDATE` сделки: имена у портала разные, а
+  // забытое здесь поле не ломает ничего заметного — список просто не открывается. Понадобилось
+  // отчёту «Активность пользователей» (закрытые лиды считаются по дате закрытия).
+  'DATE_CREATE', 'CLOSEDATE', 'DATE_CLOSED', 'CREATED_TIME',
   // Отбор отчёта и условия клеток.
   'ID', 'SOURCE_ID', 'ASSIGNED_BY_ID', 'STATUS_ID', 'STAGE_ID',
   'STATUS_SEMANTIC_ID', 'STAGE_SEMANTIC_ID', 'LEAD_ID', 'TYPE_ID',
-  'CATEGORY_ID', 'MYCOMPANY_ID'
+  'CATEGORY_ID', 'MYCOMPANY_ID',
+  // Отчёт «Активность пользователей», дела CRM: период по созданию, срок, вид, направление,
+  // ответственный и признак выполнения.
+  'CREATED', 'END_TIME', 'DIRECTION', 'COMPLETED', 'RESPONSIBLE_ID',
+  // Он же, звонки телефонии.
+  'CALL_START_DATE', 'PORTAL_USER_ID', 'CALL_FAILED_CODE', 'CALL_DURATION', 'CALL_TYPE'
 ])
 
 /**
@@ -371,7 +389,9 @@ export function readDrillPayload(stored: unknown, nonce: string): DrillPayloadRe
   const entity = data.entity
   // ⚠ Тип, а не ЗНАЧЕНИЕ: причина отказа не выносит наружу содержимого записи. `entity` сам по
   // себе безобиден, но копировать этот шаблон в поле с данными CRM нельзя, и образца быть не должно.
-  if (entity !== 'lead' && entity !== 'deal') return bad(`неизвестная сущность (${typeof entity})`)
+  if (entity !== 'lead' && entity !== 'deal' && entity !== 'activity' && entity !== 'call') {
+    return bad(`неизвестная сущность (${typeof entity})`)
+  }
   const title = typeof data.title === 'string' ? data.title.trim() : ''
   if (!title) return bad('нет заголовка списка')
   if (typeof data.filter !== 'object' || data.filter === null || Array.isArray(data.filter)) return bad('нет условия списка')
@@ -400,6 +420,9 @@ export function readDrillPayload(stored: unknown, nonce: string): DrillPayloadRe
   const total = typeof data.total === 'number' && Number.isInteger(data.total) && data.total >= 0
     ? data.total
     : undefined
+  const activityScope = data.activityScope === 'created' || data.activityScope === 'overdue'
+    ? data.activityScope
+    : undefined
   const dealScope = data.dealScope === 'from-leads' || data.dealScope === 'unlinked' || data.dealScope === 'plain'
     ? data.dealScope
     : undefined
@@ -415,6 +438,7 @@ export function readDrillPayload(stored: unknown, nonce: string): DrillPayloadRe
       title,
       filter,
       ...(dealScope === undefined ? {} : { dealScope }),
+      ...(activityScope === undefined ? {} : { activityScope }),
       ...(categoryId === undefined ? {} : { categoryId }),
       ...(stageNames === undefined ? {} : { stageNames }),
       ...(total === undefined ? {} : { total })

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import type { ActivityFilters } from '~/types/activity'
+import type { ActivityFilters, ActivityRow } from '~/types/activity'
 import { defaultActivityFilters } from '~/composables/useActivityReport'
+import { type ActivityCell, activityDrillPayload } from '~/utils/activityDrill'
 import { formatCount } from '~/utils/format'
 
 /**
@@ -27,6 +28,56 @@ const {
 
 /** Выбранный отбор. Применённый живёт в композабле — подпись строится по нему. */
 const filters = ref<ActivityFilters>(defaultActivityFilters(today))
+
+const slider = usePortalSlider()
+
+// Детализацию открывает настоящий слайдер портала — вне фрейма её нет совсем, и числа там
+// обычный текст (решение владельца от 2026-09-06).
+//
+// ⚠ Мало проверить фрейм: внутри портала первая живая выборка может упасть, и на экране останется
+// ДЕМО-набор при живом SDK. Клик по такому числу открыл бы слайдер с фильтром, собранным из
+// придуманных строк, — портал честно ответил бы на него чужим списком.
+provideDrillEnabled(computed(() => b24.isInit() && !isDemo.value))
+
+/** Слайдер не открылся (мобильное приложение): молчать нельзя — клик без последствий читается как поломка. */
+const sliderError = ref<string | undefined>(undefined)
+
+/**
+ * Номер клика: пока условие пишется в `user.option`, человек успевает нажать другое число.
+ *
+ * ⚠ Запись в портале ОДНА, и два быстрых клика перезаписали бы условие. Сторож не даёт открыть
+ * слайдер по вытесненному клику — иначе первый показал бы «условие устарело» вместо чужого
+ * списка под верным заголовком.
+ */
+let drillSeq = 0
+
+/**
+ * Список за числом — тем же условием, что дало число.
+ *
+ * ⚠ Отбор берётся ПРИМЕНЁННЫЙ (`appliedFilters`), а не выбранный в панели: пока идёт новая
+ * выборка, в панели уже стоит новый период, а на экране — числа старого.
+ *
+ * ⚠ Запасной панели у этого отчёта НЕТ, в отличие от отчётов 1 и 2, и это осознанно. Там она
+ * закрывает случаи, которых здесь не бывает: сделки по списку ID лидов и условие, спорящее с
+ * отбором. Остаётся один случай — слайдер отказал; на него отчёт отвечает словами, а не второй
+ * реализацией списка, которая разошлась бы с первой.
+ */
+async function openDrill(pick: { row: ActivityRow, cell: ActivityCell, total: number }): Promise<void> {
+  const mine = ++drillSeq
+  sliderError.value = undefined
+  const payload = activityDrillPayload(pick.row, pick.cell, appliedFilters.value, pick.total)
+  // Числа без списка кликабельными не рисуются; сюда попасть можно только новым видом числа,
+  // для которого условие ещё не описано, — и тогда молчать нельзя.
+  if (!payload) {
+    sliderError.value = 'За этим числом списка нет.'
+    return
+  }
+  const opened = await slider.openDrill(payload, () => mine === drillSeq)
+  if (mine !== drillSeq) return
+  if (!opened) {
+    sliderError.value = 'Портал не открыл список. Так бывает в мобильном приложении Битрикс24 — откройте отчёт в браузере.'
+  }
+}
 
 useHead({ title: 'Активность пользователей' })
 
@@ -177,7 +228,17 @@ watch(callsPending, () => {
           description="Показаны не все разговоры периода: их слишком много для одного прохода. Выберите период короче — например, одну неделю."
         />
 
-        <ActivityTable :report="report" />
+        <B24Alert
+          v-if="sliderError"
+          color="air-primary-alert"
+          title="Список не открылся"
+          :description="sliderError"
+        />
+
+        <ActivityTable
+          :report="report"
+          @drill="openDrill"
+        />
       </template>
     </main>
   </InPortalGate>

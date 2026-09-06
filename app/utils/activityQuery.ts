@@ -1,4 +1,5 @@
 import type { ActivityFilters, ActivityUser, CallDirection, DeedKind } from '~/types/activity'
+import { CALL_SUCCESS_CODE } from '~/types/activity'
 import type { ReportPeriod } from '~/types/report'
 import type { BatchCommand } from '~/utils/b24Query'
 import { countCommand, nextDay, periodFilter } from '~/utils/b24Query'
@@ -139,6 +140,68 @@ export function activityCounterBatch(
     }
   }
   return commands
+}
+
+/**
+ * Какая часть звонков стоит за числом отчёта — то же деление, что делает ядро.
+ *
+ * - `talks` — состоявшиеся разговоры ДОЛЬШЕ порога (можно с направлением);
+ * - `failed` — набрали номер, но разговора не вышло;
+ * - `tooShort` — дозвонились, но разговор не дольше порога.
+ */
+export type CallPart = 'talks' | 'failed' | 'tooShort'
+
+/**
+ * Фильтр списка звонков за одним числом отчёта.
+ *
+ * ⛔ Это ЕДИНСТВЕННОЕ место, где правило порога переписано на язык REST, — само оно живёт в ядре
+ * (`aggregateCalls`). Замер боевого портала за август подтверждает, что перевод точен, и это не
+ * «похоже»: `CALL_FAILED_CODE: '200'` даёт 12 375, обратное условие — 6 640 (в сумме 19 015 —
+ * все звонки), `>CALL_DURATION: 29` даёт 10 404, `<=` — 1 971 (в сумме 12 375), а по направлениям
+ * 5 661 + 4 743 = 10 404. Разойдись это хоть в одном условии — под числом отчёта открылся бы
+ * список другой длины, и правило проекта требует тогда НЕ делать число кликабельным вовсе.
+ *
+ * ⚠ Направление у `talks` необязательно, а у `failed` и `tooShort` его НЕТ вовсе — и это не
+ * упущение: ядро направление недозвонов и коротких не считает, и столбца такого на экране нет.
+ * Добавить его в фильтр значило бы показать список короче числа над ним.
+ *
+ * ⚠ Порог сравнивается СТРОГО (`>`), как в ядре и в прежнем отчёте заказчика: разговор ровно в
+ * порог — короткий. Сдвиг на секунду развёл бы список с числом ровно на границе.
+ */
+export function callDrillFilter(
+  period: ReportPeriod,
+  part: CallPart,
+  thresholdSeconds: number,
+  options: { userId?: number, direction?: CallDirection } = {}
+): Record<string, unknown> {
+  const base: Record<string, unknown> = {
+    ...periodFilter(period, 'CALL_START_DATE'),
+    // ⚠ `userId: 0` — это «звонок без сотрудника», ЗНАЧЕНИЕ, а не «фильтра нет»: привычное
+    // `options.userId ? …` молча превратило бы эту строку во «все звонки портала».
+    ...(options.userId === undefined ? {} : { PORTAL_USER_ID: options.userId })
+  }
+  if (part === 'failed') return { ...base, [`!${CALL_SUCCESS_FIELD}`]: CALL_SUCCESS_CODE }
+  const answered = { ...base, [CALL_SUCCESS_FIELD]: CALL_SUCCESS_CODE }
+  if (part === 'tooShort') return { ...answered, '<=CALL_DURATION': thresholdSeconds }
+  return {
+    ...answered,
+    '>CALL_DURATION': thresholdSeconds,
+    ...(options.direction ? { CALL_TYPE: CALL_TYPE_CODE[options.direction] } : {})
+  }
+}
+
+/** Поле кода завершения звонка. */
+const CALL_SUCCESS_FIELD = 'CALL_FAILED_CODE'
+
+/**
+ * Направление звонка кодом портала — обратный перевод к `callDirection` ядра.
+ *
+ * ⛔ `1` — ИСХОДЯЩИЙ, `2` — ВХОДЯЩИЙ, то есть НАОБОРОТ к `DEED_DIRECTION` дел CRM. Две обратные
+ * шкалы в одном отчёте: обе живут рядом намеренно, чтобы разница была видна глазом.
+ */
+export const CALL_TYPE_CODE: Record<CallDirection, number> = {
+  out: 1,
+  in: 2
 }
 
 /**
