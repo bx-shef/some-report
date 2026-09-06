@@ -107,6 +107,15 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
    *    устройство отчёта, а не работающий список.
    */
   function show(next: DrillRequest): void {
+    void showAsync(next)
+  }
+
+  /**
+   * ⚠ Асинхронный, потому что условие уезжает в слайдер через `user.option` портала и запись надо
+   * ДОЖДАТЬСЯ (`usePortalSlider`). Наружу при этом отдаётся синхронный `show`: обработчику клика
+   * ждать нечего, а состояние панели поднимется само, когда станет ясно, что слайдер отказал.
+   */
+  async function showAsync(next: DrillRequest): Promise<void> {
     const mine = ++seq
     request.value = next
     rows.value = []
@@ -123,7 +132,7 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
     // Случай 2: условие живёт не только в фильтре — слайдеру его не передать.
     if (!params.byLeadIds && !params.empty) {
       const stageNames = next.entity === 'deal' ? stageNamesFor(params.filter) : undefined
-      const asked = slider.openDrill({
+      const asked = await slider.openDrill({
         entity: next.entity,
         title: next.title,
         filter: params.filter,
@@ -131,6 +140,8 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
         ...(stageNames === undefined ? {} : { stageNames }),
         ...(next.total === undefined ? {} : { total: next.total })
       })
+      // ⚠ Пока ждали запись, могли нажать другое число: тогда эта панель уже не наша.
+      if (mine !== seq) return
       // Случай 3: попросить не вышло — показываем панель, как раньше.
       if (asked) {
         // Панель, открытая прошлым кликом, гаснет: иначе она осталась бы ПОД слайдером с пустым

@@ -125,6 +125,20 @@ const title = computed(() => {
   if (!current) return 'Распределение'
   return `Распределение: ${companyFullLabel(current.companyId, current.companyName)}`
 })
+
+/**
+ * Плитки статистики одним списком, а не тремя копиями разметки.
+ *
+ * ⚠ Плитки «Без ответственного» здесь НЕТ, и это решение владельца от 2026-09-06: ответственный у
+ * сделки обязателен (замер по боевому порталу — ни одной сделки без него из 689 523), и плитка
+ * всегда показывала ноль. Постоянный ноль не сообщает ничего. Остаток при этом не спрятан: если
+ * сумма строк не сойдётся с итогом компании, об этом скажут строка в таблице и подпись под ней.
+ */
+const tiles = computed(() => [
+  { label: 'Сделок', value: props.report.total, note: props.scopeLabel },
+  { label: 'Менеджеров', value: props.report.managers, note: 'с хотя бы одной сделкой' },
+  { label: 'Стадий', value: props.report.stages.length, note: `из ${formatCount(props.totalStages)} в направлении` }
+])
 </script>
 
 <template>
@@ -160,38 +174,32 @@ const title = computed(() => {
              из 689 523), и плитка всегда показывала ноль. Постоянный ноль не сообщает ничего.
              Остаток при этом не спрятан: если сумма строк вдруг не сойдётся с итогом компании,
              об этом скажут строка в таблице и подпись под ней. -->
-        <dl class="grid grid-cols-3 gap-3">
-          <div class="rounded-lg border border-[color:var(--chart-track)] px-3 py-2">
+        <!--
+          ⚠ На телефоне плитки идут СТРОКАМИ, а не в три колонки. Колонка шириной в треть экрана —
+          это 110 пикселей: «МЕНЕДЖЕРОВ» переносится по слогам, а подпись «с хотя бы одной
+          сделкой» занимает три строки под числом. Читается это как поломка вёрстки, хотя всё
+          посчитано верно. Строкой подпись и число стоят рядом и помещаются целиком.
+        -->
+        <dl class="grid grid-cols-1 gap-2 sm:grid-cols-3 sm:gap-3">
+          <!--
+            ⚠ Порядок в разметке ОДИН — подпись, число, пояснение, — а раскладку выбирает сетка.
+            Так десктоп получает привычный столбик, а телефон — строку «подпись с пояснением
+            слева, число справа», и при этом ничего не переставляется местами в DOM: перестановка
+            развела бы порядок чтения с экрана и порядок для скринридера.
+          -->
+          <div
+            v-for="tile in tiles"
+            :key="tile.label"
+            class="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-3 rounded-lg border border-[color:var(--chart-track)] px-3 py-2 sm:grid-cols-1"
+          >
             <dt class="text-xs uppercase tracking-wide opacity-60">
-              Сделок
+              {{ tile.label }}
             </dt>
-            <dd class="mt-1 text-xl font-semibold leading-none tabular-nums">
-              {{ formatCount(report.total) }}
+            <dd class="row-span-2 self-center text-xl font-semibold leading-none tabular-nums sm:row-span-1 sm:mt-1 sm:self-auto">
+              {{ formatCount(tile.value) }}
             </dd>
-            <dd class="mt-1 text-xs opacity-60">
-              {{ scopeLabel }}
-            </dd>
-          </div>
-          <div class="rounded-lg border border-[color:var(--chart-track)] px-3 py-2">
-            <dt class="text-xs uppercase tracking-wide opacity-60">
-              Менеджеров
-            </dt>
-            <dd class="mt-1 text-xl font-semibold leading-none tabular-nums">
-              {{ formatCount(report.managers) }}
-            </dd>
-            <dd class="mt-1 text-xs opacity-60">
-              с хотя бы одной сделкой
-            </dd>
-          </div>
-          <div class="rounded-lg border border-[color:var(--chart-track)] px-3 py-2">
-            <dt class="text-xs uppercase tracking-wide opacity-60">
-              Стадий
-            </dt>
-            <dd class="mt-1 text-xl font-semibold leading-none tabular-nums">
-              {{ formatCount(report.stages.length) }}
-            </dd>
-            <dd class="mt-1 text-xs opacity-60">
-              из {{ formatCount(totalStages) }} в направлении
+            <dd class="text-xs opacity-60">
+              {{ tile.note }}
             </dd>
           </div>
         </dl>

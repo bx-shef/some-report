@@ -60,13 +60,50 @@ export type DrillFilterValue = string | number | null | Array<string | number>
 export type DrillFilter = Record<string, DrillFilterValue>
 
 /**
- * Имя параметра, под которым нагрузка едет в слайдер.
+ * Имя параметра, под которым в слайдер едет КЛЮЧ условия — короткая случайная строка.
  *
- * ⚠ Одной строкой, а не набором полей: параметры вызова портал передаёт как есть, и вложенный
- * объект по дороге превращался бы в `[object Object]` у одних версий SDK и уезжал бы целиком у
- * других. Строка переживает любой транспорт.
+ * ⚠ Само условие здесь НЕ едет, и это выученный урок, а не осторожность. Параметры вызова
+ * приходят фрейму через `PLACEMENT_OPTIONS`, а этот канал не выдерживает килобайтов: соседний
+ * `client-bank-alfa-by` доверяет ему ровно один короткий скаляр (`place`) и знает случай, когда
+ * на живом портале `PLACEMENT_OPTIONS` приехал ПУСТЫМ целиком. Мы положили туда JSON фильтра со
+ * всеми подписями причин — короткий `place` доехал, JSON нет, и человек увидел «Список не
+ * открылся» на исправном отчёте.
+ *
+ * Условие едет через `user.option` портала (`DRILL_OPTION_KEY`) — то же серверное хранилище, в
+ * котором приложение уже запоминает отбор. Оно не зависит от того, как портал сериализует
+ * параметры окна, размер ему не помеха, и нового права не нужно.
  */
-export const DRILL_PAYLOAD_KEY = 'payload'
+export const DRILL_PAYLOAD_KEY = 'drill'
+
+/**
+ * Ключ `user.option`, под которым условие ждёт открывшийся слайдер.
+ *
+ * ⚠ Ключ ОДИН, а не «по ключу на клик»: записи в `user.option` никто не убирает, и отдельный ключ
+ * на каждое открытие копил бы мусор в портале заказчика без конца. Одноразовость даёт не имя
+ * ключа, а `nonce` ВНУТРИ значения.
+ */
+export const DRILL_OPTION_KEY = 'reportDrill'
+
+/**
+ * Одноразовый ключ условия.
+ *
+ * ⚠ Нужен потому, что запись одна на всех: нажали два числа подряд — второе перезапишет условие
+ * первого. Слайдер, открытый первым нажатием, увидит несовпадение и скажет «условие устарело».
+ * Это честный отказ; без `nonce` он молча показал бы ЧУЖОЙ список под верным заголовком, а это
+ * ровно тот дефект, который замечают на боевых данных и не могут объяснить.
+ */
+export function newDrillNonce(): string {
+  const random = globalThis.crypto?.randomUUID?.()
+  // ⚠ Запасной путь без `crypto`: `nonce` здесь не секрет, а метка «то самое условие». Ему нужна
+  // неповторяемость в пределах пары кликов, а не стойкость к подбору.
+  return random ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/** Что лежит в `user.option`: условие и метка, по которой слайдер узнаёт СВОЁ. */
+export interface DrillHandoff {
+  nonce: string
+  payload: DrillSliderPayload
+}
 
 /**
  * `place`, по которому открытый фрейм узнаёт, что он — детализация.
@@ -81,11 +118,78 @@ export const DRILL_SLIDER_PLACE = 'app-drill'
 export const DRILL_SLIDER_WIDTH = 900
 
 /** Нагрузка → параметры вызова `openSliderAppPage`. */
-export function encodeDrillPayload(payload: DrillSliderPayload): Record<string, string> {
+export function encodeDrillCall(nonce: string): Record<string, string> {
   return {
     place: DRILL_SLIDER_PLACE,
-    [DRILL_PAYLOAD_KEY]: JSON.stringify(payload)
+    [DRILL_PAYLOAD_KEY]: nonce
   }
+}
+
+/** Условие + метка → строка для `user.option`. */
+export function encodeDrillHandoff(nonce: string, payload: DrillSliderPayload): string {
+  return JSON.stringify({ nonce, payload } satisfies DrillHandoff)
+}
+
+/**
+ * `PLACEMENT_OPTIONS` → обычный объект.
+ *
+ * ⚠ Разбор нужен потому, что SDK кладёт эти данные КАК ЕСТЬ: в `placement.mjs` буквально
+ * `this.#options = Object.freeze(data.PLACEMENT_OPTIONS)`, без всякой обработки. Портал волен
+ * прислать их JSON-строкой, и тогда наивное `options.drill` молча даёт `undefined` — фрейм
+ * показывает не то, что просили, а разобраться не по чему. Приём взят у `client-bank-alfa-by`,
+ * где это выяснилось на живом портале.
+ */
+export function parsePlacementOptions(raw: unknown): Record<string, unknown> {
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw) as unknown
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
+    } catch {
+      return {}
+    }
+  }
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {}
+}
+
+/**
+ * Значение параметра вызова по имени, БЕЗ учёта регистра.
+ *
+ * ⚠ Регистр не наш: остальные поля init-данных портал шлёт заглавными (`PLACEMENT`, `LANG`,
+ * `IS_ADMIN`), и рассчитывать на то, что наши ключи он оставит как есть, не на чем.
+ */
+function optionValue(options: Record<string, unknown>, name: string): string | undefined {
+  for (const [key, value] of Object.entries(options)) {
+    if (key.toLowerCase() !== name.toLowerCase()) continue
+    const text = typeof value === 'string' ? value.trim() : ''
+    if (text) return text
+  }
+  return undefined
+}
+
+/**
+ * Ключ условия, с которым открыт ЭТОТ фрейм: из параметров вызова, а если их нет — из адреса.
+ *
+ * ⚠ Второй источник не «на всякий случай». У `client-bank-alfa-by` живой портал прислал фрейму
+ * слайдера ПУСТОЙ `PLACEMENT_OPTIONS` — читать оттуда было нечего, а приложение открывается по
+ * своему адресу, и параметр приехал строкой запроса. Имя ищем и своё, и с приставкой `bx24_`:
+ * так платформа переименовывает служебные параметры окна (`bx24_width`, `bx24_title`).
+ */
+export function drillNonceFrom(rawOptions: unknown, search = ''): string | undefined {
+  const options = parsePlacementOptions(rawOptions)
+  const fromOptions = optionValue(options, DRILL_PAYLOAD_KEY)
+  if (fromOptions) return fromOptions
+  try {
+    const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search)
+    for (const [key, value] of params.entries()) {
+      const name = key.toLowerCase()
+      if (name !== DRILL_PAYLOAD_KEY && name !== `bx24_${DRILL_PAYLOAD_KEY}`) continue
+      const text = value.trim()
+      if (text) return text
+    }
+  } catch {
+    // Негодная строка запроса — просто нет второго источника.
+  }
+  return undefined
 }
 
 /** Имена, которые нельзя класть ключом в обычный объект, — см. шапку `decodeDrillPayload`. */
@@ -165,9 +269,13 @@ function readFilterValue(value: unknown): DrillFilterValue | undefined {
  * В первом человек нажал на число и ждёт список: показать ему вместо списка оглавление
  * приложения значит соврать молча. Во втором оглавление — ровно то, что он и просил.
  */
-export function isDrillFrame(options: unknown): boolean {
-  if (typeof options !== 'object' || options === null) return false
-  return (options as Record<string, unknown>).place === DRILL_SLIDER_PLACE
+export function isDrillFrame(options: unknown, search = ''): boolean {
+  // ⚠ Через тот же разбор, что и ключ условия: `PLACEMENT_OPTIONS` приходит объектом ЛИБО
+  // JSON-строкой, а регистр ключа задаёт портал, не мы.
+  if (optionValue(parsePlacementOptions(options), 'place') === DRILL_SLIDER_PLACE) return true
+  // Фрейм с ключом условия — детализация, даже если `place` по дороге потерялся: ключ мы кладём
+  // сами и ни с чем не спутаем.
+  return drillNonceFrom(options, search) !== undefined
 }
 
 /**
@@ -197,7 +305,27 @@ function readStageNames(value: unknown): Record<string, string> | undefined {
 }
 
 /**
- * Параметры вызова → нагрузка. `undefined` — прислали негодное, страница обязана сказать об этом.
+ * Разбор нагрузки: либо годная, либо ПРИЧИНА отказа.
+ *
+ * ⚠ Причина — не отладочная роскошь, а часть контракта. Отказ здесь видит человек, который нажал
+ * на число и ждёт список; «негодные параметры» не говорит ни ему (что делать?), ни нам (что
+ * чинить?). Отказов у разбора десяток, и по экрану они неразличимы — а чинятся по-разному:
+ * обрезанная по дороге нагрузка и поле не из белого списка требуют противоположных действий.
+ *
+ * ⚠ В причине НЕТ данных CRM: имена ключей, длины и признаки — но не значения условия и не
+ * заголовок. Экран слайдера смотрит не только тот, кто нажал.
+ */
+export type DrillPayloadResult
+  = | { ok: true, payload: DrillSliderPayload }
+    | { ok: false, reason: string }
+
+/** Отказ с причиной — чтобы не повторять форму записи на каждом из десятка выходов. */
+function bad(reason: string): DrillPayloadResult {
+  return { ok: false, reason }
+}
+
+/**
+ * Параметры вызова → нагрузка или причина отказа.
  *
  * ⚠ Опасные имена ключей отвергают нагрузку ЦЕЛИКОМ. `__proto__` со строковым значением прошёл
  * бы проверку значения, а присваивание `filter['__proto__'] = 'NEW'` не создаёт своего поля —
@@ -205,47 +333,59 @@ function readStageNames(value: unknown): Record<string, string> | undefined {
  * которому нажали, — под верным заголовком. Это ровно тот случай, который замечают на боевых
  * данных и не могут объяснить.
  */
-export function decodeDrillPayload(options: unknown): DrillSliderPayload | undefined {
-  if (!isDrillFrame(options)) return undefined
-  const raw = (options as Record<string, unknown>)[DRILL_PAYLOAD_KEY]
-  if (typeof raw !== 'string' || !raw.trim()) return undefined
+export function readDrillPayload(stored: unknown, nonce: string): DrillPayloadResult {
+  if (typeof stored !== 'string' || !stored.trim()) {
+    return bad(`условия в user.option нет (${typeof stored}) — портал не отдал запись или её не успели записать`)
+  }
 
   let parsed: unknown
   try {
-    parsed = JSON.parse(raw)
+    parsed = JSON.parse(stored)
   } catch {
-    return undefined
+    // Длина важнее текста ошибки: она отличает «обрезано по дороге» от «записан мусор».
+    return bad(`условие не разбирается, длина ${stored.length} символов`)
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
-  const data = parsed as Record<string, unknown>
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return bad('условие не объект')
+  const handoff = parsed as Record<string, unknown>
+
+  // ⚠ Метка сверяется ДО разбора условия: несовпадение значит «это условие другого нажатия», и
+  // показывать его нельзя ни в каком виде. Без сверки слайдер первого клика открыл бы список
+  // второго — под своим, первым заголовком.
+  if (handoff.nonce !== nonce) {
+    return bad('условие устарело: пока слайдер открывался, нажали другое число')
+  }
+  if (typeof handoff.payload !== 'object' || handoff.payload === null || Array.isArray(handoff.payload)) {
+    return bad('в записи нет условия')
+  }
+  const data = handoff.payload as Record<string, unknown>
 
   const entity = data.entity
-  if (entity !== 'lead' && entity !== 'deal') return undefined
+  if (entity !== 'lead' && entity !== 'deal') return bad(`неизвестная сущность: ${String(entity)}`)
   const title = typeof data.title === 'string' ? data.title.trim() : ''
-  if (!title) return undefined
-  if (typeof data.filter !== 'object' || data.filter === null || Array.isArray(data.filter)) return undefined
+  if (!title) return bad('нет заголовка списка')
+  if (typeof data.filter !== 'object' || data.filter === null || Array.isArray(data.filter)) return bad('нет условия списка')
 
   const source = data.filter as Record<string, unknown>
   // ⚠ Потолок на размер: нагрузка едет через портал, и очень длинный фильтр по дороге может быть
   // усечён — а усечённый JSON разбор отвергнет уже здесь, целиком, вместо того чтобы показать
   // список по половине условия. Числа взяты с запасом: у самого широкого нашего фильтра девять
   // ключей и списки в десятки кодов.
-  if (Object.keys(source).length > MAX_FILTER_KEYS) return undefined
+  if (Object.keys(source).length > MAX_FILTER_KEYS) return bad(`в условии ${Object.keys(source).length} полей — больше потолка`)
   const filter: DrillFilter = {}
   for (const key of Object.keys(source)) {
     if (!Object.hasOwn(source, key)) continue
     // См. шапку: такой ключ не «пропускаем», а отвергаем всю нагрузку.
-    if (UNSAFE_KEYS.has(key)) return undefined
+    if (UNSAFE_KEYS.has(key)) return bad(`опасное имя поля: ${key}`)
     // Поле не из тех, по которым отчёт строит условия, — нагрузка чужая целиком (см. белый список).
-    if (!ALLOWED_FILTER_FIELDS.has(filterField(key))) return undefined
+    if (!ALLOWED_FILTER_FIELDS.has(filterField(key))) return bad(`поле условия не разрешено: ${key}`)
     const value = readFilterValue(source[key])
     // Негодное значение — негодная нагрузка целиком: см. шапку про «половину условия».
-    if (value === undefined) return undefined
+    if (value === undefined) return bad(`негодное значение условия у поля ${key}`)
     filter[key] = value
   }
   // Пустой фильтр — это «покажи вообще всё»: под заголовком «Сделки: Минск · Иванов» человек
   // увидел бы весь портал. Такое приходит только от подделанного значения, и его отвергаем.
-  if (!Object.keys(filter).length) return undefined
+  if (!Object.keys(filter).length) return bad('условие пустое — это «покажи всё», а не список за числом')
 
   const total = typeof data.total === 'number' && Number.isInteger(data.total) && data.total >= 0
     ? data.total
@@ -259,12 +399,21 @@ export function decodeDrillPayload(options: unknown): DrillSliderPayload | undef
   const stageNames = readStageNames(data.stageNames)
 
   return {
-    entity,
-    title,
-    filter,
-    ...(dealScope === undefined ? {} : { dealScope }),
-    ...(categoryId === undefined ? {} : { categoryId }),
-    ...(stageNames === undefined ? {} : { stageNames }),
-    ...(total === undefined ? {} : { total })
+    ok: true,
+    payload: {
+      entity,
+      title,
+      filter,
+      ...(dealScope === undefined ? {} : { dealScope }),
+      ...(categoryId === undefined ? {} : { categoryId }),
+      ...(stageNames === undefined ? {} : { stageNames }),
+      ...(total === undefined ? {} : { total })
+    }
   }
+}
+
+/** Годная нагрузка или `undefined`. Тонкая обёртка над `readDrillPayload` — причина не нужна. */
+export function decodeDrillPayload(stored: unknown, nonce: string): DrillSliderPayload | undefined {
+  const read = readDrillPayload(stored, nonce)
+  return read.ok ? read.payload : undefined
 }

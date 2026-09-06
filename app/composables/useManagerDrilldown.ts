@@ -52,6 +52,14 @@ export function useManagerDrilldown(input: {
    * ⚠ ВНЕ ПОРТАЛА детализации нет совсем: числа там не кликабельны, и сюда попасть неоткуда.
    */
   function show(next: DrillRequest): void {
+    void showAsync(next)
+  }
+
+  /**
+   * ⚠ Асинхронный: условие уезжает в слайдер через `user.option` портала, и запись надо дождаться
+   * (`usePortalSlider`). Наружу отдаётся синхронный `show` — обработчику клика ждать нечего.
+   */
+  async function showAsync(next: DrillRequest): Promise<void> {
     const mine = ++seq
     request.value = next
     rows.value = []
@@ -62,7 +70,7 @@ export function useManagerDrilldown(input: {
     pending.value = false
     params = plainDealListParams(next)
     afterId = 0
-    const asked = slider.openDrill({
+    const asked = await slider.openDrill({
       entity: 'deal',
       dealScope: 'plain',
       categoryId: input.filters.value.categoryId,
@@ -70,6 +78,8 @@ export function useManagerDrilldown(input: {
       filter: params.filter,
       ...(next.total === undefined ? {} : { total: next.total })
     })
+    // ⚠ Пока ждали запись, могли нажать другое число: тогда эта панель уже не наша.
+    if (mine !== seq) return
     if (asked) {
       // Панель прошлого клика гаснет: иначе она осталась бы под слайдером с чужим заголовком.
       open.value = false

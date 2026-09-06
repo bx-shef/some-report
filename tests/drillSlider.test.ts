@@ -4,17 +4,25 @@ import {
   DRILL_SLIDER_PLACE,
   MAX_STAGE_NAMES,
   decodeDrillPayload,
-  encodeDrillPayload,
+  drillNonceFrom,
+  encodeDrillCall,
+  encodeDrillHandoff,
   isDrillFrame,
+  parsePlacementOptions,
   type DrillSliderPayload
 } from '~/utils/drillSlider'
 
 /**
- * Нагрузка страницы детализации, открытой настоящим слайдером портала.
+ * Передача условия в слайдер детализации.
  *
- * ⚠ Проверяем в первую очередь РАЗБОР, а не сборку: обратно значение приезжает от портала, то
- * есть снаружи. Список, собранный по половине условия, покажет НЕ те записи под верным
- * заголовком — а это хуже пустого экрана, потому что выглядит как правда.
+ * ⚠ Условие едет НЕ параметрами вызова: `PLACEMENT_OPTIONS` килобайтов не держит — на боевом
+ * портале короткий `place` доехал, а JSON фильтра нет, и человек увидел «Список не открылся» при
+ * исправном отчёте. Теперь параметрами едет короткий одноразовый ключ, а условие — записью в
+ * `user.option` портала.
+ *
+ * ⚠ Проверяем в первую очередь РАЗБОР, а не сборку: запись возвращается через портал, то есть
+ * снаружи. Список, собранный по половине условия, покажет НЕ те записи под верным заголовком — а
+ * это хуже пустого экрана, потому что выглядит как правда.
  */
 
 const PAYLOAD: DrillSliderPayload = {
@@ -24,28 +32,74 @@ const PAYLOAD: DrillSliderPayload = {
   total: 27
 }
 
+/** Метка условия: одна на файл — здесь проверяется разбор, а не одноразовость. */
+const NONCE = 'ключ-теста'
+
 /**
- * Параметры вызова, собранные ВРУЧНУЮ, — чтобы подсунуть разбору то, чего `encodeDrillPayload`
- * никогда не соберёт.
+ * Запись `user.option`, собранная ВРУЧНУЮ, — чтобы подсунуть разбору то, чего
+ * `encodeDrillHandoff` никогда не соберёт. Строку кладём как есть: ею подсовывают битый JSON.
  *
- * ⚠ `place` кладём обязательно: без него фрейм — не детализация вовсе, и разбор отвергнет любую,
- * даже безупречную нагрузку. Пиши тест без `place` — он был бы зелёным по неверной причине.
+ * ⚠ Метку ставим обязательно: без совпадения меток разбор отвергнет любую, даже безупречную
+ * нагрузку — это условие ДРУГОГО нажатия. Тест без метки был бы зелёным по неверной причине.
  */
-function options(data: unknown): Record<string, unknown> {
-  return { place: DRILL_SLIDER_PLACE, [DRILL_PAYLOAD_KEY]: typeof data === 'string' ? data : JSON.stringify(data) }
+function stored(data: unknown): string {
+  return `{"nonce":${JSON.stringify(NONCE)},"payload":${typeof data === 'string' ? data : JSON.stringify(data)}}`
+}
+
+/** Разбор записи с правильной меткой — то, что делает открывшийся слайдер. */
+function decode(value: unknown) {
+  return decodeDrillPayload(value, NONCE)
 }
 
 describe('нагрузка слайдера детализации', () => {
   /**
-   * ⚠ `place` — заявленный механизм «фрейм узнаёт, что он детализация». Пока он только писался,
-   * но не проверялся, любой другой плейсмент со случайным ключом `payload` в своих параметрах
-   * нарисовал бы список записей вместо оглавления приложения.
+   * ⚠ В параметрах вызова — только место и КОРОТКИЙ ключ. Это выученный урок: килобайтный JSON
+   * этот канал не донёс, а короткий скаляр донёс.
    */
-  it('без своего `place` это не детализация, какой бы годной ни была нагрузка', () => {
-    expect(decodeDrillPayload({ [DRILL_PAYLOAD_KEY]: JSON.stringify(PAYLOAD) })).toBeUndefined()
-    expect(decodeDrillPayload({ place: 'CRM_ANALYTICS_MENU', [DRILL_PAYLOAD_KEY]: JSON.stringify(PAYLOAD) })).toBeUndefined()
-    expect(isDrillFrame(encodeDrillPayload(PAYLOAD))).toBe(true)
+  it('в параметрах вызова нет ничего, кроме места и ключа', () => {
+    const params = encodeDrillCall(NONCE)
+    expect(params.place).toBe(DRILL_SLIDER_PLACE)
+    expect(params[DRILL_PAYLOAD_KEY]).toBe(NONCE)
+    expect(Object.keys(params)).toHaveLength(2)
+    expect(JSON.stringify(params)).not.toContain('NEW')
+  })
+
+  /**
+   * ⚠ `PLACEMENT_OPTIONS` приходит объектом ЛИБО JSON-строкой: SDK кладёт их как есть
+   * (`placement.mjs`), а регистр ключей задаёт портал — остальные поля он шлёт заглавными
+   * (`PLACEMENT`, `LANG`, `IS_ADMIN`). Наивное чтение молча даёт «фрейм не детализация», и
+   * человек, нажавший на число, получает оглавление приложения.
+   */
+  it.each([
+    ['объектом', { place: DRILL_SLIDER_PLACE, drill: NONCE }],
+    ['JSON-строкой', JSON.stringify({ place: DRILL_SLIDER_PLACE, drill: NONCE })],
+    ['заглавными ключами', { PLACE: DRILL_SLIDER_PLACE, DRILL: NONCE }]
+  ])('ключ читается, когда параметры пришли %s', (_name, options) => {
+    expect(drillNonceFrom(options)).toBe(NONCE)
+    expect(isDrillFrame(options)).toBe(true)
+  })
+
+  /**
+   * ⚠ Второй источник — строка запроса, и он не «на всякий случай»: у `client-bank-alfa-by`
+   * живой портал прислал фрейму слайдера ПУСТОЙ `PLACEMENT_OPTIONS`, и параметр приехал адресом.
+   */
+  it('ключ читается из адреса, когда параметров вызова нет вовсе', () => {
+    expect(drillNonceFrom({}, `?bx24_${DRILL_PAYLOAD_KEY}=${NONCE}`)).toBe(NONCE)
+    expect(drillNonceFrom(undefined, `?${DRILL_PAYLOAD_KEY}=${NONCE}`)).toBe(NONCE)
+    expect(drillNonceFrom({}, '?preview=1')).toBeUndefined()
+  })
+
+  it('чужие параметры вызова — не детализация', () => {
     expect(isDrillFrame({ place: 'CRM_ANALYTICS_MENU' })).toBe(false)
+    expect(parsePlacementOptions('не json')).toEqual({})
+  })
+
+  /**
+   * ⚠ Метка одноразовая: нажали два числа подряд — второе перезаписало условие. Слайдер первого
+   * обязан отвергнуть чужое условие, а не показать его под своим заголовком.
+   */
+  it('условие другого нажатия не читается', () => {
+    expect(decodeDrillPayload(encodeDrillHandoff('ключ-другой', PAYLOAD), NONCE)).toBeUndefined()
   })
 
   /**
@@ -54,7 +108,7 @@ describe('нагрузка слайдера детализации', () => {
    * решает вовсе без запроса.
    */
   it('пустой список значений отвергает нагрузку', () => {
-    expect(decodeDrillPayload(options({ ...PAYLOAD, filter: { STAGE_ID: [] } }))).toBeUndefined()
+    expect(decode(stored({ ...PAYLOAD, filter: { STAGE_ID: [] } }))).toBeUndefined()
   })
 
   /**
@@ -63,45 +117,43 @@ describe('нагрузка слайдера детализации', () => {
    * токеном. Полем не из списка чужой фильтр спросил бы то, чего этот отчёт не спрашивает никогда.
    */
   it('поле не из списка полей отчёта отвергает нагрузку, приставки сравнения — нет', () => {
-    expect(decodeDrillPayload(options({ ...PAYLOAD, filter: { UF_CRM_SECRET: 'x' } }))).toBeUndefined()
-    expect(decodeDrillPayload(options({ ...PAYLOAD, filter: { PHONE: '+375' } }))).toBeUndefined()
+    expect(decode(stored({ ...PAYLOAD, filter: { UF_CRM_SECRET: 'x' } }))).toBeUndefined()
+    expect(decode(stored({ ...PAYLOAD, filter: { PHONE: '+375' } }))).toBeUndefined()
     for (const key of ['>=DATE_CREATE', '<DATE_CREATE', '!STATUS_ID', '!LEAD_ID', 'MYCOMPANY_ID']) {
-      const decoded = decodeDrillPayload(options({ ...PAYLOAD, filter: { [key]: key === '!LEAD_ID' ? null : '1' } }))
+      const decoded = decode(stored({ ...PAYLOAD, filter: { [key]: key === '!LEAD_ID' ? null : '1' } }))
       expect(decoded?.filter).toHaveProperty(key)
     }
   })
 
   it('собранное читается обратно без потерь', () => {
-    const params = encodeDrillPayload(PAYLOAD)
-    expect(params.place).toBe(DRILL_SLIDER_PLACE)
-    expect(decodeDrillPayload(params)).toEqual(PAYLOAD)
+    expect(decode(encodeDrillHandoff(NONCE, PAYLOAD))).toEqual(PAYLOAD)
   })
 
   it('список значений в фильтре переживает дорогу', () => {
     const payload: DrillSliderPayload = { ...PAYLOAD, filter: { STAGE_ID: ['NEW', '1'], LEAD_ID: [3, 7] } }
-    expect(decodeDrillPayload(encodeDrillPayload(payload))).toEqual(payload)
+    expect(decode(encodeDrillHandoff(NONCE, payload))).toEqual(payload)
   })
 
   it('число, по которому нажали, необязательно', () => {
     const { total: _total, ...without } = PAYLOAD
-    expect(decodeDrillPayload(encodeDrillPayload(without))).toEqual(without)
+    expect(decode(encodeDrillHandoff(NONCE, without))).toEqual(without)
   })
 
   describe('негодное отвергается целиком', () => {
     const bad: Array<[string, unknown]> = [
       ['ничего не пришло', undefined],
-      ['пришла не запись', 'строка'],
-      ['параметра нет', { place: DRILL_SLIDER_PLACE }],
-      ['параметр пуст', { [DRILL_PAYLOAD_KEY]: '  ' }],
-      ['не JSON', { [DRILL_PAYLOAD_KEY]: '{' }],
-      ['JSON, но массив', { [DRILL_PAYLOAD_KEY]: '[1,2]' }],
-      ['чужая сущность', options({ ...PAYLOAD, entity: 'company' })],
-      ['заголовок пуст', options({ ...PAYLOAD, title: '   ' })],
-      ['фильтра нет', options({ entity: 'lead', title: 'Лиды' })],
-      ['фильтр — массив', options({ ...PAYLOAD, filter: ['NEW'] })]
+      ['записи нет строкой', 42],
+      ['запись пуста', '  '],
+      ['не JSON', '{'],
+      ['JSON, но массив', '[1,2]'],
+      ['в записи нет условия', JSON.stringify({ nonce: NONCE })],
+      ['чужая сущность', stored({ ...PAYLOAD, entity: 'company' })],
+      ['заголовок пуст', stored({ ...PAYLOAD, title: '   ' })],
+      ['фильтра нет', stored({ entity: 'lead', title: 'Лиды' })],
+      ['фильтр — массив', stored({ ...PAYLOAD, filter: ['NEW'] })]
     ]
-    it.each(bad)('%s', (_name, options) => {
-      expect(decodeDrillPayload(options)).toBeUndefined()
+    it.each(bad)('%s', (_name, value) => {
+      expect(decode(value)).toBeUndefined()
     })
 
     /**
@@ -109,7 +161,7 @@ describe('нагрузка слайдера детализации', () => {
      * увидел бы весь портал и поверил бы, потому что заголовок верный.
      */
     it('пустой фильтр — не «без условия», а негодная нагрузка', () => {
-      expect(decodeDrillPayload(options({ ...PAYLOAD, filter: {} }))).toBeUndefined()
+      expect(decode(stored({ ...PAYLOAD, filter: {} }))).toBeUndefined()
     })
 
     /**
@@ -123,7 +175,7 @@ describe('нагрузка слайдера детализации', () => {
       ['список списков', [['NEW']]]
     ])('значение фильтра «%s» отвергает нагрузку целиком', (_name, value) => {
       const raw = JSON.stringify({ ...PAYLOAD, filter: { ...PAYLOAD.filter, STAGE_ID: value } })
-      expect(decodeDrillPayload(options(raw))).toBeUndefined()
+      expect(decode(stored(raw))).toBeUndefined()
     })
 
     /**
@@ -140,7 +192,7 @@ describe('нагрузка слайдера детализации', () => {
       ['constructor', '{"constructor":"NEW","STATUS_ID":"NEW"}']
     ])('опасный ключ фильтра (%s) отвергает нагрузку', (_name, filter) => {
       const raw = `{"entity":"lead","title":"Лиды","filter":${filter}}`
-      expect(decodeDrillPayload(options(raw))).toBeUndefined()
+      expect(decode(stored(raw))).toBeUndefined()
       expect(({} as Record<string, unknown>).polluted).toBeUndefined()
     })
   })
@@ -153,12 +205,12 @@ describe('нагрузка слайдера детализации', () => {
    */
   it('null в фильтре — годное условие, а не мусор', () => {
     const payload: DrillSliderPayload = { ...PAYLOAD, filter: { '!LEAD_ID': null, 'CATEGORY_ID': 0 } }
-    expect(decodeDrillPayload(encodeDrillPayload(payload))).toEqual(payload)
+    expect(decode(encodeDrillHandoff(NONCE, payload))).toEqual(payload)
   })
 
   it('охват сделок и направление переживают дорогу', () => {
     const payload: DrillSliderPayload = { ...PAYLOAD, dealScope: 'unlinked', categoryId: 3 }
-    expect(decodeDrillPayload(encodeDrillPayload(payload))).toEqual(payload)
+    expect(decode(encodeDrillHandoff(NONCE, payload))).toEqual(payload)
   })
 
   /**
@@ -167,9 +219,9 @@ describe('нагрузка слайдера детализации', () => {
    */
   it('слишком широкая нагрузка отвергается', () => {
     const many = Object.fromEntries(Array.from({ length: 51 }, (_, i) => [`F${i}`, 'x']))
-    expect(decodeDrillPayload(options({ ...PAYLOAD, filter: many }))).toBeUndefined()
+    expect(decode(stored({ ...PAYLOAD, filter: many }))).toBeUndefined()
     const longList = { ...PAYLOAD, filter: { ID: Array.from({ length: 1001 }, (_, i) => i) } }
-    expect(decodeDrillPayload({ [DRILL_PAYLOAD_KEY]: JSON.stringify(longList) })).toBeUndefined()
+    expect(decode(stored(longList))).toBeUndefined()
   })
 
   /**
@@ -179,10 +231,10 @@ describe('нагрузка слайдера детализации', () => {
    */
   it('подписи стадий переживают дорогу, а негодные не губят нагрузку', () => {
     const payload: DrillSliderPayload = { ...PAYLOAD, stageNames: { 'C4:APOLOGY': 'Отказ - Дорого' } }
-    expect(decodeDrillPayload(encodeDrillPayload(payload))).toEqual(payload)
+    expect(decode(encodeDrillHandoff(NONCE, payload))).toEqual(payload)
 
     for (const bad of [{}, 'строка', ['C4:APOLOGY']]) {
-      const decoded = decodeDrillPayload(options({ ...PAYLOAD, stageNames: bad }))
+      const decoded = decode(stored({ ...PAYLOAD, stageNames: bad }))
       expect(decoded?.filter).toEqual(PAYLOAD.filter)
       expect(decoded?.stageNames).toBeUndefined()
     }
@@ -195,7 +247,7 @@ describe('нагрузка слайдера детализации', () => {
    */
   it('подписей больше потолка — лишние обрезаются, остальные остаются', () => {
     const many = Object.fromEntries(Array.from({ length: MAX_STAGE_NAMES + 10 }, (_, i) => [`S${i}`, `Причина ${i}`]))
-    const decoded = decodeDrillPayload(options({ ...PAYLOAD, stageNames: many }))
+    const decoded = decode(stored({ ...PAYLOAD, stageNames: many }))
     expect(Object.keys(decoded?.stageNames ?? {})).toHaveLength(MAX_STAGE_NAMES)
     expect(decoded?.stageNames?.S0).toBe('Причина 0')
   })
@@ -212,19 +264,19 @@ describe('нагрузка слайдера детализации', () => {
       + '"stageNames":{"__proto__":"Взлом","C4:APOLOGY":"Отказ - Дорого"}}'
     // Сторож самой проверки: у разобранного JSON опасный ключ — СВОЙ, значит, его есть что выкидывать.
     expect(Object.keys(JSON.parse(raw).stageNames)).toContain('__proto__')
-    expect(decodeDrillPayload(options(raw))?.stageNames).toEqual({ 'C4:APOLOGY': 'Отказ - Дорого' })
+    expect(decode(stored(raw))?.stageNames).toEqual({ 'C4:APOLOGY': 'Отказ - Дорого' })
   })
 
   it('опасное имя `prototype` тоже отвергает нагрузку', () => {
     const raw = '{"entity":"lead","title":"Лиды","filter":{"prototype":"NEW","STATUS_ID":"NEW"}}'
-    expect(decodeDrillPayload(options(raw))).toBeUndefined()
+    expect(decode(stored(raw))).toBeUndefined()
   })
 
   it.each([
     ['поля entity нет вовсе', { title: 'Лиды', filter: { STATUS_ID: 'NEW' } }],
     ['всего строкой', { ...PAYLOAD, total: '27' }]
   ])('%s', (_name, data) => {
-    const decoded = decodeDrillPayload({ [DRILL_PAYLOAD_KEY]: JSON.stringify(data) })
+    const decoded = decode(stored(data))
     // Негодная сущность губит нагрузку, негодное «всего» — только само себя.
     expect(decoded === undefined || decoded.total === undefined).toBe(true)
   })
@@ -232,6 +284,6 @@ describe('нагрузка слайдера детализации', () => {
   // Отрицательное или дробное «всего» — не число записей: подпись «показано 5 из −3» бессмысленна.
   it.each([[-1], [3.5]])('негодное «всего» (%s) просто отбрасывается, нагрузка остаётся годной', (total) => {
     const raw = JSON.stringify({ ...PAYLOAD, total })
-    expect(decodeDrillPayload(options(raw))).toEqual({ ...PAYLOAD, total: undefined })
+    expect(decode(stored(raw))).toEqual({ ...PAYLOAD, total: undefined })
   })
 })

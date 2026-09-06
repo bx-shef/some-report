@@ -210,7 +210,7 @@ async function fit() {
   <InPortalGate @ready="fit">
     <main
       ref="reportRoot"
-      class="mx-auto max-w-[90rem] space-y-4 p-4 lg:p-6"
+      class="mx-auto max-w-[90rem] space-y-3 p-2 sm:space-y-4 sm:p-4 lg:p-6"
     >
       <ReportNav />
 

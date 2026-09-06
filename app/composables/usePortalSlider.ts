@@ -1,4 +1,15 @@
-import { decodeDrillPayload, encodeDrillPayload, isDrillFrame, DRILL_SLIDER_WIDTH, type DrillSliderPayload } from '~/utils/drillSlider'
+import {
+  readDrillPayload,
+  encodeDrillCall,
+  encodeDrillHandoff,
+  drillNonceFrom,
+  isDrillFrame,
+  newDrillNonce,
+  DRILL_OPTION_KEY,
+  DRILL_SLIDER_WIDTH,
+  type DrillPayloadResult,
+  type DrillSliderPayload
+} from '~/utils/drillSlider'
 
 /**
  * Настоящий слайдер портала для СВОИХ страниц приложения.
@@ -17,6 +28,7 @@ import { decodeDrillPayload, encodeDrillPayload, isDrillFrame, DRILL_SLIDER_WIDT
  */
 export function usePortalSlider() {
   const b24 = useB24()
+  const options = useUserOptions()
 
   /**
    * Открыть детализацию настоящим слайдером портала.
@@ -34,14 +46,28 @@ export function usePortalSlider() {
    * `title` уезжают в `PLACEMENT_OPTIONS` как обычные данные приложения и молча игнорируются:
    * слайдер открывается стандартной ширины с пустой шапкой.
    */
-  function openDrill(payload: DrillSliderPayload): boolean {
+  async function openDrill(payload: DrillSliderPayload): Promise<boolean> {
+    const frame = (() => {
+      try {
+        // ⚠ Чтение фрейма — ВНУТРИ try: у SDK своя жизнь, и падение на подступах к слайдеру
+        // должно отправлять на запасной путь, а не ронять обработчик клика целиком.
+        return b24.get()
+      } catch {
+        // SDK падает СИНХРОННО на неподдерживаемых устройствах — там останется запасной путь.
+        return undefined
+      }
+    })()
+    if (!frame) return false
+
+    // ⚠ Запись ДОЖИДАЕМСЯ, и это не перестраховка: открывшийся фрейм читает условие из портала
+    // сразу. Открой мы слайдер раньше, чем портал принял запись, — он прочитал бы условие
+    // ПРОШЛОГО нажатия и показал бы чужой список под верным заголовком.
+    const nonce = newDrillNonce()
+    if (!await options.writeNow(DRILL_OPTION_KEY, encodeDrillHandoff(nonce, payload))) return false
+
     try {
-      // ⚠ Чтение фрейма — ВНУТРИ try: у SDK своя жизнь, и падение на подступах к слайдеру должно
-      // отправлять на запасной путь, а не ронять обработчик клика целиком.
-      const frame = b24.get()
-      if (!frame) return false
       void frame.slider.openSliderAppPage({
-        ...encodeDrillPayload(payload),
+        ...encodeDrillCall(nonce),
         bx24_width: DRILL_SLIDER_WIDTH,
         // ⚠ Заголовок задаём ЗДЕСЬ, а не только на странице: пока новый фрейм поднимается,
         // человек уже видит шапку слайдера. Пустая шапка на секунду читается как «открылось не
@@ -50,23 +76,29 @@ export function usePortalSlider() {
       }).catch(() => undefined)
       return true
     } catch {
-      // SDK падает СИНХРОННО на неподдерживаемых устройствах — там останется запасной путь.
       return false
     }
   }
 
   /**
-   * Нагрузка, с которой открыли ЭТОТ фрейм, — или `undefined`, если он открыт не слайдером
-   * детализации либо параметры негодные.
+   * Нагрузка, с которой открыли ЭТОТ фрейм, — или ПРИЧИНА, по которой её не удалось прочитать.
+   *
+   * ⚠ Причина возвращается вместе с отказом, а не вместо него, потому что отказ видит человек,
+   * нажавший на число. «Не открылось» без причины не говорит ни ему, что делать, ни нам, что
+   * чинить: отказов у разбора десяток, по экрану они неразличимы, а чинятся по-разному.
    */
-  function drillPayload(): DrillSliderPayload | undefined {
+  async function readDrill(): Promise<DrillPayloadResult> {
+    let nonce: string | undefined
     try {
       // ⚠ И здесь чтение фрейма внутри try: страница зовёт это до отрисовки, и исключение
       // оставило бы человека с пустым экраном вместо оглавления приложения.
-      return decodeDrillPayload(b24.get()?.placement.options)
-    } catch {
-      return undefined
+      nonce = drillNonceFrom(b24.get()?.placement.options, search())
+    } catch (e) {
+      return { ok: false, reason: `SDK не отдал параметры вызова: ${e instanceof Error ? e.message : String(e)}` }
     }
+    if (!nonce) return { ok: false, reason: 'в параметрах вызова нет ключа условия' }
+    // ⚠ Мимо кэша настроек: условие записал ДРУГОЙ фрейм секунду назад.
+    return readDrillPayload(await options.readFresh(DRILL_OPTION_KEY), nonce)
   }
 
   /**
@@ -79,11 +111,16 @@ export function usePortalSlider() {
    */
   function drillRequested(): boolean {
     try {
-      return isDrillFrame(b24.get()?.placement.options)
+      return isDrillFrame(b24.get()?.placement.options, search())
     } catch {
       return false
     }
   }
 
-  return { openDrill, drillPayload, drillRequested }
+  /** Строка запроса этого фрейма — второй носитель параметров вызова (см. `drillNonceFrom`). */
+  function search(): string {
+    return typeof window === 'undefined' ? '' : window.location.search
+  }
+
+  return { openDrill, readDrill, drillRequested }
 }

@@ -47,6 +47,14 @@ const drill = ref<DrillSliderPayload | undefined>(undefined)
  * что угодно по дороге через портал, — значит, этот исход штатный, а не «никогда не бывает».
  */
 const drillBroken = ref(false)
+/**
+ * Почему нагрузку не удалось прочитать — короткой технической строкой под плашкой.
+ *
+ * ⚠ Она здесь не для красоты: отказов у разбора десяток, и по экрану они неразличимы, а чинятся
+ * по-разному — обрезанная по дороге нагрузка и неразрешённое поле условия требуют
+ * противоположных действий. Данных CRM в строке нет (см. `drillSlider.ts`).
+ */
+const drillReason = ref<string | undefined>(undefined)
 /** Портал не открыл карточку: клик без последствий читается как поломка отчёта. */
 const openError = ref<string | undefined>(undefined)
 
@@ -60,8 +68,14 @@ function target(path: string) {
 onMounted(async () => {
   await b24.init()
   inPortal.value = b24.isInit()
-  drill.value = slider.drillPayload()
-  drillBroken.value = !drill.value && slider.drillRequested()
+  // ⚠ Признак «это фрейм детализации» читается ДО await: за время чтения условия из портала
+  // страница не должна успеть показать оглавление тому, кто ждёт список.
+  const requested = slider.drillRequested()
+  drillBroken.value = requested
+  const read = await slider.readDrill()
+  drill.value = read.ok ? read.payload : undefined
+  drillBroken.value = requested && !read.ok
+  drillReason.value = read.ok ? undefined : read.reason
   resolved.value = true
   if (drill.value) {
     await start(drill.value)
@@ -115,7 +129,7 @@ async function openRow(row: DrillRow): Promise<void> {
 
   <main
     v-else-if="!resolved"
-    class="mx-auto max-w-4xl p-4 lg:p-6"
+    class="mx-auto max-w-4xl p-3 sm:p-4 lg:p-6"
   >
     <p class="text-sm opacity-70">
       Загрузка…
@@ -124,18 +138,24 @@ async function openRow(row: DrillRow): Promise<void> {
 
   <main
     v-else-if="drillBroken"
-    class="mx-auto max-w-4xl p-4 lg:p-6"
+    class="mx-auto max-w-4xl p-3 sm:p-4 lg:p-6"
   >
     <B24Alert
       color="air-primary-alert"
       title="Список не открылся"
-      description="Портал передал негодные параметры списка. Закройте это окно и нажмите на число ещё раз — если повторится, откройте отчёт заново."
+      description="Портал передал негодные параметры списка. Закройте это окно и нажмите на число ещё раз — если повторится, покажите строку ниже разработчику."
     />
+    <p
+      v-if="drillReason"
+      class="mt-2 text-xs opacity-60"
+    >
+      {{ drillReason }}
+    </p>
   </main>
 
   <main
     v-else
-    class="mx-auto max-w-4xl space-y-4 p-4 lg:p-6"
+    class="mx-auto max-w-4xl space-y-4 p-3 sm:p-4 lg:p-6"
   >
     <h1 class="text-xl font-bold">
       Отчёты по CRM

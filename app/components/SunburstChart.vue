@@ -80,15 +80,19 @@ function ringOpacity(depth: number): number {
 </script>
 
 <template>
+  <!--
+    ⚠ Высота НЕ задаётся числом, её держит `aspect-square`. Раньше стояли жёсткие `width` и
+    `height` по `size`, а ширину ужимал `maxWidth: 100%`: на телефоне круг ужимался, коробка
+    оставалась 420 пикселей высотой, и под диаграммой зияла пустота в треть экрана. Квадратная
+    пропорция делает то же самое на широком экране и ничего не теряет на узком.
+  -->
   <div
-    class="relative shrink-0"
-    :style="{ width: `${size}px`, height: `${size}px`, maxWidth: '100%' }"
+    class="relative aspect-square w-full shrink-0"
+    :style="{ maxWidth: `${size}px` }"
   >
     <svg
       viewBox="0 0 100 100"
-      :width="size"
-      :height="size"
-      class="max-w-full"
+      class="block h-full w-full"
       role="img"
       :aria-label="ariaLabel"
     >

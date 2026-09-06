@@ -98,8 +98,9 @@ describe('useDrilldown', () => {
   it('портал: первая страница сразу, дальше по курсору ID, короткая страница — конец', async () => {
     const d = panel()
     d.show(drill.junk())
-    // Слайдер здесь отказал (`panel()` возвращает `false`) — значит, поднялась запасная панель.
-    expect(d.open.value).toBe(true)
+    // ⚠ Панель поднимается ПОСЛЕ отказа слайдера, а отказ теперь приходит через await: условие
+    // уезжает в слайдер записью в `user.option`, и её ждут. Отсюда такт ожидания.
+    await vi.waitFor(() => expect(d.open.value).toBe(true))
     expect(d.request.value?.title).toBe('Брак лидов')
     await vi.waitFor(() => expect(portal.calls).toHaveLength(1))
     expect(portal.calls[0]).toMatchObject({ method: 'crm.lead.list', filter: { 'STATUS_SEMANTIC_ID': 'F', '>ID': 0, '>=DATE_CREATE': '2026-08-01' } })
