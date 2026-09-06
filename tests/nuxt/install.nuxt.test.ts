@@ -49,7 +49,7 @@ function healthyPortal() {
   portal.answers = {
     'placement.bind': true,
     'app.info': { INSTALLED: true },
-    'scope': ['crm', 'placement', 'user_brief', 'telephony'],
+    'scope': ['crm', 'placement', 'user_brief', 'telephony', 'department'],
     'placement.get': [
       { placement: 'CRM_ANALYTICS_MENU', handler: LEADS_HANDLER },
       { placement: 'CRM_ANALYTICS_MENU', handler: MANAGERS_HANDLER }

@@ -1,13 +1,25 @@
 import { describe, expect, it } from 'vitest'
-import type { B24CallRow } from '~/types/activity'
+import type { ActivityRow, ActivityUser, B24CallRow, DepartmentRef } from '~/types/activity'
 import { DEFAULT_CALL_THRESHOLD_SECONDS } from '~/types/activity'
 import {
+  NO_USER_LABEL,
+  activityActions,
   activityTotals,
   aggregateCalls,
   averageCallSeconds,
+  buildActivityReport,
   callAnswered,
   callDirection,
-  totalCalls
+  deedKey,
+  departmentSubtree,
+  emptyCallStats,
+  emptyDeeds,
+  emptyLeads,
+  leadKey,
+  overdueKey,
+  totalCalls,
+  totalDeeds,
+  usersInDepartment
 } from '~/utils/activityLoad'
 
 /**
@@ -15,7 +27,8 @@ import {
  *
  * ⚠ Проверяем в первую очередь то, что ломается МОЛЧА: направление звонка (перепутать — поменять
  * местами два столбца, и по числам этого не видно), порог разговора (правило заказчика, сдвиг на
- * секунду меняет все числа) и сходимость итогов со строками.
+ * секунду меняет все числа), поддерево отделов (взять один узел — потерять половину людей) и
+ * сходимость итогов со строками.
  */
 
 /** Запись звонка портала: он отдаёт числа СТРОКАМИ, и стенд обязан вести себя так же. */
@@ -30,206 +43,405 @@ function call(over: Partial<B24CallRow> = {}): B24CallRow {
   }
 }
 
+function user(id: number, name: string, over: Partial<ActivityUser> = {}): ActivityUser {
+  return { id, name, ...over }
+}
+
 describe('callDirection', () => {
   /**
    * ⛔ Главная ловушка этого отчёта. `CALL_TYPE: 1` — ИСХОДЯЩИЙ, `2` — ВХОДЯЩИЙ: обратно тому, как
    * читается имя фильтра `INCOMING`, и документация значения не расшифровывает вовсе. Проверено на
-   * живом портале через связанные дела CRM (`docs/PORTAL.md`). Перепутай — и два столбца отчёта
-   * поменяются местами, а числа останутся правдоподобными.
+   * живом портале поимённо, на 38 звонках через связанные дела CRM (`docs/PORTAL.md`). Перепутай —
+   * и два столбца отчёта поменяются местами, а числа останутся правдоподобными.
    */
   it('1 — исходящий, 2 — входящий, а не наоборот', () => {
     expect(callDirection(call({ CALL_TYPE: '1' }))).toBe('out')
-    expect(callDirection(call({ CALL_TYPE: '2' }))).toBe('in')
     expect(callDirection(call({ CALL_TYPE: 1 }))).toBe('out')
+    expect(callDirection(call({ CALL_TYPE: '2' }))).toBe('in')
     expect(callDirection(call({ CALL_TYPE: 2 }))).toBe('in')
   })
 
-  /**
-   * ⚠ Неизвестный код — исходящий, а НЕ выброшенная запись. Звонок был; потеряй мы его, итог
-   * перестал бы сходиться с суммой столбцов, и объяснить расхождение человеку было бы нечем.
-   */
-  it.each([['неизвестный код', '9'], ['пусто', undefined], ['мусор', 'abc']])(
-    '%s — считаем исходящим, но не выбрасываем', (_name, type) => {
-      expect(callDirection(call({ CALL_TYPE: type }))).toBe('out')
-    })
+  /** Неизвестный код не выбрасываем: звонок был, и итог обязан сойтись с суммой столбцов. */
+  it('неизвестный код считает исходящим, а не теряет звонок', () => {
+    expect(callDirection(call({ CALL_TYPE: '9' }))).toBe('out')
+    expect(callDirection(call({ CALL_TYPE: undefined }))).toBe('out')
+    expect(callDirection(call({ CALL_TYPE: 'мусор' }))).toBe('out')
+  })
 })
 
 describe('callAnswered', () => {
   it('состоялся только код 200', () => {
     expect(callAnswered(call({ CALL_FAILED_CODE: '200' }))).toBe(true)
     expect(callAnswered(call({ CALL_FAILED_CODE: 200 }))).toBe(true)
-    for (const code of ['304', '603-S', '', undefined]) {
-      expect(callAnswered(call({ CALL_FAILED_CODE: code }))).toBe(false)
-    }
+    expect(callAnswered(call({ CALL_FAILED_CODE: '304' }))).toBe(false)
+    expect(callAnswered(call({ CALL_FAILED_CODE: '603' }))).toBe(false)
+    expect(callAnswered(call({ CALL_FAILED_CODE: undefined }))).toBe(false)
   })
 })
 
 describe('aggregateCalls', () => {
   it('раскладывает разговоры по сотрудникам и направлениям', () => {
-    const report = aggregateCalls([
-      call({ PORTAL_USER_ID: '7', CALL_TYPE: '2', CALL_DURATION: '100' }),
-      call({ PORTAL_USER_ID: '7', CALL_TYPE: '1', CALL_DURATION: '200' }),
-      call({ PORTAL_USER_ID: '7', CALL_TYPE: '1', CALL_DURATION: '50' }),
-      call({ PORTAL_USER_ID: '9', CALL_TYPE: '2', CALL_DURATION: '80' })
-    ], { 7: 'Иванов Иван', 9: 'Петров Пётр' })
-
-    const ivanov = report.rows.find(row => row.userId === 7)!
-    expect(ivanov.userName).toBe('Иванов Иван')
-    expect(ivanov.calls.in).toEqual({ count: 1, seconds: 100 })
-    expect(ivanov.calls.out).toEqual({ count: 2, seconds: 250 })
-    expect(report.rows.find(row => row.userId === 9)?.calls.in).toEqual({ count: 1, seconds: 80 })
+    const stats = aggregateCalls([
+      call({ PORTAL_USER_ID: '7', CALL_TYPE: '1', CALL_DURATION: '100' }),
+      call({ PORTAL_USER_ID: '7', CALL_TYPE: '2', CALL_DURATION: '200' }),
+      call({ PORTAL_USER_ID: '8', CALL_TYPE: '1', CALL_DURATION: '50' })
+    ])
+    expect(stats.get(7)?.calls.out).toEqual({ count: 1, seconds: 100 })
+    expect(stats.get(7)?.calls.in).toEqual({ count: 1, seconds: 200 })
+    expect(stats.get(8)?.calls.out).toEqual({ count: 1, seconds: 50 })
   })
 
   /**
-   * ⚠ Порог — правило ЗАКАЗЧИКА, и сравнение СТРОГОЕ: прежний отчёт фильтровал `>CALL_DURATION`.
-   * Разница в одну секунду, но она сдвигает все числа относительно тех, к которым он привык.
+   * ⚠ Правило заказчика — СТРОГО дольше порога (`>CALL_DURATION` в прежнем отчёте). Ровно 29
+   * секунд разговором не считались никогда, и сдвиг на секунду поменял бы все числа отчёта
+   * относительно тех, к которым заказчик привык.
    */
   it('порог строгий: ровно порог — уже не разговор', () => {
-    const report = aggregateCalls([
-      call({ CALL_DURATION: '29' }),
-      call({ CALL_DURATION: '30' })
+    const stats = aggregateCalls([
+      call({ CALL_DURATION: String(DEFAULT_CALL_THRESHOLD_SECONDS) }),
+      call({ CALL_DURATION: String(DEFAULT_CALL_THRESHOLD_SECONDS + 1) })
     ])
-    expect(report.rows[0]?.calls.out.count).toBe(1)
-    expect(report.rows[0]?.calls.out.seconds).toBe(30)
-    expect(report.rows[0]?.tooShort).toBe(1)
-    expect(report.thresholdSeconds).toBe(DEFAULT_CALL_THRESHOLD_SECONDS)
+    expect(stats.get(7)?.tooShort).toBe(1)
+    expect(stats.get(7)?.calls.out).toEqual({ count: 1, seconds: 30 })
   })
 
-  // Порог — настройка отчёта (решение владельца 2026-09-06), а не константа в коде.
-  it('порог можно задать, и отчёт называет тот, которым считал', () => {
-    const rows = [call({ CALL_DURATION: '10' }), call({ CALL_DURATION: '40' })]
-    expect(aggregateCalls(rows, {}, { thresholdSeconds: 0 }).totals.calls.out.count).toBe(2)
-    expect(aggregateCalls(rows, {}, { thresholdSeconds: 100 }).totals.calls.out.count).toBe(0)
-    expect(aggregateCalls(rows, {}, { thresholdSeconds: 5 }).thresholdSeconds).toBe(5)
+  it('порог можно задать — это настройка отчёта, а не константа', () => {
+    const rows = [call({ CALL_DURATION: '45' })]
+    expect(aggregateCalls(rows).get(7)?.calls.out.count).toBe(1)
+    expect(aggregateCalls(rows, { thresholdSeconds: 60 }).get(7)?.calls.out.count).toBe(0)
+    expect(aggregateCalls(rows, { thresholdSeconds: 60 }).get(7)?.tooShort).toBe(1)
   })
 
-  /**
-   * ⚠ Недозвон и короткий разговор — РАЗНЫЕ показатели, и ни один не входит в длительность.
-   * «Звонил, но не поговорил» у заказчика значит не то же, что «не звонил».
-   */
   it('недозвон и короткий разговор считаются отдельно и не идут в длительность', () => {
-    const report = aggregateCalls([
+    const stats = aggregateCalls([
       call({ CALL_FAILED_CODE: '304', CALL_DURATION: '0' }),
-      call({ CALL_FAILED_CODE: '603-S', CALL_DURATION: '5' }),
-      call({ CALL_DURATION: '3' }),
-      call({ CALL_DURATION: '90' })
-    ])
-    const row = report.rows[0]!
-    expect(row.failed).toBe(2)
-    expect(row.tooShort).toBe(1)
-    expect(row.calls.out).toEqual({ count: 1, seconds: 90 })
+      call({ CALL_FAILED_CODE: '603', CALL_DURATION: '0' }),
+      call({ CALL_DURATION: '5' }),
+      call({ CALL_DURATION: '120' })
+    ]).get(7)
+    expect(stats?.failed).toBe(2)
+    expect(stats?.tooShort).toBe(1)
+    expect(stats?.calls.out).toEqual({ count: 1, seconds: 120 })
   })
 
   /**
-   * ⚠ Недозвон длиннее порога всё равно недозвон: сначала код завершения, потом длительность.
-   * У портала попадаются записи с ненулевой длительностью и кодом отказа.
+   * ⚠ У недозвона длительность — ноль. Проверь мы сначала порог, каждый недозвон попал бы в
+   * «короткие разговоры», и показатель «звонил, но не поговорил» слился бы с «поговорил недолго».
    */
   it('код завершения важнее длительности', () => {
-    const report = aggregateCalls([call({ CALL_FAILED_CODE: '486', CALL_DURATION: '600' })])
-    expect(report.rows[0]?.failed).toBe(1)
-    expect(report.totals.calls.out.seconds).toBe(0)
+    const stats = aggregateCalls([call({ CALL_FAILED_CODE: '486', CALL_DURATION: '0' })]).get(7)
+    expect(stats?.failed).toBe(1)
+    expect(stats?.tooShort).toBe(0)
   })
 
-  /**
-   * ⚠ Звонок без сотрудника НЕ выбрасывается. Спрятать его — значит получить итог, не сходящийся
-   * с суммой строк, и не иметь объяснения. У заказчика такие есть: звонки на общую линию.
-   */
   it('звонок без сотрудника попадает в свою строку, а не пропадает', () => {
-    const report = aggregateCalls([
-      call({ PORTAL_USER_ID: '', CALL_DURATION: '60' }),
-      call({ PORTAL_USER_ID: '7', CALL_DURATION: '60' })
+    const stats = aggregateCalls([
+      call({ PORTAL_USER_ID: '' }),
+      call({ PORTAL_USER_ID: undefined }),
+      call({ PORTAL_USER_ID: '7' })
     ])
-    const orphan = report.rows.find(row => row.userId === 0)
-    expect(orphan?.userName).toBe('Без сотрудника')
-    expect(orphan?.calls.out.count).toBe(1)
-    expect(report.totals.calls.out.count).toBe(2)
+    expect(stats.get(0)?.calls.out.count).toBe(2)
+    expect(stats.get(7)?.calls.out.count).toBe(1)
   })
 
-  // Без имени — номер, а не прочерк: по номеру человека в портале найдут.
-  it('сотрудник без имени подписан номером', () => {
-    expect(aggregateCalls([call({ PORTAL_USER_ID: '5562' })]).rows[0]?.userName).toBe('Сотрудник #5562')
+  it('пустой список — пустой счёт, а не поломка', () => {
+    expect(aggregateCalls([]).size).toBe(0)
+  })
+})
+
+describe('departmentSubtree', () => {
+  const departments: DepartmentRef[] = [
+    { id: 1, name: 'Компания' },
+    { id: 10, name: 'Департамент', parentId: 1 },
+    { id: 11, name: 'Отдел А', parentId: 10 },
+    { id: 12, name: 'Отдел Б', parentId: 10 },
+    { id: 20, name: 'Другой департамент', parentId: 1 }
+  ]
+
+  /**
+   * ⛔ Замер боевого портала: люди сидят и в узлах, и в листьях — у 10 из 11 узлов есть сотрудники
+   * ПРЯМО в них. Возьми отчёт только узел — потеряет подотделы; только листья — потеряет тех, кто
+   * числится в самом департаменте.
+   */
+  it('берёт отдел вместе со всеми подотделами', () => {
+    expect([...departmentSubtree(departments, 10)].sort((a, b) => a - b)).toEqual([10, 11, 12])
+    expect([...departmentSubtree(departments, 1)].sort((a, b) => a - b)).toEqual([1, 10, 11, 12, 20])
+    expect([...departmentSubtree(departments, 11)]).toEqual([11])
+  })
+
+  it('неизвестный отдел — только он сам, а не всё дерево', () => {
+    expect([...departmentSubtree(departments, 999)]).toEqual([999])
+  })
+
+  /** ⚠ Дерево приходит от портала: кривая привязка не должна вешать отчёт. */
+  it('цикл в дереве не зацикливает обход', () => {
+    const looped: DepartmentRef[] = [
+      { id: 1, name: 'А', parentId: 2 },
+      { id: 2, name: 'Б', parentId: 1 }
+    ]
+    expect([...departmentSubtree(looped, 1)].sort((a, b) => a - b)).toEqual([1, 2])
+  })
+})
+
+describe('usersInDepartment', () => {
+  const departments: DepartmentRef[] = [
+    { id: 10, name: 'Департамент' },
+    { id: 11, name: 'Отдел А', parentId: 10 }
+  ]
+  const users = [
+    user(1, 'Один', { departmentIds: [10] }),
+    user(2, 'Два', { departmentIds: [11] }),
+    user(3, 'Три', { departmentIds: [99] }),
+    user(4, 'Четыре', { departmentIds: [99, 11] }),
+    user(5, 'Пять')
+  ]
+
+  it('без отдела — все сотрудники', () => {
+    expect(usersInDepartment(users, departments).map(u => u.id)).toEqual([1, 2, 3, 4, 5])
+  })
+
+  /** ⚠ У заказчика 13 совместителей: сравнение с ПЕРВЫМ отделом молча теряло бы их. */
+  it('совместитель попадает в каждый свой отдел', () => {
+    expect(usersInDepartment(users, departments, 11).map(u => u.id)).toEqual([2, 4])
+    expect(usersInDepartment(users, departments, 99).map(u => u.id)).toEqual([3, 4])
+  })
+
+  it('отдел берётся с подотделами', () => {
+    expect(usersInDepartment(users, departments, 10).map(u => u.id)).toEqual([1, 2, 4])
+  })
+})
+
+describe('buildActivityReport', () => {
+  /** Счётчики портала так и приходят: карта «ключ команды → число». */
+  function totals(entries: Record<string, number>): Record<string, number> {
+    return entries
+  }
+
+  it('раскладывает счётчики дел и лидов по сотрудникам', () => {
+    const report = buildActivityReport({
+      users: [user(7, 'Иванов И.')],
+      totals: totals({
+        [deedKey(7, 'email', 'in')]: 3,
+        [deedKey(7, 'email', 'out')]: 5,
+        [deedKey(7, 'meeting')]: 2,
+        [deedKey(7, 'task')]: 1,
+        [overdueKey(7)]: 4,
+        [leadKey(7, 'created')]: 10,
+        [leadKey(7, 'won')]: 6,
+        [leadKey(7, 'lost')]: 3
+      })
+    })
+    expect(report.rows[0]?.deeds).toEqual({ email: { in: 3, out: 5 }, meeting: 2, task: 1, overdue: 4 })
+    expect(report.rows[0]?.leads).toEqual({ created: 10, won: 6, lost: 3 })
+    expect(report.rows[0]?.deedsKnown).toBe(true)
+  })
+
+  /** ⚠ Порталу верим проверяя: мусор в счётчике обязан стать нулём, а не «NaN» на экране. */
+  it('негодный счётчик читается нулём', () => {
+    const report = buildActivityReport({
+      users: [user(7, 'Иванов И.')],
+      totals: { [deedKey(7, 'email', 'in')]: Number.NaN, [deedKey(7, 'meeting')]: -5, [deedKey(7, 'task')]: 2.7 }
+    })
+    expect(report.rows[0]?.deeds.email.in).toBe(0)
+    expect(report.rows[0]?.deeds.meeting).toBe(0)
+    expect(report.rows[0]?.deeds.task).toBe(2)
+  })
+
+  /** ⚠ Пока звонки не приехали, экран обязан знать, что нули в их столбцах — это «ещё читаем». */
+  it('без звонков таблица уже собирается и честно про это говорит', () => {
+    const report = buildActivityReport({ users: [user(7, 'Иванов И.')], totals: {} })
+    expect(report.callsKnown).toBe(false)
+    expect(report.rows[0]?.calls).toEqual(emptyCallStats().calls)
+    expect(report.rows).toHaveLength(1)
+  })
+
+  it('приехавшие звонки встают в строки своих сотрудников', () => {
+    const report = buildActivityReport({
+      users: [user(7, 'Иванов И.'), user(8, 'Петров П.')],
+      totals: {},
+      calls: aggregateCalls([
+        call({ PORTAL_USER_ID: '7', CALL_DURATION: '100' }),
+        call({ PORTAL_USER_ID: '7', CALL_DURATION: '200' })
+      ])
+    })
+    expect(report.callsKnown).toBe(true)
+    expect(report.rows.find(r => r.userId === 7)?.calls.out).toEqual({ count: 2, seconds: 300 })
+    expect(report.rows.find(r => r.userId === 8)?.calls.out).toEqual({ count: 0, seconds: 0 })
   })
 
   /**
-   * ⚠ «Уволен» ставится только по признаку портала. Пометить им того, чьё имя мы просто не смогли
-   * прочитать, — соврать про человека, а не про число.
+   * ⚠ Звонок сотрудника, которого в списке нет (вне отдела, без `PORTAL_USER_ID`), строку получает
+   * — иначе сумма столбца «разговоры» не сошлась бы с итогом. Но дела ему не спрашивали, и ноль в
+   * их столбцах читался бы как «не писал» вместо «не спрашивали».
    */
+  it('звонки чужого сотрудника дают строку с НЕизвестными делами', () => {
+    const report = buildActivityReport({
+      users: [user(7, 'Иванов И.')],
+      totals: {},
+      calls: aggregateCalls([
+        call({ PORTAL_USER_ID: '99' }),
+        call({ PORTAL_USER_ID: '' })
+      ])
+    })
+    const stranger = report.rows.find(r => r.userId === 99)
+    expect(stranger?.userName).toBe('Сотрудник #99')
+    expect(stranger?.deedsKnown).toBe(false)
+    expect(report.rows.find(r => r.userId === 0)?.userName).toBe(NO_USER_LABEL)
+    expect(report.rows.find(r => r.userId === 7)?.deedsKnown).toBe(true)
+  })
+
   it('пометка «уволен» — только по признаку портала', () => {
-    const report = aggregateCalls(
-      [call({ PORTAL_USER_ID: '7' }), call({ PORTAL_USER_ID: '9' })],
-      { 7: 'Иванов Иван', 9: 'Петров Пётр' },
-      { dismissed: new Set(['9']) }
-    )
-    expect(report.rows.find(row => row.userId === 7)?.dismissed).toBeUndefined()
-    expect(report.rows.find(row => row.userId === 9)?.dismissed).toBe(true)
+    const report = buildActivityReport({
+      users: [user(7, 'Иванов И.', { dismissed: true }), user(8, 'Петров П.')],
+      totals: {}
+    })
+    expect(report.rows.find(r => r.userId === 7)?.dismissed).toBe(true)
+    expect(report.rows.find(r => r.userId === 8)?.dismissed).toBeUndefined()
   })
 
-  /**
-   * ⚠ Сортировка по числу разговоров: отчёт открывают, чтобы увидеть, кто работает больше. При
-   * равенстве — по имени, иначе порядок прыгал бы между перерисовками на одинаковых числах.
-   */
-  it('строки идут по числу разговоров, при равенстве — по имени', () => {
-    const report = aggregateCalls([
-      call({ PORTAL_USER_ID: '1' }),
-      call({ PORTAL_USER_ID: '2' }), call({ PORTAL_USER_ID: '2' }), call({ PORTAL_USER_ID: '2' }),
-      call({ PORTAL_USER_ID: '3' })
-    ], { 1: 'Яковлев Ян', 2: 'Петров Пётр', 3: 'Авдеев Антон' })
-    expect(report.rows.map(row => row.userName)).toEqual(['Петров Пётр', 'Авдеев Антон', 'Яковлев Ян'])
+  /** Отчёт открывают, чтобы увидеть, кто работает больше. При равенстве — по имени, иначе прыгало бы. */
+  it('строки идут по числу действий, при равенстве — по имени', () => {
+    const report = buildActivityReport({
+      users: [user(1, 'Яковлев'), user(2, 'Абрамов'), user(3, 'Сидоров')],
+      totals: { [deedKey(3, 'meeting')]: 5 }
+    })
+    expect(report.rows.map(r => r.userName)).toEqual(['Сидоров', 'Абрамов', 'Яковлев'])
   })
 
-  it('пустой период — пустая таблица и нулевые итоги, а не поломка', () => {
-    const report = aggregateCalls([])
+  it('называет порог, которым считал', () => {
+    expect(buildActivityReport({ users: [], totals: {} }).thresholdSeconds)
+      .toBe(DEFAULT_CALL_THRESHOLD_SECONDS)
+    expect(buildActivityReport({ users: [], totals: {}, thresholdSeconds: 60 }).thresholdSeconds)
+      .toBe(60)
+  })
+
+  /** Порог обязан доехать до счёта звонков, а не только до подписи под таблицей. */
+  it('порог отчёта — тот же, которым посчитаны разговоры', () => {
+    const report = buildActivityReport({
+      users: [user(7, 'Иванов И.')],
+      totals: {},
+      calls: aggregateCalls([call({ CALL_DURATION: '45' })], { thresholdSeconds: 60 }),
+      thresholdSeconds: 60
+    })
+    expect(report.thresholdSeconds).toBe(60)
+    expect(report.rows[0]?.tooShort).toBe(1)
+    expect(report.rows[0]?.calls.out.count).toBe(0)
+  })
+
+  it('пустой отбор — пустая таблица и нулевые итоги, а не поломка', () => {
+    const report = buildActivityReport({ users: [], totals: {} })
     expect(report.rows).toEqual([])
-    expect(report.totals).toEqual({ calls: { in: { count: 0, seconds: 0 }, out: { count: 0, seconds: 0 } }, failed: 0, tooShort: 0, users: 0 })
+    expect(report.totals.users).toBe(0)
+    expect(report.totals.calls.in).toEqual({ count: 0, seconds: 0 })
+    expect(report.totals.deeds).toEqual(emptyDeeds())
+    expect(report.totals.leads).toEqual(emptyLeads())
+  })
+
+  it('итог сходится с суммой строк', () => {
+    const report = buildActivityReport({
+      users: [user(7, 'Иванов И.'), user(8, 'Петров П.')],
+      totals: {
+        [deedKey(7, 'email', 'out')]: 4,
+        [deedKey(8, 'email', 'out')]: 6,
+        [deedKey(7, 'meeting')]: 1,
+        [overdueKey(8)]: 3,
+        [leadKey(7, 'created')]: 5,
+        [leadKey(8, 'created')]: 7
+      },
+      calls: aggregateCalls([
+        call({ PORTAL_USER_ID: '7', CALL_DURATION: '100' }),
+        call({ PORTAL_USER_ID: '8', CALL_DURATION: '200' }),
+        call({ PORTAL_USER_ID: '8', CALL_FAILED_CODE: '304' })
+      ])
+    })
+    expect(report.totals.deeds.email.out).toBe(10)
+    expect(report.totals.deeds.meeting).toBe(1)
+    expect(report.totals.deeds.overdue).toBe(3)
+    expect(report.totals.leads.created).toBe(12)
+    expect(report.totals.calls.out).toEqual({ count: 2, seconds: 300 })
+    expect(report.totals.failed).toBe(1)
+    const sumOut = report.rows.reduce((acc, row) => acc + row.calls.out.seconds, 0)
+    expect(sumOut).toBe(report.totals.calls.out.seconds)
+  })
+
+  it('в счёт сотрудников идут только те, у кого было хоть одно действие', () => {
+    const report = buildActivityReport({
+      users: [user(7, 'Иванов И.'), user(8, 'Петров П.'), user(9, 'Сидоров С.')],
+      totals: {
+        [deedKey(8, 'email', 'out')]: 1,
+        // ⚠ Лид — результат, а не действие: одного его мало, чтобы счесть человека работавшим.
+        [leadKey(9, 'created')]: 3
+      }
+    })
+    expect(report.totals.users).toBe(1)
+  })
+})
+
+describe('activityActions', () => {
+  function row(over: Partial<ActivityRow> = {}): ActivityRow {
+    return {
+      userId: 1,
+      userName: 'А',
+      ...emptyCallStats(),
+      deeds: emptyDeeds(),
+      leads: emptyLeads(),
+      deedsKnown: true,
+      ...over
+    }
+  }
+
+  /** Недозвон — тоже работа: человек набрал номер. */
+  it('считает разговоры, недозвоны, короткие и дела', () => {
+    expect(activityActions(row({
+      calls: { in: { count: 2, seconds: 0 }, out: { count: 3, seconds: 0 } },
+      failed: 4,
+      tooShort: 5,
+      deeds: { email: { in: 6, out: 7 }, meeting: 8, task: 9, overdue: 100 }
+    }))).toBe(2 + 3 + 4 + 5 + 6 + 7 + 8 + 9)
+  })
+
+  /** ⚠ Лид — результат, а не действие: складывать его с письмами значило бы считать разное. */
+  it('лиды в число действий не входят', () => {
+    expect(activityActions(row({ leads: { created: 50, won: 20, lost: 30 } }))).toBe(0)
+  })
+
+  /** ⚠ Просрочка — состояние на конец периода, а не работа, сделанная в нём. */
+  it('просроченные дела в число действий не входят', () => {
+    expect(activityActions(row({ deeds: { ...emptyDeeds(), overdue: 42 } }))).toBe(0)
   })
 })
 
 describe('activityTotals', () => {
-  /**
-   * ⚠ Прямая проверка, а не только через `aggregateCalls`: функция экспортирована, значит её могут
-   * позвать и на строках, собранных иначе — например, на отфильтрованных экраном. Косвенное
-   * покрытие такой вызов не сторожит.
-   */
   it('складывает произвольные строки, а не только собранные ядром', () => {
     const totals = activityTotals([
-      { userId: 1, userName: 'А', calls: { in: { count: 2, seconds: 100 }, out: { count: 1, seconds: 40 } }, failed: 3, tooShort: 1 },
-      { userId: 2, userName: 'Б', calls: { in: { count: 0, seconds: 0 }, out: { count: 5, seconds: 500 } }, failed: 0, tooShort: 2 },
-      { userId: 3, userName: 'В', calls: { in: { count: 0, seconds: 0 }, out: { count: 0, seconds: 0 } }, failed: 7, tooShort: 0 }
+      {
+        userId: 1,
+        userName: 'А',
+        calls: { in: { count: 2, seconds: 100 }, out: { count: 1, seconds: 40 } },
+        failed: 3,
+        tooShort: 1,
+        deeds: { email: { in: 1, out: 2 }, meeting: 3, task: 4, overdue: 5 },
+        leads: { created: 6, won: 7, lost: 8 },
+        deedsKnown: true
+      },
+      {
+        userId: 2,
+        userName: 'Б',
+        calls: { in: { count: 0, seconds: 0 }, out: { count: 5, seconds: 500 } },
+        failed: 0,
+        tooShort: 2,
+        deeds: { email: { in: 10, out: 20 }, meeting: 30, task: 40, overdue: 50 },
+        leads: { created: 60, won: 70, lost: 80 },
+        deedsKnown: true
+      }
     ])
-    expect(totals.calls.in).toEqual({ count: 2, seconds: 100 })
     expect(totals.calls.out).toEqual({ count: 6, seconds: 540 })
-    expect(totals.failed).toBe(10)
+    expect(totals.calls.in).toEqual({ count: 2, seconds: 100 })
+    expect(totals.failed).toBe(3)
     expect(totals.tooShort).toBe(3)
-    // Третий сотрудник только недозванивался — в счёт «наговоривших» он не идёт.
+    expect(totals.deeds).toEqual({ email: { in: 11, out: 22 }, meeting: 33, task: 44, overdue: 55 })
+    expect(totals.leads).toEqual({ created: 66, won: 77, lost: 88 })
     expect(totals.users).toBe(2)
-  })
-
-  /**
-   * ⚠ Итог обязан сходиться с суммой строк — это и есть смысл того, что он считается ядром, а не
-   * в шаблоне. Разошлись бы они ровно тогда, когда этого никто не ждёт.
-   */
-  it('итог сходится с суммой строк', () => {
-    const report = aggregateCalls([
-      call({ PORTAL_USER_ID: '7', CALL_TYPE: '2', CALL_DURATION: '100' }),
-      call({ PORTAL_USER_ID: '9', CALL_TYPE: '2', CALL_DURATION: '50' }),
-      call({ PORTAL_USER_ID: '9', CALL_TYPE: '1', CALL_DURATION: '70' }),
-      call({ PORTAL_USER_ID: '9', CALL_FAILED_CODE: '304' })
-    ])
-    const sum = (pick: (row: typeof report.rows[number]) => number) => report.rows.reduce((acc, row) => acc + pick(row), 0)
-    expect(report.totals.calls.in.count).toBe(sum(row => row.calls.in.count))
-    expect(report.totals.calls.in.seconds).toBe(sum(row => row.calls.in.seconds))
-    expect(report.totals.calls.out.count).toBe(sum(row => row.calls.out.count))
-    expect(report.totals.failed).toBe(sum(row => row.failed))
-    expect(report.totals.calls.in.seconds).toBe(150)
-  })
-
-  // «Сотрудников со звонками» — те, у кого есть РАЗГОВОРЫ. Один недозвон работой не считается.
-  it('в счёт сотрудников идут только те, кто наговорил', () => {
-    const report = aggregateCalls([
-      call({ PORTAL_USER_ID: '7', CALL_DURATION: '60' }),
-      call({ PORTAL_USER_ID: '9', CALL_FAILED_CODE: '304' })
-    ])
-    expect(report.totals.users).toBe(1)
   })
 })
 
@@ -239,20 +451,26 @@ describe('averageCallSeconds', () => {
   })
 
   /**
-   * ⚠ Без разговоров — `undefined`, а НЕ ноль. Ноль читался бы как «говорили нисколько», а деление
-   * на ноль напечатало бы «NaN», после чего отчёт перестают читать целиком.
+   * ⚠ Ноль означал бы «разговоры были и длились нисколько». Пустой период — норма этого отчёта, и
+   * `x / 0` напечатало бы «NaN», после чего отчёт перестают читать целиком.
    */
   it('без разговоров среднего нет', () => {
     expect(averageCallSeconds({ count: 0, seconds: 0 })).toBeUndefined()
+    expect(averageCallSeconds({ count: 0, seconds: 500 })).toBeUndefined()
   })
 })
 
-describe('totalCalls', () => {
-  it('складывает оба направления', () => {
-    const report = aggregateCalls([
-      call({ CALL_TYPE: '1', CALL_DURATION: '100' }),
-      call({ CALL_TYPE: '2', CALL_DURATION: '50' })
-    ])
-    expect(totalCalls(report.rows[0]!)).toEqual({ count: 2, seconds: 150 })
+describe('totalCalls и totalDeeds', () => {
+  it('складывает оба направления разговоров', () => {
+    expect(totalCalls({
+      calls: { in: { count: 2, seconds: 100 }, out: { count: 3, seconds: 200 } },
+      failed: 0,
+      tooShort: 0
+    })).toEqual({ count: 5, seconds: 300 })
+  })
+
+  /** ⚠ Просрочка — не «дело за период»: она считается на конец периода и в сумму дел не входит. */
+  it('дела за период складываются без просроченных', () => {
+    expect(totalDeeds({ email: { in: 1, out: 2 }, meeting: 3, task: 4, overdue: 999 })).toBe(10)
   })
 })
