@@ -23,6 +23,7 @@ const portal = vi.hoisted(() => ({
 /** Адреса обработчиков, которые построит страница из `siteUrl` (задан в `vitest.config.ts`). */
 const LEADS_HANDLER = 'https://report.example.com/app/leads'
 const MANAGERS_HANDLER = 'https://report.example.com/app/managers'
+const ACTIVITY_HANDLER = 'https://report.example.com/app/activity'
 
 mockNuxtImport('useB24', () => () => ({
   init: async () => {},
@@ -52,7 +53,8 @@ function healthyPortal() {
     'scope': ['crm', 'placement', 'user_brief', 'telephony', 'department'],
     'placement.get': [
       { placement: 'CRM_ANALYTICS_MENU', handler: LEADS_HANDLER },
-      { placement: 'CRM_ANALYTICS_MENU', handler: MANAGERS_HANDLER }
+      { placement: 'CRM_ANALYTICS_MENU', handler: MANAGERS_HANDLER },
+      { placement: 'CRM_ANALYTICS_MENU', handler: ACTIVITY_HANDLER }
     ],
     'placement.unbind': { count: 2 }
   }
@@ -177,11 +179,12 @@ describe('страница установки', () => {
   })
 
   // ⚠ Наследство прошлой версии: пункт на главную приложения и кнопка в шапке аналитики. После
-  // обновления они остались бы в меню рядом с двумя новыми — три входа вместо двух.
+  // обновления они остались бы в меню рядом с новыми — лишний вход в прошлую версию.
   it('видит лишние пункты прошлой версии и зовёт перепривязать', async () => {
     portal.answers['placement.get'] = [
       { placement: 'CRM_ANALYTICS_MENU', handler: LEADS_HANDLER },
       { placement: 'CRM_ANALYTICS_MENU', handler: MANAGERS_HANDLER },
+      { placement: 'CRM_ANALYTICS_MENU', handler: ACTIVITY_HANDLER },
       { placement: 'CRM_ANALYTICS_TOOLBAR', handler: 'https://report.example.com/app' }
     ]
     const wrapper = await mountInstall()
@@ -189,9 +192,9 @@ describe('страница установки', () => {
     expect(wrapper.text()).toContain('Перепривязать точки')
   })
 
-  // Половина установки хуже, чем её отсутствие: человек нашёл бы один отчёт и решил, что второго
-  // в приложении нет.
-  it('привязан один отчёт из двух — это не «всё хорошо»', async () => {
+  // Половина установки хуже, чем её отсутствие: человек нашёл бы один отчёт и решил, что
+  // остальных в приложении нет.
+  it('привязан один отчёт из трёх — это не «всё хорошо»', async () => {
     portal.answers['placement.get'] = [{ placement: 'CRM_ANALYTICS_MENU', handler: LEADS_HANDLER }]
     const wrapper = await mountInstall()
     expect(wrapper.text()).not.toContain('Всё зарегистрировано')

@@ -57,7 +57,8 @@ export const LEGACY_PLACEMENT_CODES = ['CRM_ANALYTICS_TOOLBAR'] as const
 /**
  * Что регистрируем при установке: код точки, путь отчёта и заголовок пункта.
  *
- * ⚠ ДВА пункта в одной точке, по одному на отчёт, — решение владельца от 2026-09-05. Раньше
+ * ⚠ ПО ПУНКТУ НА ОТЧЁТ в одной точке — решение владельца от 2026-09-05 (тогда их было два, с
+ * 2026-09-06 — три). Раньше
  * пункт был один и открывал главную приложения с выбором; лишний шаг между «хочу отчёт» и
  * «вижу отчёт» человек проходил каждый раз. Несколько обработчиков в одной точке портал
  * допускает: в единственном экземпляре регистрируются только `REST_APP_URI` и
@@ -72,7 +73,8 @@ export const LEGACY_PLACEMENT_CODES = ['CRM_ANALYTICS_TOOLBAR'] as const
  */
 export const PLACEMENTS = [
   { code: PLACEMENT_ANALYTICS_MENU, path: '/app/leads', title: 'Аналитика по лидам' },
-  { code: PLACEMENT_ANALYTICS_MENU, path: '/app/managers', title: 'Сделки по менеджерам' }
+  { code: PLACEMENT_ANALYTICS_MENU, path: '/app/managers', title: 'Сделки по менеджерам' },
+  { code: PLACEMENT_ANALYTICS_MENU, path: '/app/activity', title: 'Активность пользователей' }
 ] as const
 
 /**

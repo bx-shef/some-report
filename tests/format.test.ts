@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCount, formatDate, formatDuration, formatMoney, formatPercent } from '~/utils/format'
+import { formatCount, formatDate, formatDuration, formatMoney, formatPercent, formatSeconds } from '~/utils/format'
 import { nbsp } from './helpers/text'
 
 describe('formatCount', () => {
@@ -99,5 +99,38 @@ describe('formatDate', () => {
 
   it('непонятную строку отдаёт как есть, а не ломает подпись', () => {
     expect(formatDate('когда-нибудь')).toBe('когда-нибудь')
+  })
+})
+
+describe('formatSeconds', () => {
+  it.each([
+    [0, '0 с'],
+    [45, '45 с'],
+    [59, '59 с'],
+    [60, '1 мин 0 с'],
+    [750, '12 мин 30 с'],
+    [3599, '59 мин 59 с'],
+    [3600, '1 ч 0 мин'],
+    [12345, '3 ч 25 мин']
+  ])('%i секунд → %s', (input, expected) => {
+    expect(formatSeconds(input)).toBe(expected)
+  })
+
+  /**
+   * ⚠ Прочерк, а не «0 с». Ноль означал бы «разговоры были и длились нисколько» — то же правило,
+   * что у `averageCallSeconds`, которая для пустого счёта возвращает `undefined`.
+   */
+  it('нет разговоров — прочерк, а не ноль', () => {
+    expect(formatSeconds(undefined)).toBe('—')
+    expect(formatSeconds(Number.NaN)).toBe('—')
+  })
+
+  /**
+   * ⚠ Средний разговор в полторы минуты — то число, ради которого столбец и смотрят. Минутный
+   * формат напечатал бы «2 мин» и потерял бы весь смысл.
+   */
+  it('секунды не теряются на коротких разговорах', () => {
+    expect(formatSeconds(95)).toBe('1 мин 35 с')
+    expect(formatDuration(95 / 60)).toBe('2 мин')
   })
 })

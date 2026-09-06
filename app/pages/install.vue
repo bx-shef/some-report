@@ -75,6 +75,19 @@ const expected = computed(() => placementHandlers(config.public.siteUrl) ?? [])
  */
 const analyticsUrl = computed(() => (b24.isInit() ? portalAnalyticsUrl(b24.targetOrigin()) : null))
 
+/**
+ * Названия пунктов меню — списком из самого контракта встройки.
+ *
+ * ⚠ Собирается из `PLACEMENTS`, а не вписано в текст руками. Раньше здесь стояло «Два пункта» и
+ * два названия по индексам: третий отчёт добавился, а страница установки продолжила бы уверять
+ * администратора, что пунктов два, — и он искал бы ровно два.
+ */
+const placementTitles = computed(() => {
+  const titles = PLACEMENTS.map(placement => `«${placement.title}»`)
+  const last = titles.at(-1)
+  return titles.length > 1 ? `${titles.slice(0, -1).join(', ')} и ${last}` : (last ?? '')
+})
+
 const busy = computed(() => state.value === 'running' || state.value === 'checking')
 
 const verdictColor = computed(() => {
@@ -356,7 +369,7 @@ onMounted(install)
       </h2>
       <ol class="list-decimal space-y-1 pl-5">
         <li>
-          <b>Два пункта в CRM-аналитике:</b>
+          <b>Пункты в CRM-аналитике ({{ PLACEMENTS.length }}):</b>
           <a
             v-if="analyticsUrl"
             :href="analyticsUrl"
@@ -366,8 +379,7 @@ onMounted(install)
           >{{ analyticsUrl }}</a>
           <span v-else>раздел «CRM-аналитика»</span>
           → в левом меню раскройте «Приложения» (рядом с «Маркетплейс»). Там
-          «{{ PLACEMENTS[0].title }}» и «{{ PLACEMENTS[1].title }}» — каждый открывает свой отчёт
-          сразу, без промежуточной страницы.
+          {{ placementTitles }} — каждый открывает свой отчёт сразу, без промежуточной страницы.
         </li>
         <li>
           <b>Плитка приложения:</b> «Приложения» → плитка отчётов. Открывает страницу выбора

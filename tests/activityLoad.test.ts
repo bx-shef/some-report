@@ -17,6 +17,7 @@ import {
   emptyLeads,
   leadKey,
   overdueKey,
+  scopeCallsToUsers,
   totalCalls,
   totalDeeds,
   usersInDepartment
@@ -472,5 +473,36 @@ describe('totalCalls и totalDeeds', () => {
   /** ⚠ Просрочка — не «дело за период»: она считается на конец периода и в сумму дел не входит. */
   it('дела за период складываются без просроченных', () => {
     expect(totalDeeds({ email: { in: 1, out: 2 }, meeting: 3, task: 4, overdue: 999 })).toBe(10)
+  })
+})
+
+describe('scopeCallsToUsers', () => {
+  const users = [user(1, 'Один'), user(2, 'Два')]
+  const calls = aggregateCalls([
+    call({ PORTAL_USER_ID: '1' }),
+    call({ PORTAL_USER_ID: '9' }),
+    call({ PORTAL_USER_ID: '' })
+  ])
+
+  /**
+   * ⛔ Телефония читается ПО ВСЕМУ ПОРТАЛУ — фильтра «сотрудники такого-то отдела» у метода нет.
+   * Без этого отсева фильтр отдела работал бы наполовину: продавец исчезал бы из таблицы строкой
+   * со счётчиками и возвращался бы в неё строкой «Сотрудник #9» — со своими звонками. Человек,
+   * выбравший «Отдел закупок», видел бы в нём продавцов.
+   */
+  it('под выбранным отделом остаются только его сотрудники', () => {
+    const scoped = scopeCallsToUsers(calls, users, { departmentPicked: true })
+    expect([...scoped.keys()]).toEqual([1])
+  })
+
+  /** ⚠ Звонки без сотрудника ничьи: под отделом им места нет, без отдела — есть. */
+  it('без отдела остаются все, вместе с ничьими и незнакомыми', () => {
+    const scoped = scopeCallsToUsers(calls, users, { departmentPicked: false })
+    expect([...scoped.keys()].sort((a, b) => a - b)).toEqual([0, 1, 9])
+  })
+
+  it('исходную карту не меняет', () => {
+    scopeCallsToUsers(calls, users, { departmentPicked: true })
+    expect(calls.size).toBe(3)
   })
 })

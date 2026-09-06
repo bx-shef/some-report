@@ -34,11 +34,17 @@ describe('права приложения', () => {
 })
 
 describe('плейсменты', () => {
-  // Решение владельца от 2026-09-05: в CRM-аналитике две ссылки, по одной на отчёт, без
-  // промежуточной страницы выбора.
-  it('регистрируем два пункта меню аналитики — по одному на отчёт', () => {
-    expect(PLACEMENTS.map(p => p.code)).toEqual([PLACEMENT_ANALYTICS_MENU, PLACEMENT_ANALYTICS_MENU])
+  // Решение владельца от 2026-09-05: в CRM-аналитике ссылка на КАЖДЫЙ отчёт, без промежуточной
+  // страницы выбора. С 2026-09-06 отчётов три.
+  //
+  // ⚠ Проверяем СООТВЕТСТВИЕ списку отчётов, а не длину: отчёт, добавленный без пункта меню,
+  // открыть в портале нечем, а пункт без отчёта ведёт в 404 — и то, и другое видно только после
+  // установки клиенту. Число в отдельном ожидании ниже: без него оба списка можно было бы
+  // опустошить разом, и тест остался бы зелёным.
+  it('регистрируем по пункту меню аналитики на каждый отчёт и ничего сверх', () => {
     expect(PLACEMENTS.map(p => p.path)).toEqual(APP_REPORTS.map(report => report.path))
+    expect(PLACEMENTS.every(p => p.code === PLACEMENT_ANALYTICS_MENU)).toBe(true)
+    expect(PLACEMENTS).toHaveLength(3)
   })
 
   // Заголовок пункта — то, что человек видит в меню портала. Пустой заголовок дал бы там
@@ -50,7 +56,7 @@ describe('плейсменты', () => {
   })
 
   // Кнопку в шапке аналитики приложение больше не регистрирует, но обязано СНИМАТЬ: иначе после
-  // обновления рядом с двумя новыми пунктами остаётся третий вход в прошлую версию.
+  // обновления рядом с новыми пунктами остаётся лишний вход в прошлую версию.
   it('прежние точки помним, чтобы снять их при установке', () => {
     expect(LEGACY_PLACEMENT_CODES).toContain('CRM_ANALYTICS_TOOLBAR')
     expect(PLACEMENTS.map(p => p.code)).not.toContain('CRM_ANALYTICS_TOOLBAR')
@@ -61,12 +67,13 @@ describe('placementHandlers', () => {
   it('каждому пункту — свой адрес отчёта', () => {
     expect(placementHandlers('https://report.example.com')).toEqual([
       { code: PLACEMENT_ANALYTICS_MENU, title: 'Аналитика по лидам', handler: 'https://report.example.com/app/leads' },
-      { code: PLACEMENT_ANALYTICS_MENU, title: 'Сделки по менеджерам', handler: 'https://report.example.com/app/managers' }
+      { code: PLACEMENT_ANALYTICS_MENU, title: 'Сделки по менеджерам', handler: 'https://report.example.com/app/managers' },
+      { code: PLACEMENT_ANALYTICS_MENU, title: 'Активность пользователей', handler: 'https://report.example.com/app/activity' }
     ])
   })
 
-  // Половина зарегистрированных пунктов хуже, чем ни одного: человек нашёл бы один отчёт и
-  // считал бы, что второго нет.
+  // Часть зарегистрированных пунктов хуже, чем ни одного: человек нашёл бы один отчёт и
+  // считал бы, что остальных нет.
   it('без публичного адреса не регистрируем ничего', () => {
     expect(placementHandlers('')).toBeNull()
   })

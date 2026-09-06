@@ -67,6 +67,28 @@ export function formatDuration(minutes: number | undefined): string {
 }
 
 /**
+ * Длительность в СЕКУНДАХ человеческим текстом: `45` → `45 с`, `750` → `12 мин 30 с`,
+ * `12345` → `3 ч 25 мин`.
+ *
+ * ⚠ Отдельно от `formatDuration`, который принимает минуты, и это не дублирование. Разговоры
+ * копятся в секундах (округли каждый — и сумма сотни коротких уедет на десятки минут), а средний
+ * разговор в 95 секунд через минутный формат напечатался бы как «2 мин»: единственное число,
+ * ради которого этот столбец и смотрят, потеряло бы весь смысл.
+ *
+ * ⚠ `undefined` — это «разговоров не было», и печатается прочерком, а не нулём. Ноль означал бы
+ * «разговоры были и длились нисколько» (то же правило, что у `averageCallSeconds`).
+ */
+export function formatSeconds(seconds: number | undefined): string {
+  if (seconds === undefined || !Number.isFinite(seconds)) return '—'
+  const total = Math.max(0, Math.round(seconds))
+  if (total < 60) return `${total} с`
+  const minutes = Math.floor(total / 60)
+  if (minutes < 60) return `${minutes} мин ${total % 60} с`
+  const hours = Math.floor(minutes / 60)
+  return `${hours} ч ${minutes % 60} мин`
+}
+
+/**
  * ISO-дата `YYYY-MM-DD` → `ДД.ММ.ГГГГ`.
  *
  * ⚠ Форматируем строкой, а не через `Date`: `new Date('2026-09-01')` разбирается как полночь UTC,

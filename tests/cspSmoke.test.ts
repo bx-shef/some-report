@@ -133,10 +133,10 @@ describe('parseOrigin', () => {
 describe('postPaths', () => {
   // Портал открывает обработчики POST-запросом; без `error_page 405 =200` виджет пуст.
   // ⚠ С 2026-09-05 сюда входят и САМИ ОТЧЁТЫ: пункты CRM-аналитики ведут прямо в них, то есть
-  // портал POST-ит на `/app/leads` и `/app/managers`. Забыть отчёт в этом списке значит узнать
+  // портал POST-ит на `/app/leads`, `/app/managers` и `/app/activity`. Забыть отчёт в списке значит узнать
   // о 405 от клиента, а не из смоука.
   it('обработчики плейсментов и установки, каталогами', () => {
-    expect(postPaths(PORTAL_HANDLER_ROUTES)).toEqual(['/app/', '/app/leads/', '/app/managers/', '/install/'])
+    expect(postPaths(PORTAL_HANDLER_ROUTES)).toEqual(['/app/', '/app/leads/', '/app/managers/', '/app/activity/', '/install/'])
   })
 })
 
