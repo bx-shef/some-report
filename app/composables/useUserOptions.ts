@@ -48,6 +48,54 @@ export function useUserOptions() {
   }
 
   /**
+   * Одна настройка МИМО кэша — для значений, которые только что записал другой фрейм.
+   *
+   * ⚠ Кэш здесь врал бы: он существует ради отбора, который «за минуту не меняется», а условие
+   * детализации пишется ровно перед открытием слайдера и читается в СВЕЖЕМ фрейме. Прочитай мы
+   * его из кэша страницы — открылось бы прошлое условие под новым заголовком.
+   */
+  async function readFresh(key: string): Promise<unknown> {
+    if (!b24.isInit()) return undefined
+    try {
+      const result = await b24.getOrThrow().actions.v2.call.make<Record<string, unknown>>({
+        method: 'user.option.get',
+        params: {}
+      })
+      if (!result.isSuccess) return undefined
+      const data = result.getData()?.result
+      return typeof data === 'object' && data !== null && !Array.isArray(data)
+        ? (data as Record<string, unknown>)[key]
+        : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Записать и ДОЖДАТЬСЯ ответа портала. `false` — не записалось.
+   *
+   * ⚠ Отдельно от `write`, потому что смысл другой. `write` — «запомни отбор на следующий раз»,
+   * и его провал стоит одного лишнего выбора в интерфейсе. Здесь запись — ПЕРЕДАЧА данных
+   * другому фрейму: открой мы слайдер, не дождавшись её, он прочитал бы прошлое условие и показал
+   * бы чужой список под верным заголовком. Поэтому ждём и отвечаем честно.
+   *
+   * ⚠ И без дедупликации по последнему значению: то же самое условие, открытое второй раз, —
+   * законный повтор, а не лишний запрос.
+   */
+  async function writeNow(key: string, value: string): Promise<boolean> {
+    if (!b24.isInit()) return false
+    try {
+      const result = await b24.getOrThrow().actions.v2.call.make({
+        method: 'user.option.set',
+        params: { options: { [key]: value } }
+      })
+      return result.isSuccess
+    } catch {
+      return false
+    }
+  }
+
+  /**
    * Записать настройку.
    *
    * ⚠ Ничего не ждём и ничего не показываем: запись идёт следом за сменой отбора, а следом за
@@ -68,5 +116,5 @@ export function useUserOptions() {
     })()
   }
 
-  return { read, write }
+  return { read, readFresh, write, writeNow }
 }
