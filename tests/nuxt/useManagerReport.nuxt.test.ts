@@ -44,6 +44,8 @@ const portal = vi.hoisted(() => ({
   /** Сколько раз портал спросили пакетом — по этому числу видно, что счётчиков не стало вдвое больше. */
   batches: 0,
   usersFail: false,
+  /** Заголовки, с которыми страница просила портал открыть слайдер детализации. */
+  sliderTitles: [] as string[],
   /** Уволенные — портал отдаёт их только по `user.get` с `ACTIVE: false`. */
   dismissedUsers: [] as Array<Record<string, unknown>>,
   /** Портал отвечает ошибкой на пакет: отчёт обязан сказать об этом, а не показать нули. */
@@ -87,6 +89,16 @@ function dealList(params: Record<string, unknown>) {
   if (field) rows = [...rows].sort((a, b) => Number(a[field]) - Number(b[field]))
   return { rows, total: rows.length }
 }
+
+// Настоящий слайдер портала: список детализации живёт в отдельном фрейме, страница лишь просит
+// портал его открыть.
+mockNuxtImport('usePortalSlider', () => () => ({
+  openDrill: (payload: { title: string }) => {
+    portal.sliderTitles.push(payload.title)
+    return true
+  },
+  drillPayload: () => undefined
+}))
 
 mockNuxtImport('useB24', () => () => ({
   init: async () => {},
@@ -182,6 +194,7 @@ beforeEach(() => {
   portal.initialized = true
   portal.batches = 0
   portal.usersFail = false
+  portal.sliderTitles = []
   portal.dismissedUsers = []
   portal.batchFails = false
   portal.slowCategory = undefined
@@ -494,7 +507,12 @@ describe('экран отчёта на тех же данных портала',
 
   // Полный путь клика: число в таблице → запрос портала тем же условием → строки в слайдере.
   // ⚠ Слайдер живёт в телепорте, вне дерева страницы, — читаем текст всего документа.
-  it('клик по числу открывает список сделок этой клетки', async () => {
+  /**
+   * ⚠ Список открывает НАСТОЯЩИЙ слайдер портала (решение владельца от 2026-09-06), а не панель
+   * внутри отчёта. Проверяем то, что теперь и есть договор: по клику страница просит портал
+   * открыть детализацию, и просит ровно тем заголовком, что стоял у числа.
+   */
+  it('клик по числу просит портал открыть слайдер с этой клеткой', async () => {
     document.body.innerHTML = ''
     const wrapper = await mountSuspended(ManagersPage, { attachTo: document.body })
     await flush()
@@ -502,7 +520,7 @@ describe('экран отчёта на тех же данных портала',
     expect(cell).toBeTruthy()
     await cell!.trigger('click')
     await flush()
-    expect(document.body.textContent ?? '').toContain('Сделки: Минск · Иванов Иван')
+    expect(portal.sliderTitles).toEqual(['Сделки: Минск · Иванов Иван · Новая'])
   })
 
   // ⚠ Решение владельца от 2026-09-05: сделки без «моей компании» — обычная группа. Плашки

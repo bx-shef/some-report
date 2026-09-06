@@ -7,11 +7,12 @@ import {
   type DrillRequest,
   type DrillRow,
   dealDrillRow,
-  demoDrillRows,
   drillListParams,
   leadDrillRow
 } from '~/utils/drilldown'
 import { chunkIds } from '~/utils/filters'
+import { MAX_STAGE_NAMES } from '~/utils/drillSlider'
+import { lossReasonLabel } from '~/utils/labels'
 
 /** Страница списка — как у списочных методов портала. */
 export const DRILL_PAGE_SIZE = 50
@@ -25,8 +26,9 @@ export const DRILL_PAGE_SIZE = 50
  * набора (`filteredLeadIds`), кусками по 500: курсор идёт внутри куска, кусок исчерпан —
  * следующий. Иначе список разошёлся бы с числом, по которому нажали.
  */
-export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<ReportFilters>, isDemo: Ref<boolean> }) {
+export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<ReportFilters> }) {
   const b24 = useB24()
+  const slider = usePortalSlider()
   const open = ref(false)
   const request = ref<DrillRequest | undefined>(undefined)
   const rows = ref<DrillRow[]>([])
@@ -51,7 +53,59 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
     return out
   }
 
-  /** Открыть список за числом. Демо-набор — целиком из строк; портал — первая страница сразу. */
+  /**
+   * Подписи стадий для слайдера: код стадии провала → каноничное название причины.
+   *
+   * ⚠ Без них слайдер печатал бы коды там, где в отчёте написаны слова. Название причины не
+   * лежит ни в одном справочнике портала целиком: отчёт сводит одноимённые стадии четырёх
+   * направлений в одно каноничное название (`reasonMerge.ts`), а слайдер — отдельный фрейм и
+   * пересчитать это сведение не может. Поэтому подписи едут готовыми, вместе с фильтром.
+   *
+   * ⚠ Едут только те коды, что список МОЖЕТ показать: перечисленные в `STAGE_ID`, а для остатка
+   * («прочие причины», условие `STAGE_SEMANTIC_ID: 'F'`) — все известные. Отправлять весь
+   * справочник на каждый клик незачем: у клика по названной причине это шесть кодов вместо сорока.
+   *
+   * ⚠ Потолок держим и ЗДЕСЬ, а не только при разборе. У заказчика четыре направления и 25 кодов
+   * провала; появится пятое — карта перевалила бы за `MAX_STAGE_NAMES`, и обрезал бы её уже
+   * приёмник, произвольно. Обрезать на этой стороне честнее: здесь известно, какие коды в
+   * условии, и первыми уезжают именно они.
+   */
+  function stageNamesFor(filter: DrillListParams['filter']): Record<string, string> | undefined {
+    const codes = keyByCode()
+    const listed = filter.STAGE_ID
+    const wanted = Array.isArray(listed)
+      ? listed.map(String)
+      : typeof listed === 'string'
+        ? [listed]
+        : filter.STAGE_SEMANTIC_ID === 'F' ? Object.keys(codes) : []
+    const dictionaries = input.dataset.value.dictionaries
+    const out: Record<string, string> = {}
+    for (const code of wanted) {
+      if (Object.keys(out).length >= MAX_STAGE_NAMES) break
+      const key = codes[code]
+      if (key) out[code] = lossReasonLabel(dictionaries, key)
+    }
+    return Object.keys(out).length ? out : undefined
+  }
+
+  /**
+   * Открыть список за числом.
+   *
+   * ⚠ В портале список открывает НАСТОЯЩИЙ слайдер (`openSliderAppPage`, решение владельца от
+   * 2026-09-06) — отдельным фреймом поверх всего портала. Панель внутри отчёта остаётся запасным
+   * путём, и она нужна не «на всякий случай», а в трёх РАЗНЫХ случаях:
+   *
+   * 1. под фильтром по полям лида сделки читаются КУСКАМИ по списку ID лидов: такое условие одним
+   *    фильтром не выражается, а значит, и в параметры слайдера не помещается. Отправить туда
+   *    фильтр без кусков значило бы показать список ШИРЕ числа, по которому нажали;
+   * 2. условие числа спорит с фильтром — список пуст по построению, и спрашивать портал не о чем;
+   * 3. слайдер отказал (мобильное приложение) — клик, после которого ничего не произошло,
+   *    читается как поломка отчёта.
+   *
+   * ⚠ ВНЕ ПОРТАЛА детализации нет совсем (решение владельца от 2026-09-06): числа там не
+   *    кликабельны (`DrillNumber.vue`), и сюда попасть неоткуда. Демо-страница показывает
+   *    устройство отчёта, а не работающий список.
+   */
   function show(next: DrillRequest): void {
     const mine = ++seq
     request.value = next
@@ -61,20 +115,39 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
     // Страница закрытого списка ещё могла идти: её «читаем…» не наш, иначе новая первая
     // страница не стартовала бы никогда (сторож от двух страниц с одним курсором).
     pending.value = false
-    open.value = true
-    if (input.isDemo.value) {
-      rows.value = demoDrillRows(next, input.dataset.value, input.filters.value)
-      done.value = true
-      return
-    }
     const { dataset, filters } = input
     params = drillListParams(next, dataset.value.period, filters.value, dataset.value.dictionaries.lossReasonCodes ?? {})
     chunks = params.byLeadIds ? chunkIds(dataset.value.filteredLeadIds ?? []) : []
     chunkIndex = 0
     afterId = 0
+    // Случай 2: условие живёт не только в фильтре — слайдеру его не передать.
+    if (!params.byLeadIds && !params.empty) {
+      const stageNames = next.entity === 'deal' ? stageNamesFor(params.filter) : undefined
+      const asked = slider.openDrill({
+        entity: next.entity,
+        title: next.title,
+        filter: params.filter,
+        ...(next.dealScope === undefined ? {} : { dealScope: next.dealScope }),
+        ...(stageNames === undefined ? {} : { stageNames }),
+        ...(next.total === undefined ? {} : { total: next.total })
+      })
+      // Случай 3: попросить не вышло — показываем панель, как раньше.
+      if (asked) {
+        // Панель, открытая прошлым кликом, гаснет: иначе она осталась бы ПОД слайдером с пустым
+        // списком и чужим заголовком, и человек нашёл бы её, закрыв слайдер.
+        open.value = false
+        return
+      }
+    }
+    openPanel(mine)
+  }
+
+  /** Панель внутри отчёта — запасной путь, см. `show`. */
+  function openPanel(mine: number): void {
+    open.value = true
     // Условие числа спорит с фильтром — список пуст по построению; лидов под фильтром нет —
     // сделок нет. Ни то, ни другое портал не спрашивают (`LEAD_ID: [0]` отдал бы чужие).
-    if (params.empty || (params.byLeadIds && !chunks.length)) {
+    if (!params || params.empty || (params.byLeadIds && !chunks.length)) {
       done.value = true
       return
     }

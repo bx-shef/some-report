@@ -42,7 +42,16 @@ const { pending: exportPending, error: exportError, exportExcel, exportPdf } = u
 const {
   open: drillOpen, request: drillRequest, rows: drillRows, pending: drillPending, error: drillError, done: drillDone,
   show: showDrill, loadMore: drillMore, openRow: openDrillRow
-} = useDrilldown({ dataset, filters: appliedFilters, isDemo })
+} = useDrilldown({ dataset, filters: appliedFilters })
+
+// Детализацию открывает настоящий слайдер портала — вне фрейма её нет совсем, и числа там
+// обычный текст (решение владельца от 2026-09-06).
+//
+// ⚠ Мало проверить фрейм: внутри портала первая живая выборка может упасть, и на экране останется
+// ДЕМО-набор при живом SDK. Клик по такому числу открыл бы слайдер с фильтром, собранным из
+// придуманных строк, — портал честно ответил бы на него чужим списком. Список, не сходящийся с
+// числом над ним, хуже отсутствия списка.
+provideDrillEnabled(computed(() => b24.isInit() && !isDemo.value))
 
 useHead({ title: 'Отчёт' })
 
@@ -388,7 +397,6 @@ async function fit() {
           :pending="drillPending"
           :error="drillError"
           :done="drillDone"
-          :is-demo="isDemo"
           @more="drillMore"
           @open-row="openDrillRow"
         />

@@ -11,8 +11,12 @@ import { formatCount, formatDate, formatMoney } from '~/utils/format'
  * наблюдатель не срабатывает, когда первая страница короче окна, а кнопка — всегда.
  *
  * ⚠ Ссылки в CRM ведут в портал того, кто смотрит, под его правами: карточка, которой он не
- * видит, откроется как «нет доступа» — это правда портала, а не ошибка отчёта. В демо-режиме
- * карточек нет, и слайдер говорит об этом, а не показывает мёртвые ссылки.
+ * видит, откроется как «нет доступа» — это правда портала, а не ошибка отчёта.
+ *
+ * ⚠ С 2026-09-06 это ЗАПАСНОЙ путь, а основной — настоящий слайдер портала (`usePortalSlider`).
+ * Панель поднимается в трёх случаях: условие выражено списком ID лидов, условие спорит с фильтром
+ * (список пуст по построению), слайдер отказал. Про демо-набор здесь больше нет ни слова: числа
+ * на демо-странице не кликабельны вовсе (`useDrillEnabled`), и попасть сюда с ним неоткуда.
  */
 const props = defineProps<{
   request?: DrillRequest
@@ -20,7 +24,6 @@ const props = defineProps<{
   pending: boolean
   error?: string
   done: boolean
-  isDemo: boolean
 }>()
 
 const open = defineModel<boolean>('open', { default: false })
@@ -67,13 +70,6 @@ onBeforeUnmount(() => observer?.disconnect())
     :b24ui="{ content: 'sm:max-w-[760px]', body: 'scrollbar-thin' }"
   >
     <template #body>
-      <p
-        v-if="isDemo"
-        class="mb-3 text-xs opacity-70"
-      >
-        Демонстрационный набор: записи вымышленные, карточек в CRM у них нет.
-      </p>
-
       <B24Alert
         v-if="error"
         color="air-primary-alert"

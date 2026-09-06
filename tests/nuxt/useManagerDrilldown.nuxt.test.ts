@@ -16,7 +16,24 @@ const portal = vi.hoisted(() => ({
   pending: [] as Array<(rows: unknown[] | Error) => void>,
   opened: [] as string[],
   /** Портал не открывает карточку: слайдер обязан сказать об этом, а не промолчать. */
-  openFails: false
+  openFails: false,
+  /** Страницы, открытые НАСТОЯЩИМ слайдером портала, — с параметрами вызова. */
+  sliderPages: [] as Array<Record<string, unknown>>,
+  /** Слайдер отказал (мобильное приложение): панель внутри отчёта обязана подхватить. */
+  sliderFails: false
+}))
+
+// Настоящий слайдер портала — тот же стенд, что и у `useB24`: страница детализации живёт в
+// отдельном фрейме, и композабл лишь просит портал его открыть.
+mockNuxtImport('usePortalSlider', () => () => ({
+  // ⚠ Синхронный, как и настоящий: промис `openSliderAppPage` разрешается при ЗАКРЫТИИ слайдера,
+  // поэтому ждать его нельзя, и `openDrill` возвращает не промис, а «вызов ушёл».
+  openDrill: (payload: { title: string, filter: Record<string, unknown> }) => {
+    if (portal.sliderFails) return false
+    portal.sliderPages.push({ place: 'app-drill', ...payload })
+    return true
+  },
+  drillPayload: () => undefined
 }))
 
 mockNuxtImport('useB24', () => () => ({
@@ -53,6 +70,8 @@ beforeEach(() => {
   portal.pending = []
   portal.opened = []
   portal.openFails = false
+  portal.sliderPages = []
+  portal.sliderFails = false
 })
 
 const DICTIONARIES: ReportDictionaries = {
@@ -63,13 +82,22 @@ const DICTIONARIES: ReportDictionaries = {
   users: { 1: 'Иванов Иван' }
 }
 
-/** «Сегодня» задано: от него построены даты демо-набора, и список обязан их повторить. */
-const TODAY = new Date(2026, 8, 15)
-
 const FILTERS: ManagerFilters = { categoryId: 0, scope: 'in-work', period: { from: '2026-09-01', to: '2026-09-30' } }
 
-function live(isDemo = false) {
-  return useManagerDrilldown({ filters: ref(FILTERS), dictionaries: ref(DICTIONARIES), isDemo: ref(isDemo), today: TODAY })
+function live() {
+  return useManagerDrilldown({ filters: ref(FILTERS), dictionaries: ref(DICTIONARIES) })
+}
+
+/**
+ * Тот же композабл, но с ОТКАЗАВШИМ слайдером — то есть на запасном пути.
+ *
+ * ⚠ Списком, страницами и ошибками занимается именно он: в обычном случае строки читает уже
+ * открытая страница слайдера (`useDrillPage`), и здешний композабл портал ни о чём не спрашивает.
+ * Панель при этом не мёртвый код — она поднимается там, где слайдера нет (мобильное приложение).
+ */
+function panel() {
+  portal.sliderFails = true
+  return live()
 }
 
 /** Ответ портала страницей записей. */
@@ -89,7 +117,7 @@ function answer(count: number, from = 1) {
 
 describe('useManagerDrilldown', () => {
   it('спрашивает портал ровно условием клетки', async () => {
-    const drill = live()
+    const drill = panel()
     const base = { CATEGORY_ID: 0, STAGE_SEMANTIC_ID: 'P' }
     drill.show(drill.cellRequest('Сделки: Минск · Иванов Иван · Новая', base, { companyId: 10, managerId: 1, stageId: 'NEW' }, 4))
     await nextTick()
@@ -105,7 +133,7 @@ describe('useManagerDrilldown', () => {
   })
 
   it('строки подписаны словами: стадия и ответственный — из справочников', async () => {
-    const drill = live()
+    const drill = panel()
     drill.show(drill.cellRequest('Сделки', {}, { companyId: 10 }, 2))
     await nextTick()
     answer(2)
@@ -115,7 +143,7 @@ describe('useManagerDrilldown', () => {
   })
 
   it('короткая страница закрывает список, полная — оставляет курсор', async () => {
-    const drill = live()
+    const drill = panel()
     drill.show(drill.cellRequest('Сделки', {}, { companyId: 10 }, 60))
     await nextTick()
     answer(50)
@@ -131,10 +159,13 @@ describe('useManagerDrilldown', () => {
     expect(drill.rows.value).toHaveLength(55)
   })
 
-  it('закрытие слайдера выбрасывает страницу, которая ещё шла', async () => {
-    const drill = live()
+  it('закрытие панели выбрасывает страницу, которая ещё шла', async () => {
+    const drill = panel()
     drill.show(drill.cellRequest('Сделки', {}, { companyId: 10 }, 4))
+    // Слайдер отказал (`panel()` возвращает `false`) — панель поднялась ТУТ ЖЕ, `show`
+    // синхронный. Такт нужен только странице списка, которая уже ушла в портал.
     await nextTick()
+    expect(drill.open.value).toBe(true)
     drill.open.value = false
     await nextTick()
     answer(3)
@@ -142,19 +173,43 @@ describe('useManagerDrilldown', () => {
     expect(drill.rows.value).toHaveLength(0)
   })
 
-  it('в демо-режиме список собирается по строкам набора, без запросов к порталу', async () => {
-    const drill = live(true)
-    drill.show(drill.cellRequest('Сделки', {}, { companyId: 10, managerId: 101, stageId: 'NEW' }, 4))
+  /**
+   * ⚠ Демо-набора у детализации больше НЕТ (решение владельца от 2026-09-06): вне портала список
+   * не работает совсем, и числа там не кликабельны. Здесь проверяем главное новое свойство:
+   * список открывает НАСТОЯЩИЙ слайдер портала, а панель внутри отчёта не поднимается вовсе.
+   */
+  it('список открывает настоящий слайдер портала, а не панель внутри отчёта', async () => {
+    const drill = live()
+    drill.show(drill.cellRequest('Сделки: Минск', { CATEGORY_ID: 0 }, { companyId: 10, managerId: 101 }, 4))
     await nextTick()
+    await nextTick()
+    expect(portal.sliderPages).toHaveLength(1)
+    const sent = portal.sliderPages[0]!
+    // ⚠ Сверяем нагрузку ЦЕЛИКОМ, а не только `place`. Условие клетки едет в отдельный фрейм, где
+    // состояния отчёта нет вовсе: потеряй тут `categoryId` — и список подписал бы стадии словами
+    // чужого направления; потеряй `dealScope` — взял бы не ту дату; потеряй `total` — не сказал бы
+    // «показано M из N».
+    expect(sent).toMatchObject({ place: 'app-drill', entity: 'deal', title: 'Сделки: Минск', dealScope: 'plain', categoryId: 0, total: 4 })
+    expect(sent.filter).toMatchObject({ CATEGORY_ID: 0, MYCOMPANY_ID: 10, ASSIGNED_BY_ID: 101 })
+    expect(drill.open.value).toBe(false)
+    // Строки читает уже открытый слайдер — этот композабл портал ни о чём не спрашивает.
     expect(portal.calls).toHaveLength(0)
-    expect(drill.done.value).toBe(true)
-    expect(drill.rows.value.length).toBeGreaterThan(0)
-    // Карточек в CRM у демо-строк нет — открывать нечего, и слайдер об этом говорит сам.
-    expect(drill.rows.value.every(row => row.path === '')).toBe(true)
+  })
+
+  /**
+   * ⚠ Слайдер отказал (мобильное приложение) — панель остаётся запасным путём. Клик, после
+   * которого ничего не произошло, читается как поломка отчёта.
+   */
+  it('слайдер отказал — открывается панель внутри отчёта', async () => {
+    const drill = panel()
+    drill.show(drill.cellRequest('Сделки: Минск', { CATEGORY_ID: 0 }, { companyId: 10 }, 1))
+    await nextTick()
+    await nextTick()
+    expect(drill.open.value).toBe(true)
   })
 
   it('карточка открывается в слайдере портала', async () => {
-    const drill = live()
+    const drill = panel()
     drill.show(drill.cellRequest('Сделки', {}, { companyId: 10 }, 1))
     await nextTick()
     answer(1)
@@ -166,7 +221,7 @@ describe('useManagerDrilldown', () => {
 
 describe('useManagerDrilldown: когда что-то пошло не так', () => {
   it('ошибка страницы показывается, а повтор идёт с чистой плашкой', async () => {
-    const drill = live()
+    const drill = panel()
     drill.show(drill.cellRequest('Сделки', {}, { companyId: 10 }, 4))
     await nextTick()
     portal.pending.shift()?.(new Error('портал недоступен'))
@@ -185,7 +240,7 @@ describe('useManagerDrilldown: когда что-то пошло не так', (
   // Клик, после которого ничего не произошло, читается как поломка отчёта — поэтому отказ
   // портала открыть карточку показывается той же плашкой, что и ошибка страницы.
   it('портал не открыл карточку — об этом сказано', async () => {
-    const drill = live()
+    const drill = panel()
     drill.show(drill.cellRequest('Сделки', {}, { companyId: 10 }, 1))
     await nextTick()
     answer(1)
@@ -198,7 +253,7 @@ describe('useManagerDrilldown: когда что-то пошло не так', (
   // Нажали по другому числу, не дождавшись первого списка: опоздавшая страница не должна
   // подмешаться к новому — иначе в списке окажутся записи из двух разных клеток.
   it('нажали по другой клетке — опоздавшая страница выбрасывается', async () => {
-    const drill = live()
+    const drill = panel()
     drill.show(drill.cellRequest('Первая', {}, { companyId: 10, stageId: 'NEW' }, 4))
     await nextTick()
     const late = portal.pending.shift()
