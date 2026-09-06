@@ -87,3 +87,26 @@ describe('PeriodPicker', () => {
     expect(wrapper.findAll('[data-export-exclude]').length).toBeGreaterThan(0)
   })
 })
+
+describe('PeriodPicker: предел длины периода', () => {
+  /**
+   * ⚠ Умолчание — год, как было. Отчёты 1 и 2 предел не задают, и их набор кнопок меняться не
+   * должен: этот тест сторожит именно регрессию у соседей, а не новую возможность.
+   */
+  it('без предела интервалы прежние, включая год', async () => {
+    const wrapper = await mountSuspended(PeriodPicker, {
+      props: { period: { from: '2026-09-01', to: '2026-09-30' }, today: new Date(2026, 8, 15) }
+    })
+    expect(wrapper.text()).toContain('Текущий год')
+    expect(wrapper.text()).toContain('Текущий квартал')
+  })
+
+  it('с пределом длинные интервалы не показываются', async () => {
+    const wrapper = await mountSuspended(PeriodPicker, {
+      props: { period: { from: '2026-09-01', to: '2026-09-30' }, today: new Date(2026, 8, 15), maxDays: 31 }
+    })
+    expect(wrapper.text()).not.toContain('Текущий год')
+    expect(wrapper.text()).not.toContain('Текущий квартал')
+    expect(wrapper.text()).toContain('Текущий месяц')
+  })
+})

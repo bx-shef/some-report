@@ -14,7 +14,7 @@ import {
   scopeCallsToUsers,
   usersInDepartment
 } from '~/utils/activityLoad'
-import { activityCounterBatch, callListParams } from '~/utils/activityQuery'
+import { activityCounterBatch, callListParams, callPageCommands, callPageOfKey } from '~/utils/activityQuery'
 import { MOCK_ACTIVITY_USERS, MOCK_DEPARTMENTS, buildMockActivityReport } from '~/utils/mockActivity'
 import { resolvePreset } from '~/utils/period'
 
@@ -30,10 +30,9 @@ import { resolvePreset } from '~/utils/period'
  *    лидов пакетами по 50. Замер боевого портала: 0,38 с на пакет, 736 команд на 92 сотрудника —
  *    около шести секунд, и таблица уже на экране.
  * 2. **Фоновый.** Звонки — СТРОКАМИ, потому что сумму длительности `total` не даёт вовсе. Месяц
- *    заказчика — 381 страница; пакет их не ускоряет (портал выполняет команды
- *    пакета последовательно), ускоряет только параллельность запросов: восемь разом дают
- *    выигрыш вчетверо: замер 2026-09-06 — 370 мс на страницу, ≈ 2,4 минуты на месяц
- *    ([`docs/PORTAL.md`](../../docs/PORTAL.md)).
+ *    заказчика — 381 страница, и читаются они ПАКЕТАМИ по 50 команд: замер 2026-09-06 — 24 мс
+ *    на страницу против 124 мс одиночными запросами, весь месяц за 5,7 секунды и восемь
+ *    HTTP-запросов ([`docs/PORTAL.md`](../../docs/PORTAL.md)).
  *
  * ⚠ Поэтому таблица обязана показываться БЕЗ звонков, а `report.callsKnown` — говорить экрану, что
  * нули в их столбцах означают «ещё читаем», а не «не звонил».
@@ -43,13 +42,19 @@ import { resolvePreset } from '~/utils/period'
  */
 
 /**
- * Сколько страниц звонков читаем разом.
+ * Сколько страниц звонков просим ОДНИМ пакетом.
  *
- * ⚠ Восемь — это замер, а не круглое число: 8 страниц подряд заняли 26,9 с, по 4 разом — 8,8 с,
- * по 8 разом — 6,8 с. Дальше портал упирается в предел интенсивности запросов, и выигрыш
- * оборачивается ответом «слишком часто» посреди выборки.
+ * ⛔ Пятьдесят — предел пакета Битрикс24, и пакет здесь ускоряет РАДИКАЛЬНО. Перемер 2026-09-06:
+ * восемь одиночных запросов разом дают 124 мс на страницу, один пакет из пятидесяти — 24 мс.
+ * Весь август (381 страница) пакетами читается за 5,7 секунды и восемь HTTP-запросов вместо
+ * минут и трёхсот восьмидесяти.
+ *
+ * ⚠ Прежняя редакция читала одиночными запросами по восемь разом, ссылаясь на замер «пакет не
+ * ускоряет: портал выполняет команды пакета последовательно». Тот замер был неверен: команды
+ * внутри пакета и правда идут одна за другой, но круг по сети экономится на каждой из
+ * пятидесяти — вот этого вывод и не учёл.
  */
-export const CALL_CONCURRENCY = 8
+export const CALL_BATCH_SIZE = 50
 
 /** Записей на странице телефонии. Портал отдаёт ровно столько и `limit` игнорирует. */
 export const CALL_PAGE_SIZE = 50
@@ -66,14 +71,30 @@ export const DEPARTMENT_PAGE_SIZE = 50
 export const DEPARTMENT_MAX_PAGES = 10
 
 /**
+ * Предел длины периода отчёта — ОДИН МЕСЯЦ (решение владельца 2026-09-06).
+ *
+ * ⚠ 31 день, а не 30: иначе «текущий месяц» в июле или августе не влезал бы в собственный предел,
+ * и кнопка умолчания отвечала бы жалобой.
+ *
+ * ⛔ Ограничение остаётся, хотя пакетная выборка сделала месяц шестисекундным. Дело не только в
+ * ожидании: звонки читаются СТРОКАМИ, и квартал — это под шестьдесят тысяч записей, которые лежат
+ * в памяти фрейма и пересчитываются на каждую смену порога. Длинные периоды — разговор про
+ * backend ([#52](https://github.com/bx-shef/some-report/issues/52)), а не про терпение.
+ */
+export const ACTIVITY_MAX_DAYS = 31
+
+/**
  * Предел страниц звонков — предохранитель, а не ожидаемое число.
  *
- * ⚠ Месяц заказчика — 381 страница, около двух с половиной минут. Квартал — больше тысячи, то
- * есть минут семь чтения;
- * упёршись в предел, отчёт не молчит, а ГОВОРИТ, что звонки посчитаны не все, — молча показанная
- * половина хуже честного «здесь не всё».
+ * ⚠ Месяц заказчика — 381 страница, пакетами это около шести секунд. Предел стоит вдвое выше: он
+ * защищает от портала, где звонков кратно больше, а не от обычной работы. Упёршись в него, отчёт
+ * не молчит, а ГОВОРИТ, что звонки посчитаны не все, — молча показанная половина хуже честного
+ * «здесь не всё».
+ *
+ * ⚠ Период отчёта ограничен ОДНИМ МЕСЯЦЕМ (решение владельца 2026-09-06), так что до предела
+ * дело доходить не должно вовсе. Убирать его поэтому нельзя: он и есть проверка этого допущения.
  */
-export const CALL_MAX_PAGES = 600
+export const CALL_MAX_PAGES = 800
 
 /**
  * Умолчание отбора: текущий месяц, все отделы, порог заказчика.
@@ -96,7 +117,7 @@ export function defaultActivityFilters(today: Date): ActivityFilters {
 export function useActivityReport(options: { today?: Date } = {}) {
   const today = options.today ?? new Date()
   const b24 = useB24()
-  const { batchTotals } = useB24Batch()
+  const { batchRows, batchTotals } = useB24Batch()
   const { fetchUsers } = useB24Users()
 
   const source = ref<'mock' | 'portal'>('mock')
@@ -146,7 +167,7 @@ export function useActivityReport(options: { today?: Date } = {}) {
    * (`callListParams` фильтрует только по периоду — иначе недозвоны и короткие считать было бы не
    * из чего). Значит при смене порога или отдела перечитывать портал НЕЧЕГО: те же строки дадут
    * другие числа. Без кэша человек, решивший посмотреть «а если считать от 9 секунд», получал бы
-   * не мгновенный пересчёт, а вторую двухминутную выборку — и порог, объявленный настройкой,
+   * не мгновенный пересчёт, а вторую полную выборку звонков — и порог, объявленный настройкой,
    * оказался бы самой дорогой кнопкой отчёта.
    *
    * ⚠ Ключ — ПЕРИОД, и только он: сменился период — записи другие, кэш недействителен.
@@ -195,26 +216,30 @@ export function useActivityReport(options: { today?: Date } = {}) {
     }
   }
 
-  /** Одна страница звонков. */
-  async function fetchCallPage(period: ActivityFilters['period'], start: number): Promise<B24CallRow[]> {
+  /**
+   * Сколько всего звонков за период — один счётчик.
+   *
+   * ⚠ `getTotal()`, а не длина `result`: `getData()` отдаёт `{ result, time }`, и `total` там нет
+   * вовсе — тот же урок, что стоил отчёту 229 фамилий.
+   */
+  async function fetchCallTotal(period: ActivityFilters['period']): Promise<number> {
     const result = await b24.getOrThrow().actions.v2.call.make<B24CallRow[]>({
       method: 'voximplant.statistic.get',
-      params: callListParams(period, start)
+      params: callListParams(period)
     })
     if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
-    const rows = result.getData()?.result
-    return Array.isArray(rows) ? rows as B24CallRow[] : []
+    const total = result.getTotal?.()
+    return Number.isFinite(total) && total! > 0 ? Math.trunc(total!) : 0
   }
 
   /**
-   * Звонки фоном: страницы читаются пачками по `CALL_CONCURRENCY`.
+   * Звонки пакетами: пятьдесят страниц за один круг по сети.
    *
-   * ⚠ Таблица пересобирается ПО ХОДУ, после каждой пачки, а не в конце. Полторы минуты пустых
-   * столбцов при работающем отчёте человек читает как «сломалось»; растущие числа читаются как
-   * «идёт работа». Цена — лишние пересборки чистой функцией, они дешевле одного запроса.
+   * ⚠ Таблица пересобирается ПОСЛЕ КАЖДОГО пакета, а не в конце: месяц иначе показывался бы одним
+   * прыжком, и человек не видел бы, что идёт работа.
    *
-   * ⚠ Сбой ОДНОЙ страницы прекращает чтение, но не выбрасывает уже прочитанное: показать девять
-   * десятых звонков, сказав об этом, полезнее, чем не показать ничего.
+   * ⚠ Сбой пакета прекращает чтение, но не выбрасывает уже прочитанное: показать девять десятых
+   * звонков, сказав об этом, полезнее, чем не показать ничего.
    */
   async function loadCalls(applied: ActivityFilters, mine: number): Promise<void> {
     const rows: B24CallRow[] = []
@@ -224,30 +249,40 @@ export function useActivityReport(options: { today?: Date } = {}) {
     callsTruncated.value = false
     callPagesRead.value = 0
     try {
-      for (let page = 0; page < CALL_MAX_PAGES; page += CALL_CONCURRENCY) {
+      // Сколько всего страниц — один счётчик. Без него пришлось бы читать «пока не кончится», то
+      // есть тратить лишний круг пакетов на каждом периоде.
+      const total = await fetchCallTotal(applied.period)
+      if (mine !== seq) return
+      const wanted = Math.ceil(total / CALL_PAGE_SIZE)
+      const pages = Math.min(wanted, CALL_MAX_PAGES)
+
+      for (let page = 0; page < pages; page += CALL_BATCH_SIZE) {
         if (mine !== seq) return
-        const starts = Array.from(
-          { length: Math.min(CALL_CONCURRENCY, CALL_MAX_PAGES - page) },
-          (_, index) => (page + index) * CALL_PAGE_SIZE
+        const count = Math.min(CALL_BATCH_SIZE, pages - page)
+        const answers = await batchRows<B24CallRow>(
+          callPageCommands(applied.period, page, count, CALL_PAGE_SIZE)
         )
-        const pages = await Promise.all(starts.map(start => fetchCallPage(applied.period, start)))
         if (mine !== seq) return
-        for (const rowsOfPage of pages) rows.push(...rowsOfPage)
-        callPagesRead.value += pages.length
-        // ⚠ Кэш пополняется ПО ХОДУ, а не в конце: смени человек порог на середине чтения —
-        // пересчитать будет из чего, и заново портал спрашивать не придётся.
+        // ⚠ Ответы пакета приходят ОБЪЕКТОМ, и порядок ключей в нём не гарантирован. Строки
+        // складываем по номеру страницы из ключа: иначе выборка перемешалась бы, а по числам это
+        // не видно — ядро всё равно считает по сотрудникам, не по порядку записей.
+        const byPage = Object.entries(answers)
+          .map(([name, pageRows]) => [callPageOfKey(name), pageRows] as const)
+          .filter(([number]) => number >= 0)
+          .sort((a, b) => a[0] - b[0])
+        for (const [, pageRows] of byPage) rows.push(...pageRows)
+        callPagesRead.value += byPage.length
+        // ⚠ Кэш пополняется ПО ХОДУ: смени человек порог на середине чтения — пересчитать будет
+        // из чего, и заново портал спрашивать не придётся.
         callCache = { period: key, rows: [...rows], complete: false }
         // ⚠ Пересобираем из ВСЕХ накопленных строк, а не досчитываем: ядро — чистая функция, и
         // складывать её результаты между собой было бы вторым, непроверенным сложением.
         applyCalls(rows, applied, mine)
-        // Короткая страница означает, что записи кончились: у портала это конец выборки.
-        if (pages.some(one => one.length < CALL_PAGE_SIZE)) {
-          callCache = { period: key, rows: [...rows], complete: true }
-          return
-        }
       }
-      // Дошли до предела страниц — значит, звонков больше, чем отчёт читает.
-      callsTruncated.value = true
+
+      callCache = { period: key, rows: [...rows], complete: true }
+      // Звонков больше, чем отчёт читает за раз, — молчать об этом нельзя.
+      if (wanted > CALL_MAX_PAGES) callsTruncated.value = true
     } catch (e) {
       if (mine === seq) callsError.value = e instanceof Error ? e.message : String(e)
     } finally {
@@ -341,7 +376,7 @@ export function useActivityReport(options: { today?: Date } = {}) {
 
       // ⛔ Звонки перечитываем ТОЛЬКО при смене периода. Порог и отдел применяет ядро поверх уже
       // прочитанных строк, и портал на них не влияет вовсе: те же записи дадут другие числа
-      // мгновенно. Без этого смена порога стоила бы второй двухминутной выборки — ровно та
+      // мгновенно. Без этого смена порога стоила бы второй полной выборки звонков — ровно та
       // цена, ради ухода от которой порог и делали настройкой.
       const cached = callCache?.period === callCacheKey(next.period) ? callCache : undefined
       if (cached) {

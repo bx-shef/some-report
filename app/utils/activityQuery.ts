@@ -210,6 +210,49 @@ export const CALL_TYPE_CODE: Record<CallDirection, number> = {
 }
 
 /**
+ * Команды пакета для страниц звонков.
+ *
+ * ⛔ Пакетом, а не одиночными запросами, и это ИСПРАВЛЕНИЕ прежнего вывода. В первой редакции
+ * отчёта здесь стояли одиночные запросы по восемь разом, со ссылкой на замер «пакет не ускоряет:
+ * портал выполняет команды пакета последовательно». Замер был неверен. Перемер 2026-09-06:
+ *
+ * | способ | мс на страницу |
+ * |---|---|
+ * | 8 одиночных запросов разом | 124 |
+ * | 1 пакет из 50 команд | 24 |
+ * | 4 пакета по 50 разом | 11 |
+ *
+ * Весь август (19 015 звонков, 381 страница) пакетами — **5,7 секунды и 8 HTTP-запросов**, все
+ * строки, ноль ошибок. Одиночными это были бы минуты. Внутри пакета команды и правда идут одна за
+ * другой, но круг по сети экономится на каждой из пятидесяти — вот этого прежний вывод и не учёл.
+ *
+ * ⚠ Ключ команды — `c<номер страницы>`: ответы пакета приходят объектом, и порядок в нём не
+ * гарантирован. Сортировать по ключу нельзя — надо разбирать номер (`callPageOfKey`).
+ */
+export function callPageCommands(
+  period: ReportPeriod,
+  fromPage: number,
+  count: number,
+  pageSize: number
+): Record<string, BatchCommand> {
+  const commands: Record<string, BatchCommand> = {}
+  for (let index = 0; index < count; index++) {
+    const page = fromPage + index
+    commands[`c${page}`] = {
+      method: 'voximplant.statistic.get',
+      params: callListParams(period, page * pageSize)
+    }
+  }
+  return commands
+}
+
+/** Номер страницы из ключа команды — ответы пакета приходят объектом, порядок не гарантирован. */
+export function callPageOfKey(key: string): number {
+  const page = Number(key.slice(1))
+  return Number.isInteger(page) && page >= 0 ? page : -1
+}
+
+/**
  * Параметры выборки звонков за период.
  *
  * ⛔ Ключ фильтра — ЗАГЛАВНЫЙ `FILTER`, а не строчный: у `voximplant.statistic.get` своя

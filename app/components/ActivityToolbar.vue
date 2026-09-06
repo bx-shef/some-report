@@ -2,6 +2,7 @@
 import type { ActivityFilters, DepartmentRef } from '~/types/activity'
 import { DEFAULT_CALL_THRESHOLD_SECONDS } from '~/types/activity'
 import { sortDepartments } from '~/utils/activityAdapter'
+import { ACTIVITY_MAX_DAYS } from '~/composables/useActivityReport'
 import { formatDate } from '~/utils/format'
 
 /**
@@ -148,6 +149,7 @@ const appliedText = computed(() => {
       :period="model.period"
       :today="today"
       :disabled="disabled"
+      :max-days="ACTIVITY_MAX_DAYS"
       caption="Дела и звонки за:"
       group-label="Период дел и звонков"
       @update:period="bounds => model = { ...model, period: bounds }"

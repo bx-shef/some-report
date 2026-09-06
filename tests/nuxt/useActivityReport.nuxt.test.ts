@@ -23,21 +23,40 @@ import { NO_USER_LABEL, totalCalls } from '~/utils/activityLoad'
 const TODAY = new Date()
 const iso = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 const CREATED = `${iso(TODAY)}T10:00:00+03:00`
+/** Первое число текущего месяца — умолчание периода отчёта, то есть то, что уедет в фильтр. */
+const MONTH_FROM = iso(new Date(TODAY.getFullYear(), TODAY.getMonth(), 1))
 
 const portal = vi.hoisted(() => ({
   initialized: true,
   batches: 0,
-  /** Сколько страниц телефонии спросили — по нему видно параллельность и признак конца. */
+  /** Сколько страниц телефонии спросили — по нему видно объём чтения. */
   callPages: 0,
+  /**
+   * Сколько раз спрашивали «сколько всего звонков».
+   *
+   * ⚠ Именно по нему видно, ходил ли отчёт в портал за звонками. Считать страницы нельзя: под
+   * пустым периодом их ноль, и тест «перечитал ли» был бы зелёным всегда.
+   */
+  callTotalAsks: 0,
   callsFail: false,
   /** Портал отвечает ошибкой на пакет счётчиков. */
   batchFails: false,
   /** Отделы отвечают ошибкой — фильтр обязан сказать об этом, а не потерять людей молча. */
   departmentsFail: false,
-  /** Телефония НИКОГДА не отдаёт короткую страницу: так проверяется предохранитель по страницам. */
+  /** Телефония отдаёт БОЛЬШЕ, чем отчёт согласен прочитать: так проверяется предохранитель. */
   callsEndless: false,
-  /** Задержка ответа телефонии: ею отбор меняют, пока чтение звонков УЖЕ идёт. */
+  /** Сколько звонков «есть» в режиме `callsEndless` — заведомо больше предела страниц. */
+  endlessTotal: 50_000,
+  /**
+   * Задержка ответа телефонии ДЛЯ ОДНОГО ПЕРИОДА.
+   *
+   * ⚠ Держать надо именно старый период, а не все запросы подряд: иначе обе выборки финишируют
+   * в порядке запуска, последняя просто перезапишет первую, и сторож `seq` останется непроверенным
+   * — тест был бы зелёным и на коде без него.
+   */
   callsGate: Promise.resolve() as Promise<void>,
+  /** Период (`>=CALL_START_DATE`), ответ по которому придерживается воротами. */
+  callsGateFor: undefined as string | undefined,
   users: [] as Array<Record<string, unknown>>,
   dismissedUsers: [] as Array<Record<string, unknown>>,
   departments: [] as Array<Record<string, unknown>>,
@@ -88,6 +107,21 @@ mockNuxtImport('useB24', () => () => ({
             if (portal.batchFails) return { isSuccess: false, getData: () => undefined, getErrorMessages: () => ['портал недоступен'] }
             const data: Record<string, { getTotal: () => number, getData: () => { result: unknown[] } }> = {}
             for (const [key, command] of Object.entries(calls)) {
+              // ⛔ Звонки ходят пакетом ТЕМ ЖЕ методом, что и одиночно, — со своей конвенцией:
+              // заглавный `FILTER` и страницы по `start`. Стенд обязан требовать того же, иначе
+              // он щедрее портала.
+              if (command.method === 'voximplant.statistic.get') {
+                if ('filter' in command.params) throw new Error('voximplant.statistic.get требует ЗАГЛАВНЫЙ FILTER')
+                portal.callPages++
+                const asked = String((command.params.FILTER as Record<string, unknown> | undefined)?.['>=CALL_START_DATE'] ?? '')
+                if (portal.callsGateFor === undefined || portal.callsGateFor === asked) await portal.callsGate
+                const start = Number(command.params.start ?? 0)
+                const page = portal.callsEndless
+                  ? Array.from({ length: 50 }, (_, i) => call(start + i, 1, '1', '120'))
+                  : portal.calls.filter(row => matches(row, (command.params.FILTER ?? {}) as Record<string, unknown>)).slice(start, start + 50)
+                data[key] = { getTotal: () => page.length, getData: () => ({ result: page }) }
+                continue
+              }
               const filter = (command.params.filter ?? {}) as Record<string, unknown>
               const source = command.method === 'crm.lead.list' ? portal.leads : portal.activities
               const rows = source.filter(row => matches(row, filter))
@@ -119,18 +153,20 @@ mockNuxtImport('useB24', () => () => ({
             }
             if (method === 'voximplant.statistic.get') {
               if (portal.callsFail) return { isSuccess: false, getData: () => undefined, getErrorMessages: () => ['лимит запросов'] }
-              portal.callPages++
-              await portal.callsGate
               // ⛔ Строчный `filter` метод НЕ понимает: он вернул бы весь портал за всё время.
               if ('filter' in params) throw new Error('voximplant.statistic.get требует ЗАГЛАВНЫЙ FILTER')
-              // Портал, у которого звонки не кончаются: каждая страница ПОЛНАЯ.
-              if (portal.callsEndless) {
-                return ok(Array.from({ length: 50 }, (_, i) => call(portal.callPages * 50 + i, 1, '1', '120')))
-              }
+              portal.callTotalAsks++
               const filter = (params.FILTER ?? {}) as Record<string, unknown>
-              const rows = portal.calls.filter(row => matches(row, filter))
-              const start = Number(params.start ?? 0)
-              return ok(rows.slice(start, start + 50))
+              // Отчёт спрашивает одиночным вызовом только СКОЛЬКО: страницы едут пакетом.
+              const found = portal.callsEndless
+                ? portal.endlessTotal
+                : portal.calls.filter(row => matches(row, filter)).length
+              return {
+                isSuccess: true,
+                getData: () => ({ result: [] }),
+                getTotal: () => found,
+                getErrorMessages: () => []
+              }
             }
             throw new Error(`неожиданный метод ${method}`)
           }
@@ -152,11 +188,13 @@ beforeEach(() => {
   portal.initialized = true
   portal.batches = 0
   portal.callPages = 0
+  portal.callTotalAsks = 0
   portal.callsFail = false
   portal.batchFails = false
   portal.departmentsFail = false
   portal.callsEndless = false
   portal.callsGate = Promise.resolve()
+  portal.callsGateFor = undefined
   portal.users = [
     { ID: '1', NAME: 'Иван', LAST_NAME: 'Иванов', UF_DEPARTMENT: [11] },
     { ID: '2', NAME: 'Пётр', LAST_NAME: 'Петров', UF_DEPARTMENT: [12] }
@@ -377,12 +415,15 @@ describe('useActivityReport: предохранители и кэш звонко
     const state = useActivityReport({ today: TODAY })
     await state.load()
     await waitForCalls(state)
+    const asked = portal.callTotalAsks
     const pagesAfterFirst = portal.callPages
+    expect(asked).toBeGreaterThan(0)
     expect(pagesAfterFirst).toBeGreaterThan(0)
 
     await state.load({ ...state.filters.value, thresholdSeconds: 150 })
     await waitForCalls(state)
-    // Ни одной новой страницы телефонии: период тот же.
+    // В портал за звонками не ходили вовсе: период тот же.
+    expect(portal.callTotalAsks).toBe(asked)
     expect(portal.callPages).toBe(pagesAfterFirst)
     // А числа при этом ДРУГИЕ — пересчёт действительно случился.
     expect(state.report.value.thresholdSeconds).toBe(150)
@@ -394,11 +435,13 @@ describe('useActivityReport: предохранители и кэш звонко
     const state = useActivityReport({ today: TODAY })
     await state.load()
     await waitForCalls(state)
-    const pagesAfterFirst = portal.callPages
+    const asked = portal.callTotalAsks
 
     await state.load({ ...state.filters.value, period: { from: '2020-01-01', to: '2020-01-31' } })
     await waitForCalls(state)
-    expect(portal.callPages).toBeGreaterThan(pagesAfterFirst)
+    // ⚠ Считаем ЗАПРОСЫ, а не страницы: под январём 2020 звонков нет, страниц было бы ноль и в
+    // случае, когда отчёт вообще не сходил в портал.
+    expect(portal.callTotalAsks).toBeGreaterThan(asked)
   })
 })
 
@@ -411,21 +454,32 @@ describe('useActivityReport: гонка посреди фонового чтен
    */
   it('смена периода посреди чтения не дописывает старые звонки в новую таблицу', async () => {
     let openGate: () => void = () => {}
-    portal.callsGate = new Promise<void>((resolve) => { openGate = resolve })
+    // Придерживаем ТЕКУЩИЙ период: его звонки доедут уже после того, как отчёт покажет другой.
+    portal.callsGateFor = MONTH_FROM
+    portal.callsGate = new Promise<void>((resolve) => {
+      openGate = resolve
+    })
 
     const state = useActivityReport({ today: TODAY })
     await state.load()
-    // Первая пачка страниц уже ушла в портал и ждёт ответа.
+    // ⚠ `load()` фоновое чтение НЕ ждёт — даём пакету дойти до портала и упереться в ворота.
+    for (let i = 0; i < 50 && portal.callPages === 0; i++) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
     expect(portal.callPages).toBeGreaterThan(0)
+    expect(state.report.value.callsKnown).toBe(false)
 
-    // Пока она висит — человек меняет период. Звонки прошлого периода доедут ПОЗЖЕ.
-    const second = state.load({ ...state.filters.value, period: { from: '2020-01-01', to: '2020-01-31' } })
-    openGate()
-    await second
+    // Человек меняет период. Новая выборка проходит СРАЗУ — её период воротами не держат.
+    await state.load({ ...state.filters.value, period: { from: '2020-01-01', to: '2020-01-31' } })
     await waitForCalls(state)
-
-    // Под январём 2020 звонков в стенде нет вовсе: доехавшие августовские не должны их подменить.
-    expect(state.report.value.rows.every(row => totalCalls(row).count === 0)).toBe(true)
     expect(state.filters.value.period.from).toBe('2020-01-01')
+
+    // А теперь доезжает устаревший ответ. Он обязан быть выброшен целиком.
+    openGate()
+    await new Promise(resolve => setTimeout(resolve, 30))
+
+    // Под январём 2020 звонков в стенде нет: доехавшие августовские не должны их подменить.
+    expect(state.report.value.rows.every(row => totalCalls(row).count === 0)).toBe(true)
+    expect(state.report.value.totals.failed).toBe(0)
   })
 })
