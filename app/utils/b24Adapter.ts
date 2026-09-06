@@ -680,6 +680,39 @@ export interface B24UserRow {
   LAST_NAME?: string | null
   /** `false` — сотрудник уволен. Портал отдаёт это поле и при `user_brief`. */
   ACTIVE?: boolean | string | null
+  /**
+   * Отделы сотрудника — МАССИВ идентификаторов, а не одно число.
+   *
+   * ⚠ Тип нарочно широкий: у отчёта нет права требовать от портала форму этого поля. На боевом
+   * портале приезжает `[181]`, но у сотрудника без отдела поле может не прийти вовсе, а
+   * совместитель (их у заказчика 13) приходит с несколькими. Разбирает это `adaptUserDepartments`.
+   */
+  UF_DEPARTMENT?: unknown
+}
+
+/**
+ * Сотрудники → отделы каждого: id сотрудника → идентификаторы его отделов.
+ *
+ * ⚠ Разбираем ПРОВЕРЯЯ, а не приведением типа. Поле пользовательское (`UF_`), портал волен
+ * прислать его массивом, строкой или не прислать вовсе, и слепое `as number[]` уронило бы фильтр
+ * отдела на первом же нестандартном профиле. Негодное значение — это «отделов не знаем», то есть
+ * пустой список: человек просто не попадёт ни в один отдел фильтра, а отчёт продолжит считать.
+ *
+ * ⚠ Сотрудник БЕЗ отделов в словарь не попадает вовсе. Пустой массив и отсутствие ключа тут одно
+ * и то же, а лишние ключи только раздували бы объект на 329 человек.
+ */
+export function adaptUserDepartments(rows: readonly B24UserRow[]): Record<string, number[]> {
+  const out: Record<string, number[]> = {}
+  for (const row of rows) {
+    const id = Number(row.ID)
+    if (!Number.isFinite(id) || id <= 0) continue
+    const raw = Array.isArray(row.UF_DEPARTMENT) ? row.UF_DEPARTMENT : []
+    const departments = raw
+      .map(value => Number(value))
+      .filter(value => Number.isFinite(value) && value > 0)
+    if (departments.length) out[String(id)] = departments
+  }
+  return out
 }
 
 /**

@@ -176,7 +176,7 @@ export function useReportData() {
   })
 
   const b24 = useB24()
-  /** Пакеты и сотрудники — общая механика обоих отчётов, см. одноимённые композаблы. */
+  /** Пакеты и сотрудники — общая механика всех отчётов, см. одноимённые композаблы. */
   const { batchRows, batchTotals } = useB24Batch()
   const { fetchUsers } = useB24Users()
 

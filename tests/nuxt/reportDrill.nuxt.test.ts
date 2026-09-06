@@ -148,3 +148,71 @@ describe('ReportDrill', () => {
     }
   })
 })
+
+describe('ReportDrill: дела CRM и звонки', () => {
+  const CALL_PAYLOAD: DrillSliderPayload = {
+    entity: 'call',
+    title: 'Разговоры · Иванов Иван',
+    filter: { PORTAL_USER_ID: 7 },
+    total: 60
+  }
+
+  const ACTIVITY_PAYLOAD: DrillSliderPayload = {
+    entity: 'activity',
+    title: 'Исходящие письма · Иванов Иван',
+    filter: { RESPONSIBLE_ID: 7 },
+    total: 12
+  }
+
+  const callRows: DrillRow[] = [
+    { id: 10, title: '+375291112233', when: '2026-08-02T10:39:46+03:00', stage: 'Исходящий', manager: 'Иванов Иван', amount: 210 },
+    { id: 11, title: 'Звонок #11', stage: 'Входящий, не дозвонились', amount: 0 }
+  ]
+
+  const deedRows: DrillRow[] = [
+    { id: 5, title: 'Счёт № 1', when: '2026-08-03T08:40:08+03:00', stage: 'Письмо, исходящее', manager: 'Иванов Иван', path: '/crm/lead/details/900/' },
+    { id: 6, title: 'Письмо #6', stage: 'Письмо, входящее' }
+  ]
+
+  /**
+   * ⚠ У звонка в столбце суммы СЕКУНДЫ, а не деньги: `formatMoney` напечатал бы «210 » с пустой
+   * валютой, и длительность читалась бы как сумма.
+   */
+  it('звонки: длительность вместо суммы и «звонков» в подписи', async () => {
+    const wrapper = await render({ payload: CALL_PAYLOAD, rows: callRows })
+    expect(wrapper.text()).toContain('звонков: 2')
+    expect(wrapper.text()).toContain('Длительность')
+    expect(wrapper.text()).toContain('3 мин 30 с')
+    expect(wrapper.text()).not.toContain('Сумма')
+  })
+
+  /** ⚠ Источника у звонка и дела нет вовсе — столбец «Источник: —» был бы шумом в каждой строке. */
+  it('у звонков и дел нет столбца «Источник»', async () => {
+    expect((await render({ payload: CALL_PAYLOAD, rows: callRows })).text()).not.toContain('Источник')
+    expect((await render({ payload: ACTIVITY_PAYLOAD, rows: deedRows })).text()).not.toContain('Источник')
+  })
+
+  /** «Стадия» над словом «Исходящий» читалась бы как стадия воронки, которой у звонка нет. */
+  it('столбец вида называется по сущности', async () => {
+    expect((await render({ payload: CALL_PAYLOAD, rows: callRows })).text()).toContain('Направление')
+    const deeds = await render({ payload: ACTIVITY_PAYLOAD, rows: deedRows })
+    expect(deeds.text()).toContain('Вид')
+    expect(deeds.text()).toContain('дел: 2')
+  })
+
+  /**
+   * ⚠ Кнопкой рисуется только то, что ОТКРЫВАЕТСЯ. У звонка карточки нет вовсе, у дела
+   * запись-владелец может быть смарт-процессом: кнопка, после нажатия на которую ничего не
+   * происходит, читается как поломка.
+   */
+  it('строка без карточки — текст, а не кнопка', async () => {
+    const calls = await render({ payload: CALL_PAYLOAD, rows: callRows })
+    expect(calls.findAll('button.drill-number')).toHaveLength(0)
+    expect(calls.text()).toContain('+375291112233')
+
+    const deeds = await render({ payload: ACTIVITY_PAYLOAD, rows: deedRows })
+    // У первого дела владелец есть, у второго — нет.
+    expect(deeds.findAll('button.drill-number')).toHaveLength(1)
+    expect(deeds.text()).toContain('Письмо #6')
+  })
+})

@@ -17,7 +17,15 @@ import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
  * Список, не сходящийся с числом над ним, хуже отсутствия списка.
  */
 
-export type DrillEntity = 'lead' | 'deal'
+/**
+ * Что показывает список за числом.
+ *
+ * ⚠ `activity` и `call` добавлены отчётом «Активность пользователей». Общего у них с лидами и
+ * сделками ровно одно — устройство слайдера; методы, поля и даже РЕГИСТР ключа фильтра у них
+ * свои (`voximplant.statistic.get` понимает только заглавный `FILTER`), поэтому ветвление живёт
+ * в `useDrillPage`, а не размазано по вызывающим.
+ */
+export type DrillEntity = 'lead' | 'deal' | 'activity' | 'call'
 
 export interface DrillRequest {
   entity: DrillEntity
@@ -50,11 +58,18 @@ export interface DrillRow {
   manager?: string
   amount?: number
   currencyId?: string
-  path: string
+  /**
+   * Путь карточки в портале. ПУСТОЙ означает «открывать нечего», и это штатный случай.
+   *
+   * ⚠ У дела CRM запись-владелец может быть смарт-процессом, у звонка её может не быть вовсе
+   * (звонок на общую линию, который не подняли). Подставить сюда догадку значило бы увести
+   * человека в чужую карточку с тем же номером — существующую и совершенно постороннюю.
+   */
+  path?: string
 }
 
 /** Поля строк для списка. `TITLE` — то, по чему человек узнаёт запись; остальное — подписи. */
-export const DRILL_LEAD_SELECT = ['ID', 'TITLE', 'DATE_CREATE', 'STATUS_ID', 'SOURCE_ID', 'ASSIGNED_BY_ID'] as const
+export const DRILL_LEAD_SELECT = ['ID', 'TITLE', 'DATE_CREATE', 'DATE_CLOSED', 'STATUS_ID', 'SOURCE_ID', 'ASSIGNED_BY_ID'] as const
 export const DRILL_DEAL_SELECT = ['ID', 'TITLE', 'DATE_CREATE', 'CLOSEDATE', 'STAGE_ID', 'SOURCE_ID', 'ASSIGNED_BY_ID', 'OPPORTUNITY', 'CURRENCY_ID'] as const
 
 /** Строка `crm.lead.list` для списка. */
@@ -62,6 +77,8 @@ export interface B24DrillLeadRow {
   ID: string | number
   TITLE?: string | null
   DATE_CREATE?: string | null
+  /** Дата закрытия лида. ⚠ Это НЕ `CLOSEDATE` сделки: у портала имена полей разные. */
+  DATE_CLOSED?: string | null
   STATUS_ID?: string | null
   SOURCE_ID?: string | null
   ASSIGNED_BY_ID?: string | number | null
@@ -78,6 +95,39 @@ export interface B24DrillDealRow {
   ASSIGNED_BY_ID?: string | number | null
   OPPORTUNITY?: string | number | null
   CURRENCY_ID?: string | null
+}
+
+export const DRILL_ACTIVITY_SELECT = ['ID', 'SUBJECT', 'CREATED', 'END_TIME', 'TYPE_ID', 'DIRECTION', 'COMPLETED', 'RESPONSIBLE_ID', 'OWNER_ID', 'OWNER_TYPE_ID'] as const
+/** Строка `crm.activity.list` для списка. */
+export interface B24DrillActivityRow {
+  ID: string | number
+  SUBJECT?: string | null
+  CREATED?: string | null
+  END_TIME?: string | null
+  TYPE_ID?: string | number | null
+  DIRECTION?: string | number | null
+  COMPLETED?: string | null
+  RESPONSIBLE_ID?: string | number | null
+  /** Запись CRM, к которой привязано дело, — по ней и открывается карточка. */
+  OWNER_ID?: string | number | null
+  /** `1` — лид, `2` — сделка, `3` — контакт, `4` — компания. */
+  OWNER_TYPE_ID?: string | number | null
+}
+
+/**
+ * Строка `voximplant.statistic.get` для списка.
+ *
+ * ⚠ Списка полей (`select`) у метода НЕТ — он всегда отдаёт запись целиком, и просить у него
+ * меньше нечем. Поэтому здесь перечислено то, что список ЧИТАЕТ, а не то, что он запрашивает.
+ */
+export interface B24DrillCallRow {
+  ID: string | number
+  PORTAL_USER_ID?: string | number | null
+  PHONE_NUMBER?: string | null
+  CALL_TYPE?: string | number | null
+  CALL_DURATION?: string | number | null
+  CALL_FAILED_CODE?: string | number | null
+  CALL_START_DATE?: string | null
 }
 
 const lead = (title: string, extra: DrillRequest['extra'] = {}): DrillRequest => ({ entity: 'lead', title, extra })
@@ -199,9 +249,36 @@ export function drillListParams(request: DrillRequest, period: ReportPeriod, fil
   }
 }
 
-/** Путь карточки в CRM портала — для `slider.openPath`; вне портала он никуда не ведёт. */
-export function crmPath(entity: DrillEntity, id: number): string {
-  return `/crm/${entity}/details/${id}/`
+/**
+ * Путь карточки в CRM портала — для `slider.openPath`; вне портала он никуда не ведёт.
+ *
+ * ⚠ Принимает ИМЯ РАЗДЕЛА CRM, а не сущность слайдера, и это разные множества: у слайдера есть
+ * `activity` и `call`, а разделов `/crm/activity/` и `/crm/call/` в портале нет вовсе. Дело
+ * открывается карточкой своей записи (лид, сделка, контакт, компания), звонок — карточкой той же
+ * записи или ничем.
+ */
+export function crmPath(section: CrmSection, id: number): string {
+  return `/crm/${section}/details/${id}/`
+}
+
+/** Разделы CRM, карточки которых умеет открывать список. */
+export type CrmSection = 'lead' | 'deal' | 'contact' | 'company'
+
+/**
+ * `OWNER_TYPE_ID` дела → раздел CRM.
+ *
+ * ⚠ Неизвестный тип — `undefined`, то есть строка БЕЗ ссылки. Догадка здесь увела бы человека в
+ * чужую карточку: типов у портала больше четырёх (счета, смарт-процессы), и `/crm/lead/` для
+ * смарт-процесса открыл бы лид с тем же номером — существующий и совершенно посторонний.
+ */
+export function ownerSection(ownerTypeId: string | number | null | undefined): CrmSection | undefined {
+  switch (Number(ownerTypeId)) {
+    case 1: return 'lead'
+    case 2: return 'deal'
+    case 3: return 'contact'
+    case 4: return 'company'
+    default: return undefined
+  }
 }
 
 function toId(value: string | number | null | undefined): number {
@@ -218,16 +295,37 @@ function managerLabel(dictionaries: ReportDictionaries, id: number): string | un
   return dictionaries.users?.[String(id)] ?? `Сотрудник #${id}`
 }
 
+/**
+ * По какой дате показывать строку лида: создания или ЗАКРЫТИЯ.
+ *
+ * ⚠ Ровно тот же приём, что `dealScope: 'unlinked'` у сделок: число, посчитанное по дате
+ * закрытия, обязано открывать список с датами закрытия.
+ */
+export type LeadDrillScope = 'created' | 'closed'
+
 /** Строка лида портала → строка списка. Без названия — «Лид #id»: пустая строка в списке неотличима от отступа. */
-export function leadDrillRow(row: B24DrillLeadRow, dictionaries: ReportDictionaries): DrillRow {
+export function leadDrillRow(
+  row: B24DrillLeadRow,
+  dictionaries: ReportDictionaries,
+  scope: LeadDrillScope = 'created'
+): DrillRow {
   const id = toId(row.ID)
   const status = toText(row.STATUS_ID)
   const source = toText(row.SOURCE_ID)
   const manager = managerLabel(dictionaries, toId(row.ASSIGNED_BY_ID))
+  // ⚠ Дата — по СМЫСЛУ числа, как у сделок (`dealScope`) и дел (`activityScope`). Числа
+  // «успешно» и «провалено» в отчёте 3 посчитаны по дате ЗАКРЫТИЯ; покажи список дату создания —
+  // под августовским числом встали бы майские даты, и сверить список с числом было бы нечем.
+  //
+  // ⚠ Закрытая дата может не прийти (лид ещё в работе, поле пусто) — тогда берём создание, а не
+  // печатаем прочерк: дата в списке нужна, чтобы узнать запись, а не только чтобы сверить период.
+  const when = scope === 'closed'
+    ? (toText(row.DATE_CLOSED) || toText(row.DATE_CREATE))
+    : toText(row.DATE_CREATE)
   return {
     id,
     title: toText(row.TITLE) || `Лид #${id}`,
-    ...(toText(row.DATE_CREATE) ? { when: toText(row.DATE_CREATE) } : {}),
+    ...(when ? { when } : {}),
     ...(status ? { stage: leadStageLabel(dictionaries, status) } : {}),
     ...(source ? { source: sourceLabel(dictionaries, source) } : {}),
     ...(manager ? { manager } : {}),
@@ -261,5 +359,82 @@ export function dealDrillRow(row: B24DrillDealRow, dictionaries: ReportDictionar
     ...(Number.isFinite(amount) ? { amount } : {}),
     ...(toText(row.CURRENCY_ID) ? { currencyId: toText(row.CURRENCY_ID) } : {}),
     path: crmPath('deal', id)
+  }
+}
+
+/** Название вида дела CRM — то же слово, что в столбце таблицы отчёта. */
+const DEED_LABEL: Record<number, string> = {
+  1: 'Встреча',
+  2: 'Звонок',
+  3: 'Задача',
+  4: 'Письмо',
+  6: 'Дело'
+}
+
+/**
+ * Строка дела CRM → строка списка.
+ *
+ * ⚠ Дата берётся по СМЫСЛУ числа: у дел за период это дата создания, а у просроченных — СРОК
+ * (`END_TIME`), потому что число посчитано именно по нему. Покажи мы просроченному делу дату
+ * создания — список с датами трёхлетней давности встал бы под числом «просрочено к концу
+ * периода», и сверить их было бы нечем. Тот же приём, что у `dealScope: 'unlinked'`.
+ *
+ * ⚠ Направление печатается только у тех видов, у которых оно есть: у встреч и задач портал ставит
+ * `DIRECTION: 0` всем записям, и столбец «направление: —» был бы шумом в каждой строке.
+ */
+export function activityDrillRow(
+  row: B24DrillActivityRow,
+  dictionaries: ReportDictionaries,
+  scope: 'created' | 'overdue' = 'created'
+): DrillRow {
+  const id = toId(row.ID)
+  const typeId = Number(row.TYPE_ID)
+  const direction = Number(row.DIRECTION)
+  const kind = DEED_LABEL[typeId] ?? 'Дело'
+  const stage = direction === 1 || direction === 2
+    // ⛔ У дел CRM `1` — ВХОДЯЩЕЕ, `2` — исходящее: обратно шкале телефонии (`CALL_TYPE`).
+    ? `${kind}, ${direction === 1 ? 'входящее' : 'исходящее'}`
+    : kind
+  const when = toText(scope === 'overdue' ? row.END_TIME : row.CREATED)
+  const manager = managerLabel(dictionaries, toId(row.RESPONSIBLE_ID))
+  const section = ownerSection(row.OWNER_TYPE_ID)
+  const ownerId = toId(row.OWNER_ID)
+  return {
+    id,
+    title: toText(row.SUBJECT) || `${kind} #${id}`,
+    ...(when ? { when } : {}),
+    stage,
+    ...(manager ? { manager } : {}),
+    // Карточки самого дела в портале нет — открывается запись, к которой оно привязано.
+    ...(section && ownerId ? { path: crmPath(section, ownerId) } : {})
+  }
+}
+
+/**
+ * Строка звонка → строка списка.
+ *
+ * ⚠ Название строки — НОМЕР телефона: у звонка нет ни темы, ни заголовка, а номер — единственное,
+ * по чему человек узнаёт разговор в списке. Скрытый номер портал отдаёт пустым, и тогда остаётся
+ * «Звонок #id».
+ *
+ * ⚠ Длительность печатается в столбце суммы (`amount`) БЕЗ валюты: столбец в списке один, а
+ * длительность — то самое, ради чего этот список открывают. Валюта у него не ставится, иначе
+ * секунды напечатались бы как деньги.
+ */
+export function callDrillRow(row: B24DrillCallRow, dictionaries: ReportDictionaries): DrillRow {
+  const id = toId(row.ID)
+  const seconds = Number(row.CALL_DURATION)
+  // ⛔ `CALL_TYPE: 1` — ИСХОДЯЩИЙ, `2` — входящий: обратно шкале дел CRM (`DIRECTION`).
+  const outgoing = Number(row.CALL_TYPE) !== 2
+  const answered = String(row.CALL_FAILED_CODE ?? '') === '200'
+  const manager = managerLabel(dictionaries, toId(row.PORTAL_USER_ID))
+  const phone = toText(row.PHONE_NUMBER)
+  return {
+    id,
+    title: phone || `Звонок #${id}`,
+    ...(toText(row.CALL_START_DATE) ? { when: toText(row.CALL_START_DATE) } : {}),
+    stage: `${outgoing ? 'Исходящий' : 'Входящий'}${answered ? '' : ', не дозвонились'}`,
+    ...(manager ? { manager } : {}),
+    ...(Number.isFinite(seconds) ? { amount: seconds } : {})
   }
 }

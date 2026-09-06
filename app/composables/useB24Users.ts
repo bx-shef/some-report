@@ -1,4 +1,4 @@
-import { adaptUsers, type B24UserRow } from '~/utils/b24Adapter'
+import { adaptUserDepartments, adaptUsers, type B24UserRow } from '~/utils/b24Adapter'
 import { userListParams } from '~/utils/b24Query'
 
 /** Сотрудники портала: имена по идентификатору и кто из них уволен. */
@@ -7,10 +7,17 @@ export interface PortalUsers {
   names: Record<string, string>
   /** Идентификаторы уволенных (в портале `ACTIVE: false`). */
   dismissed: Set<string>
+  /**
+   * id → отделы сотрудника (`UF_DEPARTMENT`). Нужен фильтру отдела в отчёте «Активность».
+   *
+   * ⚠ Читается тем же проходом, а не отдельным запросом: `user.get` отдаёт поле и так, а второй
+   * полный проход по 329 сотрудникам стоил бы семи лишних запросов ровно за то, что уже пришло.
+   */
+  departments: Record<string, number[]>
 }
 
 /**
- * Сотрудники портала — общая выборка обоих отчётов.
+ * Сотрудники портала — общая выборка всех отчётов.
  *
  * Право `user_brief`; читается ПОЛНОСТЬЮ (`callList` SDK) и запоминается на время жизни страницы:
  * сотрудники за минуту не меняются.
@@ -98,7 +105,8 @@ export function useB24Users() {
       )
       return {
         names: { ...adaptUsers(active.rows), ...adaptUsers(fired.rows) },
-        dismissed
+        dismissed,
+        departments: { ...adaptUserDepartments(active.rows), ...adaptUserDepartments(fired.rows) }
       }
     })()
     // ⚠ Присваиваем ПОСЛЕ запуска, но это безопасно: тело выше первым делом уходит в `await`,

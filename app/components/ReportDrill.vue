@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { DrillRow } from '~/utils/drilldown'
 import type { DrillSliderPayload } from '~/utils/drillSlider'
-import { formatCount, formatDate, formatMoney } from '~/utils/format'
+import { formatCount, formatDate, formatMoney, formatSeconds } from '~/utils/format'
 
 /**
  * Детализация: список записей за числом отчёта — во весь НАСТОЯЩИЙ слайдер портала.
@@ -40,7 +40,7 @@ const emit = defineEmits<{ more: [], open: [DrillRow] }>()
  * квартале список «Лиды» — две сотни страниц, и масштаб виден только тому, кто долистал.
  */
 const description = computed(() => {
-  const what = props.payload.entity === 'deal' ? 'сделок' : 'лидов'
+  const what = ENTITY_NOUN[props.payload.entity]
   const shown = formatCount(props.rows.length)
   if (props.done) return `${what}: ${shown}`
   return props.payload.total === undefined
@@ -48,7 +48,42 @@ const description = computed(() => {
     : `показано ${shown} из ${formatCount(props.payload.total)} ${what}`
 })
 
+/** Чего именно «показано M из N» — родительный падеж, по одному слову на сущность. */
+const ENTITY_NOUN: Record<DrillSliderPayload['entity'], string> = {
+  lead: 'лидов',
+  deal: 'сделок',
+  activity: 'дел',
+  call: 'звонков'
+}
+
+/** Как подписан первый столбец — то, по чему человек узнаёт запись. */
+const TITLE_HEAD: Record<DrillSliderPayload['entity'], string> = {
+  lead: 'Лид',
+  deal: 'Сделка',
+  activity: 'Дело',
+  call: 'Номер'
+}
+
+/**
+ * Подпись столбца, в котором стоит вид записи.
+ *
+ * ⚠ У лидов и сделок это стадия, у дел — вид и направление, у звонков — направление и то,
+ * состоялся ли разговор. Столбец один, а называется по-разному: «Стадия» над словом «Исходящий»
+ * читалась бы как стадия воронки, которой у звонка нет.
+ */
+const KIND_HEAD: Record<DrillSliderPayload['entity'], string> = {
+  lead: 'Стадия',
+  deal: 'Стадия',
+  activity: 'Вид',
+  call: 'Направление'
+}
+
 const isDeal = computed(() => props.payload.entity === 'deal')
+const isCall = computed(() => props.payload.entity === 'call')
+/** Источник есть только у лидов и сделок: у дела и звонка такого поля нет вовсе. */
+const hasSource = computed(() => props.payload.entity === 'lead' || props.payload.entity === 'deal')
+/** Последний столбец: у сделок — сумма, у звонков — длительность. */
+const hasAmount = computed(() => isDeal.value || isCall.value)
 /** Первая страница ещё идёт: показывать нечего, и «Показать ещё» тут — приглашение к пустоте. */
 const booting = computed(() => props.pending && !props.rows.length)
 
@@ -121,25 +156,28 @@ onBeforeUnmount(() => observer?.disconnect())
         <thead>
           <tr class="border-b border-[color:var(--chart-track)] text-left text-xs opacity-60">
             <th class="py-2 pr-3 font-normal">
-              {{ isDeal ? 'Сделка' : 'Лид' }}
+              {{ TITLE_HEAD[payload.entity] }}
             </th>
             <th class="py-2 pr-3 font-normal">
               Дата
             </th>
             <th class="py-2 pr-3 font-normal">
-              Стадия
+              {{ KIND_HEAD[payload.entity] }}
             </th>
-            <th class="py-2 pr-3 font-normal">
+            <th
+              v-if="hasSource"
+              class="py-2 pr-3 font-normal"
+            >
               Источник
             </th>
             <th class="py-2 pr-3 font-normal">
               Ответственный
             </th>
             <th
-              v-if="isDeal"
+              v-if="hasAmount"
               class="py-2 text-right font-normal"
             >
-              Сумма
+              {{ isCall ? 'Длительность' : 'Сумма' }}
             </th>
           </tr>
         </thead>
@@ -150,7 +188,11 @@ onBeforeUnmount(() => observer?.disconnect())
             class="border-b border-[color:var(--chart-track)]"
           >
             <td class="py-2 pr-3">
+              <!-- ⚠ Кнопкой только то, что ОТКРЫВАЕТСЯ. У дела запись-владелец может быть
+                   смарт-процессом, у звонка её может не быть вовсе — карточки для них нет, и
+                   кнопка, после нажатия на которую ничего не происходит, читается как поломка. -->
               <button
+                v-if="row.path"
                 type="button"
                 class="drill-number"
                 :title="`Открыть карточку в CRM: ${row.title}`"
@@ -158,6 +200,7 @@ onBeforeUnmount(() => observer?.disconnect())
               >
                 {{ row.title }}
               </button>
+              <span v-else>{{ row.title }}</span>
             </td>
             <td class="py-2 pr-3 tabular-nums opacity-70">
               {{ row.when ? formatDate(row.when.slice(0, 10)) : '—' }}
@@ -165,17 +208,27 @@ onBeforeUnmount(() => observer?.disconnect())
             <td class="py-2 pr-3 opacity-70">
               {{ row.stage ?? '—' }}
             </td>
-            <td class="py-2 pr-3 opacity-70">
+            <td
+              v-if="hasSource"
+              class="py-2 pr-3 opacity-70"
+            >
               {{ row.source ?? '—' }}
             </td>
             <td class="py-2 pr-3 opacity-70">
               {{ row.manager ?? '—' }}
             </td>
             <td
-              v-if="isDeal"
+              v-if="hasAmount"
               class="py-2 text-right tabular-nums"
             >
-              {{ row.amount === undefined ? '—' : formatMoney(row.amount, row.currencyId ?? '') }}
+              <!-- ⚠ У звонка в этом столбце СЕКУНДЫ, а не деньги: `formatMoney` напечатал бы
+                   «210 » с пустой валютой, и длительность читалась бы как сумма. -->
+              <template v-if="isCall">
+                {{ formatSeconds(row.amount) }}
+              </template>
+              <template v-else>
+                {{ row.amount === undefined ? '—' : formatMoney(row.amount, row.currencyId ?? '') }}
+              </template>
             </td>
           </tr>
         </tbody>

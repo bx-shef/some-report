@@ -32,10 +32,19 @@ export function usePeriodPicker(options: {
    * период посреди шестнадцатисекундной выборки — портал получал бы вторую такую же следом.
    */
   disabled?: MaybeRefOrGetter<boolean>
+  /**
+   * Предел длины периода в днях. Умолчание — год, как было у отчётов 1 и 2.
+   *
+   * ⚠ Отчёту «Активность пользователей» задан МЕСЯЦ (решение владельца 2026-09-06): звонки он
+   * читает строками, и на длинных периодах это десятки тысяч записей в памяти фрейма. Предел
+   * убирает не только ожидание, но и кнопки, которые всегда отвечали бы жалобой.
+   */
+  maxDays?: MaybeRefOrGetter<number | undefined>
 }) {
   const period = computed(() => toValue(options.period))
   const today = computed(() => toValue(options.today))
   const disabled = computed(() => Boolean(toValue(options.disabled)))
+  const maxDays = computed(() => toValue(options.maxDays) ?? 366)
 
   /** Какой готовый интервал сейчас выбран. Ручной ввод «01.09 — 30.09» подсветит «Текущий месяц». */
   const activePreset = computed(() => matchPreset(period.value, today.value))
@@ -97,7 +106,7 @@ export function usePeriodPicker(options: {
     // упирается («текущий год» — 365–366 дней при пределе 366), но интервал длиннее добавят
     // однажды, и он обошёл бы предел одним нажатием — а человек ждал бы минуты, не понимая, чем
     // он это заслужил.
-    const issue = validatePeriod(bounds)
+    const issue = validatePeriod(bounds, maxDays.value)
     if (issue) {
       problem.value = issue.message
       return
@@ -114,7 +123,7 @@ export function usePeriodPicker(options: {
    */
   const customProblem = computed(() => {
     if (!customFrom.value || !customTo.value) return undefined
-    return validatePeriod({ from: customFrom.value, to: customTo.value })
+    return validatePeriod({ from: customFrom.value, to: customTo.value }, maxDays.value)
   })
 
   // Обе границы выбраны и период годный — применяем. Одна граница — человек ещё выбирает.
@@ -132,7 +141,17 @@ export function usePeriodPicker(options: {
 
   return {
     /** Список интервалов — разметка рисует по нему кнопки, порядок задан в `period.ts`. */
-    presets: PERIOD_PRESETS,
+    /**
+     * Интервалы, которые ВЛЕЗАЮТ в предел отчёта.
+     *
+     * ⚠ Длинные не «показать и отругать», а не показывать вовсе: кнопка, которая всегда отвечает
+     * жалобой, — это приглашение к ошибке. Отчёт «Активность пользователей» ограничен месяцем
+     * (решение владельца 2026-09-06), остальные — годом, и список у них не меняется.
+     */
+    presets: computed(() => PERIOD_PRESETS.filter((preset) => {
+      const bounds = preset.resolve?.(today.value)
+      return !bounds || !validatePeriod(bounds, maxDays.value)
+    })),
     isCustomActive,
     isPresetActive,
     customFrom,

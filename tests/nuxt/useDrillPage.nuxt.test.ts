@@ -318,3 +318,106 @@ describe('useDrillPage', () => {
     expect(portal.calls[0]?.method).toBe('crm.lead.list')
   })
 })
+
+describe('useDrillPage: дела CRM и звонки', () => {
+  const ACTIVITY: DrillSliderPayload = {
+    entity: 'activity',
+    activityScope: 'created',
+    title: 'Исходящие письма · Иванов Иван',
+    filter: { 'RESPONSIBLE_ID': 7, 'TYPE_ID': 4, 'DIRECTION': 2, '>=CREATED': '2026-08-01' },
+    total: 12
+  }
+
+  const CALLS: DrillSliderPayload = {
+    entity: 'call',
+    title: 'Разговоры · Иванов Иван',
+    filter: { 'PORTAL_USER_ID': 7, 'CALL_FAILED_CODE': '200', '>CALL_DURATION': 29 },
+    total: 60
+  }
+
+  it('дела читает crm.activity.list курсором и подписывает видом', async () => {
+    portal.pages = [[{
+      ID: '5', SUBJECT: 'Счёт', CREATED: '2026-08-03T08:40:08+03:00',
+      TYPE_ID: '4', DIRECTION: '2', RESPONSIBLE_ID: '7', OWNER_ID: '900', OWNER_TYPE_ID: '1'
+    }]]
+    const state = useDrillPage()
+    await state.start(ACTIVITY)
+    expect(portal.calls[0]?.method).toBe('crm.activity.list')
+    const params = portal.calls[0]!.params
+    const filter = params.filter as Record<string, unknown>
+    expect(filter['>ID']).toBe(0)
+    expect(filter.TYPE_ID).toBe(4)
+    expect(params.start).toBe(-1)
+    expect(state.rows.value[0]?.stage).toBe('Письмо, исходящее')
+    expect(state.rows.value[0]?.path).toBe('/crm/lead/details/900/')
+  })
+
+  /**
+   * ⛔ Главная ловушка этого списка. `voximplant.statistic.get` понимает только ЗАГЛАВНЫЙ `FILTER`:
+   * положи ему условие строчным ключом — он не отвергнет запрос, а вернёт ВЕСЬ портал за всё
+   * время, и под заголовком «Разговоры: Иванов» откроются чужие звонки за годы.
+   */
+  it('звонки читает телефонию ЗАГЛАВНЫМ FILTER, а не строчным', async () => {
+    portal.pages = [[{ ID: '10', PHONE_NUMBER: '+375291112233', CALL_TYPE: '1', CALL_DURATION: '120', CALL_FAILED_CODE: '200' }]]
+    const state = useDrillPage()
+    await state.start(CALLS)
+    expect(portal.calls[0]?.method).toBe('voximplant.statistic.get')
+    const params = portal.calls[0]!.params
+    expect(params).toHaveProperty('FILTER')
+    expect(params).not.toHaveProperty('filter')
+    const filter = params.FILTER as Record<string, unknown>
+    expect(filter.PORTAL_USER_ID).toBe(7)
+    // Курсор — тот же приём, что у списков CRM: смещение на больших списках даёт дубли.
+    expect(filter['>ID']).toBe(0)
+    expect(params.SORT).toBe('ID')
+    expect(state.rows.value[0]?.title).toBe('+375291112233')
+    expect(state.rows.value[0]?.amount).toBe(120)
+  })
+
+  /**
+   * ⚠ Справочники CRM делам и звонкам не нужны: стадий и источников у них нет. Лишний пакет — это
+   * круг по сети перед первой строкой на каждое открытие слайдера.
+   */
+  it('делам и звонкам справочники CRM не спрашиваются', async () => {
+    portal.pages = [[], []]
+    const state = useDrillPage()
+    await state.start(ACTIVITY)
+    expect(portal.books).toBe(0)
+    await state.start(CALLS)
+    expect(portal.books).toBe(0)
+  })
+
+  /**
+   * ⛔ Ключ кэша справочников обязан различать СУЩНОСТИ. Пока их было две, формула «лид или сделка
+   * направления N» была исчерпывающей; с делами и звонками все трое получали общий ключ `deal:0`
+   * (у них `categoryId` не задаётся), и список сделок, открытый после списка звонков, пропускал
+   * чтение справочников целиком — стадии и источники печатались кодами при исправном портале.
+   */
+  it('после звонков список сделок всё равно читает справочники', async () => {
+    portal.pages = [[], page(1)]
+    const state = useDrillPage()
+    await state.start(CALLS)
+    expect(portal.books).toBe(0)
+    await state.start({ ...PAYLOAD, categoryId: 0 })
+    expect(portal.books).toBe(1)
+    expect(state.rows.value[0]?.stage).toBe('Новая')
+  })
+
+  /** ⚠ И наоборот: список дел после сделок не должен спрашивать справочники повторно. */
+  it('дела после сделок лишнего пакета не заказывают', async () => {
+    portal.pages = [page(1), []]
+    const state = useDrillPage()
+    await state.start({ ...PAYLOAD, categoryId: 0 })
+    expect(portal.books).toBe(1)
+    await state.start(ACTIVITY)
+    expect(portal.books).toBe(1)
+  })
+
+  /** ⚠ Просроченные дела показывают СРОК: число посчитано по нему, а не по дате создания. */
+  it('просроченные дела показывают срок, а не дату создания', async () => {
+    portal.pages = [[{ ID: '5', TYPE_ID: '3', CREATED: '2023-01-10T10:00:00+03:00', END_TIME: '2026-08-20T10:00:00+03:00' }]]
+    const state = useDrillPage()
+    await state.start({ ...ACTIVITY, activityScope: 'overdue', title: 'Просроченные дела' })
+    expect(state.rows.value[0]?.when).toBe('2026-08-20T10:00:00+03:00')
+  })
+})

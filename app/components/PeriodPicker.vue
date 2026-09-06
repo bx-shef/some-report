@@ -26,6 +26,13 @@ const props = defineProps<{
   groupLabel?: string
   /** Пока идёт выборка, период не меняют: каждая смена — секунды запросов к порталу. */
   disabled?: boolean
+  /**
+   * Предел длины периода в днях. Умолчание — год.
+   *
+   * ⚠ Отчёт «Активность пользователей» задаёт месяц: он читает звонки строками, и длинный период
+   * — это десятки тысяч записей в памяти фрейма. Кнопки длиннее предела не рисуются вовсе.
+   */
+  maxDays?: number
 }>()
 
 const emit = defineEmits<{ 'update:period': [ReportPeriod] }>()
@@ -36,6 +43,7 @@ const {
   period: () => props.period,
   today: () => props.today,
   disabled: () => Boolean(props.disabled),
+  maxDays: () => props.maxDays,
   apply: bounds => emit('update:period', bounds)
 })
 </script>
