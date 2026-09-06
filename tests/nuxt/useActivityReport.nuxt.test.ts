@@ -36,6 +36,8 @@ const portal = vi.hoisted(() => ({
   departmentsFail: false,
   /** Телефония НИКОГДА не отдаёт короткую страницу: так проверяется предохранитель по страницам. */
   callsEndless: false,
+  /** Задержка ответа телефонии: ею отбор меняют, пока чтение звонков УЖЕ идёт. */
+  callsGate: Promise.resolve() as Promise<void>,
   users: [] as Array<Record<string, unknown>>,
   dismissedUsers: [] as Array<Record<string, unknown>>,
   departments: [] as Array<Record<string, unknown>>,
@@ -118,6 +120,7 @@ mockNuxtImport('useB24', () => () => ({
             if (method === 'voximplant.statistic.get') {
               if (portal.callsFail) return { isSuccess: false, getData: () => undefined, getErrorMessages: () => ['лимит запросов'] }
               portal.callPages++
+              await portal.callsGate
               // ⛔ Строчный `filter` метод НЕ понимает: он вернул бы весь портал за всё время.
               if ('filter' in params) throw new Error('voximplant.statistic.get требует ЗАГЛАВНЫЙ FILTER')
               // Портал, у которого звонки не кончаются: каждая страница ПОЛНАЯ.
@@ -153,6 +156,7 @@ beforeEach(() => {
   portal.batchFails = false
   portal.departmentsFail = false
   portal.callsEndless = false
+  portal.callsGate = Promise.resolve()
   portal.users = [
     { ID: '1', NAME: 'Иван', LAST_NAME: 'Иванов', UF_DEPARTMENT: [11] },
     { ID: '2', NAME: 'Пётр', LAST_NAME: 'Петров', UF_DEPARTMENT: [12] }
@@ -395,5 +399,33 @@ describe('useActivityReport: предохранители и кэш звонко
     await state.load({ ...state.filters.value, period: { from: '2020-01-01', to: '2020-01-31' } })
     await waitForCalls(state)
     expect(portal.callPages).toBeGreaterThan(pagesAfterFirst)
+  })
+})
+
+describe('useActivityReport: гонка посреди фонового чтения', () => {
+  /**
+   * ⛔ Фоновое чтение живёт минуты и переживает две-три смены отбора. Прежний тест на гонку менял
+   * отбор ДО того, как звонки вообще начинали читаться, — то есть сторож `seq` внутри цикла
+   * `loadCalls` не проходился ни разу. Здесь отбор меняется, когда первая пачка страниц уже
+   * ушла в портал и висит в ответе.
+   */
+  it('смена периода посреди чтения не дописывает старые звонки в новую таблицу', async () => {
+    let openGate: () => void = () => {}
+    portal.callsGate = new Promise<void>((resolve) => { openGate = resolve })
+
+    const state = useActivityReport({ today: TODAY })
+    await state.load()
+    // Первая пачка страниц уже ушла в портал и ждёт ответа.
+    expect(portal.callPages).toBeGreaterThan(0)
+
+    // Пока она висит — человек меняет период. Звонки прошлого периода доедут ПОЗЖЕ.
+    const second = state.load({ ...state.filters.value, period: { from: '2020-01-01', to: '2020-01-31' } })
+    openGate()
+    await second
+    await waitForCalls(state)
+
+    // Под январём 2020 звонков в стенде нет вовсе: доехавшие августовские не должны их подменить.
+    expect(state.report.value.rows.every(row => totalCalls(row).count === 0)).toBe(true)
+    expect(state.filters.value.period.from).toBe('2020-01-01')
   })
 })
