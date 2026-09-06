@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { DrillRequest } from '~/utils/drilldown'
+
 /**
  * Плитка сводки: подпись, крупное число и одна строка пояснения под ним.
  *
@@ -13,17 +15,31 @@ withDefaults(defineProps<{
   hint?: string
   /** `accent` — синим (доля), `alert` — красным (брак и потери), иначе приглушённо. */
   tone?: 'muted' | 'accent' | 'alert'
+  /** Список записей за числом — число становится кнопкой. Нет — просто число. */
+  drill?: DrillRequest
+  /** Само число для подписи «показано M из N» в слайдере. */
+  drillTotal?: number
 }>(), {
   hint: undefined,
-  tone: 'muted'
+  tone: 'muted',
+  drill: undefined,
+  drillTotal: undefined
 })
+const emit = defineEmits<{ drill: [DrillRequest] }>()
 </script>
 
 <template>
   <div class="flex flex-col items-center px-4 py-3 text-center">
     <span class="text-xs leading-tight opacity-60">{{ label }}</span>
     <!-- Пропорциональные цифры намеренно: `tabular-nums` на крупном кегле выглядит разреженным. -->
-    <span class="mt-2 text-2xl font-semibold leading-none">{{ value }}</span>
+    <DrillNumber
+      class="mt-2 text-2xl font-semibold leading-none"
+      :request="drill"
+      :total="drillTotal"
+      @drill="emit('drill', $event)"
+    >
+      {{ value }}
+    </DrillNumber>
     <span
       v-if="hint"
       class="mt-1.5 text-xs leading-tight"

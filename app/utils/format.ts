@@ -15,6 +15,15 @@ export function formatCount(value: number): string {
 }
 
 /**
+ * Доля → проценты, округлённые как на экране. Одна функция для `formatPercent` и для листов
+ * Excel: два округления (`toFixed` и `Math.round`) расходятся на границах вроде 0,2875 —
+ * экран печатал бы 28,7 %, файл 28,8, и человек нашёл бы «ошибку» там, где её нет.
+ */
+export function roundPercent(value: number, digits = 1): number {
+  return Number((value * 100).toFixed(digits))
+}
+
+/**
  * Доля 0…1 как проценты.
  *
  * ⚠ `digits` по умолчанию `1`, но целые доли печатаются без «,0»: «80 %» вместо «80,0 %».
@@ -22,8 +31,7 @@ export function formatCount(value: number): string {
  */
 export function formatPercent(value: number, digits = 1): string {
   if (!Number.isFinite(value)) return '—'
-  const pct = value * 100
-  const rounded = Number(pct.toFixed(digits))
+  const rounded = roundPercent(value, digits)
   const fraction = Number.isInteger(rounded) ? 0 : digits
   return `${new Intl.NumberFormat(LOCALE, {
     minimumFractionDigits: fraction,
@@ -56,4 +64,17 @@ export function formatDuration(minutes: number | undefined): string {
   const hours = Math.floor(total / 60)
   if (hours < 24) return `${hours} ч ${total % 60} мин`
   return `${Math.floor(hours / 24)} дн ${hours % 24} ч`
+}
+
+/**
+ * ISO-дата `YYYY-MM-DD` → `ДД.ММ.ГГГГ`.
+ *
+ * ⚠ Форматируем строкой, а не через `Date`: `new Date('2026-09-01')` разбирается как полночь UTC,
+ * и в часовом поясе западнее Гринвича печаталось бы 31 августа. Для границ периода отчёта это
+ * молчаливая ошибка на сутки в каждой подписи.
+ */
+export function formatDate(iso: string): string {
+  const [year, month, day] = iso.split('-')
+  if (!year || !month || !day) return iso
+  return `${day}.${month}.${year}`
 }

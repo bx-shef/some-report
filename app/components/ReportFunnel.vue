@@ -1,8 +1,17 @@
 <script setup lang="ts">
 import type { ReportMetrics } from '~/types/report'
 import { formatCount, formatMoney, formatPercent } from '~/utils/format'
+import { type DrillRequest, drill } from '~/utils/drilldown'
 
 const props = defineProps<{ report: ReportMetrics, currencyId: string }>()
+const emit = defineEmits<{ drill: [DrillRequest] }>()
+
+/** Список за ступенью — те же условия, что у плиток сводки: ступени и плитки обязаны сходиться. */
+const STAGE_DRILL: Record<string, () => DrillRequest> = {
+  leads: drill.leads,
+  qualified: drill.qualified,
+  won: drill.wonDeals
+}
 
 const baseLabel = computed(() =>
   props.report.summary.conversionBase === 'quality-leads' ? 'от качественных лидов' : 'от лидов'
@@ -35,7 +44,13 @@ const STAGE_COLORS: Record<string, string> = {
           {{ stage.label }}
         </div>
         <div class="mt-0.5 text-xl font-semibold leading-none">
-          {{ formatCount(stage.count) }}
+          <DrillNumber
+            :request="STAGE_DRILL[stage.key]?.()"
+            :total="stage.count"
+            @drill="emit('drill', $event)"
+          >
+            {{ formatCount(stage.count) }}
+          </DrillNumber>
         </div>
         <div
           class="mt-0.5 text-xs"

@@ -82,5 +82,24 @@ export const useB24 = () => {
     } catch { /* не во фрейме — подгонять нечего */ }
   }
 
-  return { init, get, getOrThrow, set, isInit, targetOrigin, getRequiredRights, fitWindow }
+  /**
+   * Открыть страницу портала в его слайдере: карточку лида или сделки из детализации.
+   *
+   * ⚠ SDK пересылает порталу только путь и строку запроса — origin не долетает никогда, и
+   * чужой адрес открыть нельзя технически; `getTargetOrigin()` здесь нужен лишь чтобы собрать
+   * `URL` из относительного пути. Ссылка `<a href>` на CRM внутри фрейма ушла бы в сам фрейм и
+   * сломала бы отчёт. Вне фрейма — no-op с `false`: у демо-строк карточек нет.
+   */
+  async function openPath(path: string): Promise<boolean> {
+    const frame = get()
+    if (!frame || !path) return false
+    try {
+      await frame.slider.openPath(new URL(path, frame.getTargetOrigin()))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  return { init, get, getOrThrow, set, isInit, targetOrigin, getRequiredRights, fitWindow, openPath }
 }

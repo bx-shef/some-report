@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import type { ReportDictionaries, ReportMetrics, SourceRow } from '~/types/report'
-import { conversionBaseValue, share } from '~/utils/metrics'
+import type { ReportDictionaries, ReportMetrics } from '~/types/report'
 import { formatCount, formatMoney, formatPercent } from '~/utils/format'
 import { sourceLabel } from '~/utils/labels'
+import { type DrillRequest, drill } from '~/utils/drilldown'
 
 const props = defineProps<{ report: ReportMetrics, dictionaries: ReportDictionaries, currencyId: string }>()
+const emit = defineEmits<{ drill: [DrillRequest] }>()
 
 const baseLabel = computed(() =>
   props.report.summary.conversionBase === 'quality-leads'
@@ -27,28 +28,25 @@ const maxRevenue = computed(() => Math.max(0, ...props.report.bySource.map(r => 
  * `summary` считает все. На живом портале, где сделки заводят руками, итог не сходился со своей
  * же колонкой — и это читалось как ошибка отчёта, хотя оба числа верны.
  */
-const totals = computed(() => {
-  const rows = props.report.bySource
-  const sum = (pick: (row: SourceRow) => number) => rows.reduce((acc, row) => acc + pick(row), 0)
-  const leads = sum(row => row.leads)
-  const junk = sum(row => row.junk)
-  const base = conversionBaseValue(leads, junk, props.report.summary.conversionBase)
-  const qualified = sum(row => row.qualified)
-  const won = sum(row => row.won)
-  return {
-    leads,
-    junk,
-    junkShare: share(junk, leads),
-    qualified,
-    crToDeal: share(qualified, base),
-    won,
-    crToSale: share(won, base),
-    revenue: sum(row => row.revenue)
-  }
-})
+const totals = computed(() => props.report.sourceTotals)
 
-/** Сколько выручки принесли сделки без лида-родителя — то есть чего в таблице нет и почему. */
-const revenueOutsideSources = computed(() => props.report.summary.revenue - totals.value.revenue)
+/**
+ * ⚠ Точность процентов в строке «Итого» и в строках выше РАЗНАЯ, и это не забытая унификация.
+ *
+ * Строки источников читают, чтобы сравнить источники между собой: там целых процентов достаточно,
+ * а дробные превращают колонку в шум. Итог — то число, которое цитируют, поэтому он печатается с
+ * той же точностью, что и сводка. Округлённый до целого итог печатал «50 %» там, где сводка
+ * показывала «49,6 %», — одно и то же число двумя способами на одном экране.
+ *
+ * ⚠ Но «та же точность» НЕ значит «всегда те же цифры», и путать это нельзя. Лиды, брак и
+ * квалифицированные в итоге всегда сходятся со сводкой: у каждого лида есть строка источника.
+ * А успешные сделки и выручка сойтись НЕ обязаны — разрез источников не берёт сделки без
+ * лида-родителя, а сводка берёт все. Именно поэтому под таблицей стоит строка-объяснение: без
+ * неё расхождение читалось бы как ошибка отчёта.
+ */
+
+/** Сделки, которых нет в разрезе источников: у них неизвестен источник (нет лида-родителя). */
+const outsideSources = computed(() => props.report.outsideSources)
 </script>
 
 <template>
@@ -102,13 +100,31 @@ const revenueOutsideSources = computed(() => props.report.summary.revenue - tota
               {{ sourceLabel(dictionaries, row.sourceId) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatCount(row.leads) }}
+              <DrillNumber
+                :request="drill.bySource(row.sourceId, 'leads', sourceLabel(dictionaries, row.sourceId))"
+                :total="row.leads"
+                @drill="emit('drill', $event)"
+              >
+                {{ formatCount(row.leads) }}
+              </DrillNumber>
             </td>
             <td class="py-2 pr-3 text-right tabular-nums text-red-600 dark:text-red-400">
-              {{ formatCount(row.junk) }} <span class="opacity-70">({{ formatPercent(row.junkShare, 0) }})</span>
+              <DrillNumber
+                :request="drill.bySource(row.sourceId, 'junk', sourceLabel(dictionaries, row.sourceId))"
+                :total="row.junk"
+                @drill="emit('drill', $event)"
+              >
+                {{ formatCount(row.junk) }}
+              </DrillNumber> <span class="opacity-70">({{ formatPercent(row.junkShare, 0) }})</span>
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatCount(row.qualified) }}
+              <DrillNumber
+                :request="drill.bySource(row.sourceId, 'qualified', sourceLabel(dictionaries, row.sourceId))"
+                :total="row.qualified"
+                @drill="emit('drill', $event)"
+              >
+                {{ formatCount(row.qualified) }}
+              </DrillNumber>
             </td>
             <td class="w-32 py-2 pr-3">
               <div class="text-right text-xs tabular-nums">
@@ -121,7 +137,13 @@ const revenueOutsideSources = computed(() => props.report.summary.revenue - tota
               />
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatCount(row.won) }}
+              <DrillNumber
+                :request="drill.bySource(row.sourceId, 'won', sourceLabel(dictionaries, row.sourceId))"
+                :total="row.won"
+                @drill="emit('drill', $event)"
+              >
+                {{ formatCount(row.won) }}
+              </DrillNumber>
             </td>
             <td class="w-32 py-2 pr-3">
               <div class="text-right text-xs tabular-nums">
@@ -170,13 +192,13 @@ const revenueOutsideSources = computed(() => props.report.summary.revenue - tota
               {{ formatCount(totals.qualified) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatPercent(totals.crToDeal, 0) }}
+              {{ formatPercent(totals.crToDeal) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
               {{ formatCount(totals.won) }}
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
-              {{ formatPercent(totals.crToSale, 0) }}
+              {{ formatPercent(totals.crToSale) }}
             </td>
             <td class="py-2 text-right tabular-nums">
               {{ formatMoney(totals.revenue, currencyId) }}
@@ -188,19 +210,14 @@ const revenueOutsideSources = computed(() => props.report.summary.revenue - tota
 
     <!-- Расхождение со сводкой объясняем прямо в отчёте, а не оставляем читателю гадать. -->
     <p
-      v-if="revenueOutsideSources > 0"
+      v-if="outsideSources.revenue > 0 || outsideSources.deals > 0"
       class="mt-4 text-xs opacity-60"
     >
-      Ещё {{ formatMoney(revenueOutsideSources, currencyId) }} принесли сделки без лида-родителя —
-      их источник неизвестен, поэтому в таблицу они не попадают. В сводке эта сумма учтена.
+      <!-- Формулировка обходит согласование с числом: «1 успешных сделок» читается как опечатка,
+           а правило множественного числа ради одной строки заводить незачем. -->
+      Успешных сделок без лида-родителя: {{ formatCount(outsideSources.deals) }} на
+      {{ formatMoney(outsideSources.revenue, currencyId) }}. Их источник неизвестен, поэтому в эту
+      таблицу они не попадают — в сводке выше они учтены.
     </p>
-
-    <div
-      v-if="report.topSources.length"
-      class="mt-4 text-xs opacity-60"
-    >
-      Топ-5 источников по количеству лидов:
-      {{ report.topSources.map(r => sourceLabel(dictionaries, r.sourceId)).join(' · ') }}
-    </div>
   </B24Card>
 </template>

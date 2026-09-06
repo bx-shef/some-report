@@ -22,6 +22,8 @@
     "test": "vitest run",
     "typecheck": "vue-tsc --noEmit && vue-tsc -p tsconfig.node.json --noEmit",
     "check": "pnpm lint && pnpm typecheck && pnpm test",
+    "smoke": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/cspSmoke.ts .output/public nginx.conf",
+    "smoke:image": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/cspSmoke.ts --origin",
     "postinstall": "nuxt prepare"
   },
   "dependencies": {
@@ -31,7 +33,11 @@
     "@bitrix24/b24ui-nuxt": "^2.10.0",
     "@fontsource/roboto-mono": "^5.3.0",
     "@fontsource/rubik": "^5.3.0",
-    "tailwindcss": "^4.3.3"
+    "@internationalized/date": "^3.12.4",
+    "html-to-image": "1.11.13",
+    "jspdf": "4.2.1",
+    "tailwindcss": "^4.3.3",
+    "xlsx": "0.18.5"
   },
   "devDependencies": {
     "@nuxt/eslint": "^1.17.0",
@@ -41,6 +47,7 @@
     "eslint": "^10.8.1",
     "happy-dom": "^20.11.2",
     "nuxt": "^4.5.2",
+    "playwright-core": "^1.62.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10",
     "vue-tsc": "^3.3.9"

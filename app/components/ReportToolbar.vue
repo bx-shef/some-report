@@ -1,73 +1,63 @@
 <script setup lang="ts">
-import type { ConversionBase } from '~/types/report'
+import type { ReportPeriod } from '~/types/report'
+import { formatDate } from '~/utils/format'
 
 /**
- * Панель отчёта. Главный её элемент — переключатель ЗНАМЕНАТЕЛЯ конверсий.
+ * Панель отчёта: период.
  *
- * ⚠ Это не настройка «на всякий случай». ТЗ и согласованный макет считают конверсии по-разному
- * (см. `docs/METRICS.md`), и на одних и тех же данных отчёт даёт 100 % или 80 %. Пока решение не
- * принято, прятать его в код — значит выбрать молча за клиента; переключатель делает разницу
- * видимой ровно там, где на неё смотрят.
+ * ⚠ Переключателя знаменателя конверсий здесь больше нет — и это решение владельца от
+ * 2026-09-04, а не упрощение. Пока клиент сверял отчёт с макетом, переключатель показывал
+ * разницу между «все лиды» и «лиды без брака»; ТЗ от 04.09 закрепило второе, и два ответа на
+ * один вопрос рядом с заголовком подрывали бы доверие к числу. Знаменатель — `docs/METRICS.md`.
  */
 const props = defineProps<{
-  conversionBase: ConversionBase
-  period: { from: string, to: string }
+  /** Выбранный период — подсвечивает интервал и уходит в запрос. */
+  period: ReportPeriod
+  /**
+   * Период, по которому ПОСЧИТАНЫ числа на экране. Подпись строится по нему, а не по выбранному:
+   * иначе при неудачной загрузке заголовок показывал бы новый период над числами старого.
+   */
+  appliedPeriod?: ReportPeriod
   isDemo: boolean
+  /** «Сегодня» приходит снаружи: интервалы считаются от него, и в тестах он должен быть задан. */
+  today: Date
 }>()
 
-const emit = defineEmits<{ 'update:conversionBase': [ConversionBase] }>()
-
-const BASES: Array<{ value: ConversionBase, label: string, hint: string }> = [
-  { value: 'quality-leads', label: 'Качественные лиды', hint: 'Лиды − Брак. Так написано в ТЗ' },
-  { value: 'all-leads', label: 'Все лиды', hint: 'Весь поток. Так посчитаны цифры на макете' }
-]
+const emit = defineEmits<{
+  'update:period': [ReportPeriod]
+}>()
 
 const periodText = computed(() => {
-  const format = (iso: string) => {
-    const [y, m, d] = iso.split('-')
-    return `${d}.${m}.${y}`
-  }
-  return `${format(props.period.from)} — ${format(props.period.to)}`
+  const shown = props.appliedPeriod ?? props.period
+  return `${formatDate(shown.from)} — ${formatDate(shown.to)}`
 })
 </script>
 
 <template>
-  <div class="flex flex-wrap items-center gap-3">
-    <h1 class="mr-auto text-xl font-bold">
-      Аналитика по лидам
-    </h1>
+  <div class="space-y-3">
+    <div class="flex flex-wrap items-center gap-3">
+      <h1 class="mr-auto text-xl font-bold">
+        Аналитика по лидам
+      </h1>
 
-    <B24Badge
-      v-if="isDemo"
-      color="air-primary-warning"
-      label="Демо-данные"
-    />
+      <!-- Кнопки экспорта — от страницы: панель периода про них не знает. -->
+      <slot name="actions" />
 
-    <div class="rounded-lg border border-[color:var(--chart-track)] px-3 py-1.5 text-sm">
-      {{ periodText }}
+      <B24Badge
+        v-if="isDemo"
+        color="air-primary-warning"
+        label="Демо-данные"
+      />
+
+      <div class="rounded-lg border border-[color:var(--chart-track)] px-3 py-1.5 text-sm">
+        {{ periodText }}
+      </div>
     </div>
 
-    <fieldset class="flex items-center gap-2">
-      <legend class="sr-only">
-        Знаменатель конверсий
-      </legend>
-      <span class="text-xs opacity-60">Конверсии считать от:</span>
-      <div class="flex overflow-hidden rounded-lg border border-[color:var(--chart-track)]">
-        <button
-          v-for="base in BASES"
-          :key="base.value"
-          type="button"
-          class="px-3 py-1.5 text-sm transition-colors"
-          :class="base.value === conversionBase
-            ? 'bg-[color:var(--chart-1)] text-white'
-            : 'hover:bg-[color:var(--chart-track)]'"
-          :title="base.hint"
-          :aria-pressed="base.value === conversionBase"
-          @click="emit('update:conversionBase', base.value)"
-        >
-          {{ base.label }}
-        </button>
-      </div>
-    </fieldset>
+    <PeriodPicker
+      :period="period"
+      :today="today"
+      @update:period="emit('update:period', $event)"
+    />
   </div>
 </template>

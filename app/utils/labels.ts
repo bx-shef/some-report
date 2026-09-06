@@ -31,3 +31,21 @@ export function junkReasonLabel(dictionaries: ReportDictionaries, id: string): s
 export function lossReasonLabel(dictionaries: ReportDictionaries, id: string): string {
   return labelFor(dictionaries.lossReasons, id, UNSPECIFIED_REASON_LABEL)
 }
+
+/** Стадия лида по коду; неизвестный код печатается как есть — по нему стадию можно найти в CRM. */
+export function leadStageLabel(dictionaries: ReportDictionaries, id: string): string {
+  return labelFor(dictionaries.leadStages ?? {}, id, UNSPECIFIED_REASON_LABEL)
+}
+
+/** Подпись строки «пустой или удалённый источник» блока 7 «Успешные сделки без связи с лидом». */
+export const NO_SOURCE_LABEL = 'Источник не указан или удалён из справочника'
+
+/**
+ * Источник СДЕЛКИ без лида. Строка «не указан» — не «другие источники», а именно «не указан или
+ * удалён»: адаптер кладёт туда и пустой `SOURCE_ID`, и код, которого нет в справочнике. На боевом
+ * портале это главная строка блока (95 % таких сделок без источника), и назвать её «другими»
+ * значило бы спрятать факт, ради которого блок и заведён.
+ */
+export function unlinkedSourceLabel(dictionaries: ReportDictionaries, id: string): string {
+  return labelFor(dictionaries.sources, id, NO_SOURCE_LABEL)
+}

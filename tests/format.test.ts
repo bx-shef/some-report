@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCount, formatDuration, formatMoney, formatPercent } from '~/utils/format'
+import { formatCount, formatDate, formatDuration, formatMoney, formatPercent } from '~/utils/format'
 import { nbsp } from './helpers/text'
 
 describe('formatCount', () => {
@@ -82,5 +82,22 @@ describe('отрицательные значения', () => {
   // Длительность — единственная величина, которая отрицательной быть не может по смыслу.
   it('отрицательная длительность схлопывается в ноль', () => {
     expect(formatDuration(-5)).toBe('0 мин')
+  })
+})
+
+describe('formatDate', () => {
+  it('печатает ISO-дату по-русски', () => {
+    expect(formatDate('2026-09-01')).toBe('01.09.2026')
+  })
+
+  // ⚠ Через `new Date('2026-09-01')` это была бы полночь UTC, и западнее Гринвича подпись
+  // печатала бы 31 августа — молчаливая ошибка на сутки в каждой границе периода.
+  it('не сдвигает дату часовым поясом', () => {
+    expect(formatDate('2026-01-01')).toBe('01.01.2026')
+    expect(formatDate('2026-12-31')).toBe('31.12.2026')
+  })
+
+  it('непонятную строку отдаёт как есть, а не ломает подпись', () => {
+    expect(formatDate('когда-нибудь')).toBe('когда-нибудь')
   })
 })

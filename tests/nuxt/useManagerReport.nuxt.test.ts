@@ -1,0 +1,637 @@
+// @vitest-environment nuxt
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
+import { useManagerReport } from '~/composables/useManagerReport'
+import ManagersPage from '~/pages/app/managers.vue'
+import { COMPANY_UNSET } from '~/utils/managerLoad'
+
+/**
+ * «Сегодня» и текущий месяц вокруг него.
+ *
+ * ⚠ Считаются от настоящего дня, а не записаны датами. Страница берёт «сегодня» из системных
+ * часов (умолчание отчёта — текущий месяц), и тест с зашитым сентябрём начал бы падать первого
+ * октября — виноват был бы календарь, а не код.
+ */
+const TODAY = new Date()
+const iso = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+const PERIOD = {
+  from: iso(new Date(TODAY.getFullYear(), TODAY.getMonth(), 1)),
+  to: iso(new Date(TODAY.getFullYear(), TODAY.getMonth() + 1, 0))
+}
+/** Дата создания сделок модели: внутри текущего месяца, как и умолчание отчёта. */
+const CREATED = iso(TODAY)
+
+/**
+ * Выборка отчёта «Сделки по менеджерам» из портала.
+ *
+ * ⚠ Портал здесь не «заглушка, отдающая заранее заданные числа», а МОДЕЛЬ: он держит список
+ * сделок и отвечает на те же вопросы, что настоящий, — включая цепочку `$result` и её главную
+ * ловушку (исчерпанная цепочка идёт по второму кругу). Заглушка с готовыми ответами прошла бы и
+ * на коде, который эту ловушку не разбирает, — то есть проверяла бы ровно ничего.
+ */
+interface FakeDeal {
+  ID: number
+  CATEGORY_ID: number
+  MYCOMPANY_ID: number
+  ASSIGNED_BY_ID: number
+  STAGE_ID: string
+  STAGE_SEMANTIC_ID: 'P' | 'S' | 'F'
+  DATE_CREATE: string
+}
+
+const portal = vi.hoisted(() => ({
+  initialized: true,
+  /** Сколько раз портал спросили пакетом — по этому числу видно, что счётчиков не стало вдвое больше. */
+  batches: 0,
+  usersFail: false,
+  /** Штат портала: активные сотрудники. */
+  users: [{ ID: '1', NAME: 'Иван', LAST_NAME: 'Иванов' }, { ID: '2', NAME: 'Пётр', LAST_NAME: 'Петров' }] as Array<Record<string, unknown>>,
+  /** Сколько раз спрашивали сотрудников: два прохода на открытие, страницы листает SDK. */
+  userFetches: 0,
+  /** Заголовки, с которыми страница просила портал открыть слайдер детализации. */
+  sliderTitles: [] as string[],
+  /** Уволенные — портал отдаёт их только по `user.get` с `ACTIVE: false`. */
+  dismissedUsers: [] as Array<Record<string, unknown>>,
+  /** Портал отвечает ошибкой на пакет: отчёт обязан сказать об этом, а не показать нули. */
+  batchFails: false,
+  /** Направление, ответы по которому приходят с задержкой, — для проверки гонки. */
+  slowCategory: undefined as number | undefined,
+  /** Настройки пользователя, которые «помнит» портал (`user.option.get`). */
+  options: {} as Record<string, unknown>,
+  /** Что отчёт записал в настройки (`user.option.set`). */
+  optionWrites: [] as Array<Record<string, unknown>>,
+  deals: [] as Array<Record<string, unknown>>,
+  categories: [] as Array<Record<string, unknown>>,
+  stages: [] as Array<Record<string, unknown>>
+}))
+
+/** Совпадает ли сделка с фильтром REST — те же ключи, что шлёт отчёт. */
+function matches(deal: Record<string, unknown>, filter: Record<string, unknown>): boolean {
+  for (const [key, value] of Object.entries(filter)) {
+    if (key.startsWith('>=') || key.startsWith('<')) {
+      const field = key.replace(/^[><=]+/, '')
+      const own = String(deal[field] ?? '')
+      if (key.startsWith('>=') && own < String(value)) return false
+      if (key.startsWith('<') && !key.startsWith('<=') && own >= String(value)) return false
+      continue
+    }
+    if (key.startsWith('>')) {
+      if (Number(deal[key.slice(1)]) <= Number(value)) return false
+      continue
+    }
+    if (String(deal[key] ?? '') !== String(value)) return false
+  }
+  return true
+}
+
+/** Модель `crm.deal.list`: фильтр, сортировка, `total` и первая строка. */
+function dealList(params: Record<string, unknown>) {
+  const filter = (params.filter ?? {}) as Record<string, unknown>
+  const order = (params.order ?? {}) as Record<string, string>
+  let rows = portal.deals.filter(deal => matches(deal, filter))
+  const [field] = Object.keys(order)
+  if (field) rows = [...rows].sort((a, b) => Number(a[field]) - Number(b[field]))
+  return { rows, total: rows.length }
+}
+
+// Настоящий слайдер портала: список детализации живёт в отдельном фрейме, страница лишь просит
+// портал его открыть.
+mockNuxtImport('usePortalSlider', () => () => ({
+  openDrill: (payload: { title: string }) => {
+    portal.sliderTitles.push(payload.title)
+    return true
+  },
+  drillPayload: () => undefined
+}))
+
+mockNuxtImport('useB24', () => () => ({
+  init: async () => {},
+  isInit: () => portal.initialized,
+  targetOrigin: () => 'https://example.bitrix24.by',
+  getRequiredRights: () => [],
+  fitWindow: async () => {},
+  openPath: async () => true,
+  getOrThrow: () => ({
+    actions: {
+      v2: {
+        batch: {
+          make: async ({ calls }: { calls: Record<string, { method: string, params: Record<string, unknown> }> }) => {
+            portal.batches++
+            if (portal.batchFails) return { isSuccess: false, getData: () => undefined, getErrorMessages: () => ['портал недоступен'] }
+            // Медленное направление отвечает позже быстрого — так проверяется гонка отборов.
+            const anyFilter = Object.values(calls)[0]?.params as { filter?: Record<string, unknown> } | undefined
+            if (portal.slowCategory !== undefined && Number(anyFilter?.filter?.CATEGORY_ID) === portal.slowCategory) {
+              await new Promise(resolve => setTimeout(resolve, 30))
+            }
+            const data: Record<string, { getTotal: () => number, getData: () => { result: unknown[] } }> = {}
+            const answers: Record<string, unknown[]> = {}
+            for (const [key, command] of Object.entries(calls)) {
+              if (command.method === 'crm.status.list') {
+                const entity = ((command.params as { filter?: Record<string, unknown> }).filter ?? {}).ENTITY_ID
+                const rows = String(entity).startsWith('DEAL_STAGE') ? portal.stages : []
+                answers[key] = rows
+                data[key] = { getTotal: () => rows.length, getData: () => ({ result: rows }) }
+                continue
+              }
+              // ⚠ Ссылка `$result[cmd][0][ПОЛЕ]` на ответ предыдущей команды. Не разрешилась —
+              // портал подставляет пустоту, фильтр `>ПОЛЕ` пропадает, и цепочка идёт СНАЧАЛА.
+              const params = { ...command.params } as Record<string, unknown>
+              const filter = { ...(params.filter ?? {}) as Record<string, unknown> }
+              for (const [name, value] of Object.entries(filter)) {
+                const match = typeof value === 'string' ? /^\$result\[(\w+)]\[0]\[(\w+)]$/.exec(value) : null
+                if (!match) continue
+                const previous = answers[match[1]!]?.[0] as Record<string, unknown> | undefined
+                filter[name] = previous?.[match[2]!] ?? 0
+              }
+              params.filter = filter
+              const { rows, total } = dealList(params)
+              const page = params.start === -1 || params.start === 0 ? rows.slice(0, 50) : rows
+              answers[key] = page
+              data[key] = { getTotal: () => total, getData: () => ({ result: page }) }
+            }
+            return { isSuccess: true, getData: () => data, getErrorMessages: () => [] }
+          }
+        },
+        /**
+         * Полная выборка SDK: он листает сам и отдаёт ВСЕ строки одним массивом.
+         *
+         * ⛔ Сотрудников читать можно ТОЛЬКО так. `AjaxResult.getData()` отдаёт
+         * `Object.freeze({ result, time })` — поля `next` там нет вовсе, оно доступно лишь через
+         * `isMore()`. Самодельное листание по `start` из-за этого обрывалось после первой
+         * страницы, и на боевом портале в отчёт попадали ровно 50 сотрудников из всех.
+         */
+        callList: {
+          make: async ({ method, params }: { method: string, params: Record<string, unknown> }) => {
+            if (method !== 'user.get') throw new Error(`неожиданный callList ${method}`)
+            portal.userFetches++
+            if (portal.usersFail) throw new Error('insufficient_scope')
+            // ⚠ Как живой портал: `ACTIVE: false` — это отдельный список УВОЛЕННЫХ. Стенд,
+            // отдающий на оба запроса одно и то же, пометил бы уволенными всех подряд.
+            const active = (params as { filter?: { ACTIVE?: unknown } }).filter?.ACTIVE !== false
+            const rows = active ? portal.users : portal.dismissedUsers
+            return { isSuccess: true, getData: () => rows, getErrorMessages: () => [] }
+          }
+        },
+        call: {
+          make: async ({ method, params }: { method: string, params: Record<string, unknown> }) => {
+            const ok = (result: unknown) => ({ isSuccess: true, getData: () => ({ result }), getErrorMessages: () => [] })
+            if (method === 'crm.category.list') return ok({ categories: portal.categories })
+            if (method === 'crm.status.list') return ok(portal.stages)
+            if (method === 'crm.company.list') return ok([{ ID: '10', TITLE: 'Минск' }, { ID: '20', TITLE: 'Гомель' }])
+            // ⛔ Одиночный `user.get` — ловушка: сотрудников читает `callList`. Возврат сюда
+            // означал бы ручное листание, а оно на боевом теряло всех после пятидесятого.
+            if (method === 'user.get') throw new Error('user.get одиночным вызовом: сотрудников читает callList')
+            if (method === 'crm.deal.list') return ok(dealList(params).rows)
+            if (method === 'user.option.get') return ok(portal.options)
+            if (method === 'user.option.set') {
+              portal.optionWrites.push((params.options ?? {}) as Record<string, unknown>)
+              return ok(true)
+            }
+            throw new Error(`неожиданный метод ${method}`)
+          }
+        }
+      }
+    }
+  })
+}))
+
+function deal(id: number, companyId: number, managerId: number, stageId: string, extra: Partial<FakeDeal> = {}): Record<string, unknown> {
+  return {
+    ID: id,
+    CATEGORY_ID: 0,
+    MYCOMPANY_ID: companyId,
+    ASSIGNED_BY_ID: managerId,
+    STAGE_ID: stageId,
+    STAGE_SEMANTIC_ID: 'P',
+    DATE_CREATE: CREATED,
+    ...extra
+  }
+}
+
+beforeEach(() => {
+  portal.initialized = true
+  portal.batches = 0
+  portal.usersFail = false
+  portal.users = [{ ID: '1', NAME: 'Иван', LAST_NAME: 'Иванов' }, { ID: '2', NAME: 'Пётр', LAST_NAME: 'Петров' }]
+  portal.userFetches = 0
+  portal.sliderTitles = []
+  portal.dismissedUsers = []
+  portal.batchFails = false
+  portal.slowCategory = undefined
+  portal.options = {}
+  portal.optionWrites = []
+  portal.categories = [{ id: 0, name: 'Общее направление', isDefault: 'Y' }, { id: 1, name: 'Оптовые продажи' }]
+  portal.stages = [
+    { STATUS_ID: 'NEW', NAME: 'Новая', SEMANTICS: null },
+    { STATUS_ID: '1', NAME: 'Выставлен счёт', SEMANTICS: null },
+    { STATUS_ID: 'WON', NAME: 'Успех', SEMANTICS: 'S' }
+  ]
+  portal.deals = [
+    deal(1, 10, 1, 'NEW'),
+    deal(2, 10, 1, '1'),
+    deal(3, 10, 2, 'NEW'),
+    deal(4, 20, 2, '1'),
+    deal(5, COMPANY_UNSET, 1, 'NEW'),
+    // Успешная — в охват «в работе» не попадает.
+    deal(6, 10, 1, 'WON', { STAGE_SEMANTIC_ID: 'S' }),
+    // Чужое направление — тоже мимо.
+    deal(7, 10, 2, 'NEW', { CATEGORY_ID: 1 })
+  ]
+})
+
+describe('useManagerReport: живая выборка', () => {
+  /**
+   * ⚠ Компания на экране ОДНА (решение владельца от 2026-09-05), и не выбранную человеком отчёт
+   * подбирает сам — самую крупную. В модели портала это «Минск»: три сделки против одной у
+   * «Гомеля» и одной без компании.
+   */
+  it('строит матрицу менеджер → стадия по самой крупной компании', async () => {
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+
+    expect(state.filters.value.companyId).toBe(10)
+    expect(state.report.value.companies.map(company => company.companyId)).toEqual([10])
+    expect(state.report.value.total).toBe(3)
+    const minsk = state.report.value.companies[0]!
+    expect(minsk.companyName).toBe('Минск')
+    expect(minsk.rows.map(row => [row.managerName, row.total])).toEqual([['Иванов Иван', 2], ['Петров Пётр', 1]])
+    expect(minsk.rows[0]!.byStage).toEqual({ NEW: 1, 1: 1 })
+  })
+
+  /**
+   * ⚠ Список компаний и числа на кнопках собираются БЕЗ фильтра компании: иначе, выбрав одну,
+   * человек получил бы кнопку из неё одной и не смог бы переключиться на другую.
+   */
+  it('кнопки фильтра знают все компании и их числа', async () => {
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD, companyId: 20 })
+
+    expect(state.report.value.total).toBe(1)
+    expect(state.companyOptions.value.map(company => company.id)).toEqual([10, 20, COMPANY_UNSET])
+    expect(state.companyTotals.value).toEqual({ 10: 3, 20: 1, [COMPANY_UNSET]: 1 })
+  })
+
+  // Выбор человека не подменяем даже когда под ним ноль сделок: экран честно скажет «сделок
+  // нет», а молчаливая подмена читалась бы как «отчёт показывает не то, что я выбрал».
+  it('пустая компания остаётся выбранной, а не подменяется крупной', async () => {
+    portal.deals = [deal(1, 10, 1, 'NEW')]
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD, companyId: COMPANY_UNSET })
+    expect(state.filters.value.companyId).toBe(COMPANY_UNSET)
+    expect(state.report.value.total).toBe(0)
+  })
+
+  /**
+   * ⚠ Компании перечисляются ПО СДЕЛКАМ, поэтому пустая в перечисление не попадает. Без отдельной
+   * заботы человек, сменивший период, терял бы кнопку собственного выбора: на экране «сделок
+   * нет», в панели ни одной подсвеченной кнопки, и вернуться нечем.
+   */
+  it('выбранная компания остаётся кнопкой фильтра, даже когда сделок у неё нет', async () => {
+    portal.deals = [deal(1, 10, 1, 'NEW')]
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD, companyId: 20 })
+    expect(state.companyOptions.value.map(company => company.id)).toContain(20)
+    expect(state.companyTotals.value[20]).toBe(0)
+  })
+
+  /**
+   * ⚠ Уволенный — не «не найден». Портал отдаёт его вторым проходом `user.get` вместе с фамилией,
+   * и отчёт обязан показать имя, а не «Сотрудник #3»: сделки уволенного никуда не делись, и
+   * именно ради них менеджеры перечисляются по сделкам, а не по списку сотрудников.
+   */
+  /**
+   * ⛔ Больше пятидесяти сотрудников — тот самый случай, на котором отчёт молча ломался на боевом.
+   *
+   * Самодельное листание читало `next` из `getData()`, где его нет вовсе (`AjaxResult.getData()`
+   * отдаёт `Object.freeze({ result, time })`), и обрывалось после первой страницы: с 51-го
+   * сотрудника строки шли под подписью «Сотрудник #N» при совершенно верных числах. Стенд тогда
+   * был ЩЕДРЕЕ реальности — отдавал `next`, — и тест на 60 сотрудников был зелёным.
+   *
+   * ⚠ Проверяем не «страницы», а результат: имя есть у того, кто во второй сотне.
+   */
+  it('сотрудников больше пятидесяти — имя есть и у того, кто во второй сотне', async () => {
+    portal.users = Array.from({ length: 120 }, (_, i) => ({ ID: String(i + 1), NAME: 'Имя', LAST_NAME: `Фамилия${i + 1}` }))
+    // Сделки у сотрудников с номерами по обе стороны от пятидесятого — до правки имя было
+    // только у первого, а второй шёл «Сотрудник #77».
+    portal.deals = [deal(1, 10, 7, 'NEW'), deal(2, 10, 77, 'NEW')]
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    const rows = state.report.value.companies[0]!.rows
+    expect(rows.find(row => row.managerId === 7)?.managerName).toBe('Фамилия7 Имя')
+    expect(rows.find(row => row.managerId === 77)?.managerName).toBe('Фамилия77 Имя')
+    // Два прохода на открытие — активные и уволенные. Страницы внутри каждого листает SDK.
+    expect(portal.userFetches).toBe(2)
+  })
+
+  it('уволенный подписан фамилией и помечен, а не превращается в «Сотрудник #N»', async () => {
+    portal.dismissedUsers = [{ ID: '3', NAME: 'Анна', LAST_NAME: 'Авдеева', ACTIVE: false }]
+    portal.deals = [deal(1, 10, 3, 'NEW')]
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    const row = state.report.value.companies[0]!.rows.find(item => item.managerId === 3)
+    expect(row?.managerName).toBe('Авдеева Анна')
+    expect(row?.dismissed).toBe(true)
+  })
+
+  // Работающего пометкой не трогаем: подпись «уволен» на действующем сотруднике хуже, чем её
+  // отсутствие на уволенном.
+  it('работающий сотрудник пометки не получает', async () => {
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    expect(state.report.value.companies[0]!.rows.every(row => row.dismissed !== true)).toBe(true)
+  })
+
+  it('колонки — только стадии охвата, успешная стадия в «в работе» не попадает', async () => {
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    expect(state.report.value.stages.map(stage => stage.id)).toEqual(['NEW', '1'])
+    expect(state.stages.value.map(stage => stage.id)).toEqual(['NEW', '1', 'WON'])
+  })
+
+  it('охват «успешные» считает по семантике портала, а не по коду стадии', async () => {
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'won', period: PERIOD })
+    expect(state.report.value.total).toBe(1)
+    expect(state.report.value.stages.map(stage => stage.id)).toEqual(['WON'])
+  })
+
+  it('другое направление — другая выборка', async () => {
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 1, scope: 'in-work', period: PERIOD })
+    expect(state.report.value.total).toBe(1)
+    expect(state.filters.value.categoryId).toBe(1)
+  })
+
+  // Ответственный не назначен — цепочка его не находит (перечисление идёт со значений > 0), и
+  // сделка обязана оказаться в остатке, а не пропасть из отчёта.
+  it('сделка без ответственного попадает в остаток «вне строк»', async () => {
+    portal.deals.push(deal(8, 10, 0, 'NEW'))
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    const minsk = state.report.value.companies.find(company => company.companyId === 10)!
+    expect(minsk.total).toBe(4)
+    expect(minsk.unlisted).toBe(1)
+    expect(state.report.value.unlisted).toBe(1)
+  })
+
+  // Стадию удалили из воронки, а сделки на ней остались: сумма колонок меньше итога строки.
+  it('сделка на стадии вне справочника — остаток «прочие стадии»', async () => {
+    portal.deals.push(deal(9, 10, 1, 'DELETED_STAGE'))
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    const row = state.report.value.companies[0]!.rows[0]!
+    expect(row.total).toBe(3)
+    expect(row.otherStages).toBe(1)
+  })
+
+  it('несуществующее направление подменяется первым из справочника', async () => {
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 42, scope: 'in-work', period: PERIOD })
+    expect(state.filters.value.categoryId).toBe(0)
+    expect(state.report.value.total).toBe(3)
+  })
+
+  it('без списка сотрудников отчёт остаётся, а строки подписаны номером', async () => {
+    portal.usersFail = true
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    expect(state.error.value).toBeUndefined()
+    expect(state.report.value.companies[0]!.rows[0]!.managerName).toBe('Сотрудник #1')
+  })
+
+  it('период уходит в фильтр по дате создания сделки', async () => {
+    portal.deals.push(deal(10, 10, 1, 'NEW', { DATE_CREATE: '2026-07-15' }))
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: { from: '2026-07-01', to: '2026-07-31' } })
+    expect(state.report.value.total).toBe(1)
+  })
+
+  // Отбор переключают кликами: медленный ответ прошлого отбора не должен затирать свежий.
+  it('устаревшая выборка не затирает свежую', async () => {
+    const state = useManagerReport({ today: TODAY })
+    const first = state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    const second = state.load({ categoryId: 1, scope: 'in-work', period: PERIOD })
+    await Promise.all([first, second])
+    expect(state.filters.value.categoryId).toBe(1)
+    expect(state.report.value.total).toBe(1)
+  })
+
+  it('вне портала остаётся демонстрационный набор и говорит об этом', async () => {
+    portal.initialized = false
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    expect(state.isDemo.value).toBe(true)
+    expect(state.report.value.total).toBeGreaterThan(0)
+    expect(state.categories.value.map(category => category.name)).toContain('Оптовые продажи')
+  })
+})
+
+describe('useManagerReport: сколько стоит выборка', () => {
+  // ⚠ Счётчики — главная цена отчёта. Лишний проход по парам или клеткам не виден на экране, но
+  // удваивает число вопросов к порталу; здесь это зафиксировано числом.
+  it('пакетов ровно столько, сколько шагов выборки', async () => {
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    // справочники + цепочка компаний + счётчики компаний (числа кнопок и выбор крупнейшей) +
+    // цепочка менеджеров + счётчики (итог, колонки, пары) + клетки
+    expect(portal.batches).toBe(6)
+  })
+
+  it('счётчики клеток спрашиваются только по непустым парам', async () => {
+    const state = useManagerReport({ today: TODAY })
+    // Направление 1: одна сделка, значит одна пара — клеток столько же, сколько стадий охвата.
+    await state.load({ categoryId: 1, scope: 'in-work', period: PERIOD })
+    expect(state.report.value.total).toBe(1)
+    expect(portal.batches).toBe(6)
+  })
+})
+
+describe('useManagerReport: когда что-то пошло не так', () => {
+  it('ошибка портала показывается, а не превращается в нули', async () => {
+    portal.batchFails = true
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    expect(state.error.value).toContain('портал недоступен')
+    expect(state.pending.value).toBe(false)
+    expect(state.report.value.total).toBe(0)
+    // Отбор не считается применённым: на экране не должно быть подписи под числами, которых нет.
+    expect(state.source.value).toBe('mock')
+  })
+
+  it('под пустым отбором — пустой отчёт без единого остатка', async () => {
+    portal.deals = []
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    expect(state.error.value).toBeUndefined()
+    expect(state.report.value.total).toBe(0)
+    expect(state.report.value.companies).toEqual([])
+    expect(state.report.value.unlisted).toBe(0)
+  })
+
+  // Медленный ответ прошлого отбора приходит ПОСЛЕ быстрого ответа нового — и не должен его
+  // затирать: иначе на экране числа одного направления под подписью другого.
+  it('спросили первым, ответил последним — на экране всё равно свежий отбор', async () => {
+    portal.slowCategory = 0
+    const state = useManagerReport({ today: TODAY })
+    const slow = state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    const fast = state.load({ categoryId: 1, scope: 'in-work', period: PERIOD })
+    await Promise.all([fast, slow])
+    expect(state.filters.value.categoryId).toBe(1)
+    expect(state.report.value.total).toBe(1)
+  })
+})
+
+describe('useManagerReport: перечисление упёрлось в предел', () => {
+  it('менеджеров больше, чем отчёт перечисляет за проход — признак поднят', async () => {
+    // 501 сотрудник: цепочка (10 пакетов по 50) исчерпает предел и не дойдёт до последнего.
+    portal.deals = Array.from({ length: 501 }, (_, index) => deal(1000 + index, 10, index + 1, 'NEW'))
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    expect(state.truncatedManagers.value).toBe(true)
+    expect(state.truncatedCompanies.value).toBe(false)
+    // Сделки не потеряны: то, что не разложено по строкам, видно остатком.
+    expect(state.report.value.total).toBe(501)
+    expect(state.report.value.unlisted).toBeGreaterThan(0)
+  }, 60_000)
+})
+
+describe('useManagerReport: стадии по кнопке', () => {
+  /** Много пар: 20 сотрудников × 5 стадий охвата даёт больше клеток, чем считается само. */
+  function crowd() {
+    portal.stages = Array.from({ length: 60 }, (_, index) => ({ STATUS_ID: `S${index}`, NAME: `Стадия ${index}`, SEMANTICS: null }))
+    portal.deals = Array.from({ length: 20 }, (_, index) => deal(2000 + index, 10, index + 1, `S${index % 60}`))
+  }
+
+  it('клеток слишком много — таблица без колонок и кнопка с оценкой времени', async () => {
+    crowd()
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    expect(state.stagesDeferred.value).toBe(true)
+    expect(state.stagesEstimateSeconds.value).toBeGreaterThan(0)
+    expect(state.report.value.stages).toEqual([])
+    // ⚠ Ни одной сделки при этом не должно оказаться в «прочих стадиях»: колонок не просили.
+    expect(state.report.value.otherStages).toBe(0)
+    expect(state.report.value.total).toBe(20)
+  })
+
+  it('кнопка досчитывает стадии, не спрашивая пары заново', async () => {
+    crowd()
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    const before = portal.batches
+    await state.startStages()
+    expect(state.stagesDeferred.value).toBe(false)
+    expect(state.report.value.stages.length).toBeGreaterThan(0)
+    expect(state.report.value.total).toBe(20)
+    // Досчёт — это ТОЛЬКО клетки: 20 строк × 60 стадий = 1200 вопросов, то есть 24 пакета.
+    // Ни справочники, ни цепочки, ни счётчики пар заново не спрашиваются.
+    expect(portal.batches - before).toBe(Math.ceil(20 * 60 / 50))
+  })
+})
+
+describe('экран отчёта на тех же данных портала', () => {
+  /**
+   * Дать странице домонтироваться и дождаться выборки: она идёт в `onMounted` и состоит из
+   * нескольких запросов подряд, поэтому одного `nextTick` мало — прокручиваем очередь задач.
+   */
+  async function flush(times = 40) {
+    for (let i = 0; i < times; i++) await new Promise(resolve => setTimeout(resolve, 0))
+    await nextTick()
+  }
+
+  it('рисует матрицу по живым данным, а не демо-набор', async () => {
+    const wrapper = await mountSuspended(ManagersPage)
+    await flush()
+    const text = wrapper.text()
+    expect(text).not.toContain('Это НЕ данные вашего портала')
+    expect(text).toContain('Минск')
+    expect(text).toContain('Иванов Иван')
+    expect(text).toContain('Итого по компании')
+  })
+
+  // Полный путь клика: число в таблице → запрос портала тем же условием → строки в слайдере.
+  // ⚠ Слайдер живёт в телепорте, вне дерева страницы, — читаем текст всего документа.
+  /**
+   * ⚠ Список открывает НАСТОЯЩИЙ слайдер портала (решение владельца от 2026-09-06), а не панель
+   * внутри отчёта. Проверяем то, что теперь и есть договор: по клику страница просит портал
+   * открыть детализацию, и просит ровно тем заголовком, что стоял у числа.
+   */
+  it('клик по числу просит портал открыть слайдер с этой клеткой', async () => {
+    document.body.innerHTML = ''
+    const wrapper = await mountSuspended(ManagersPage, { attachTo: document.body })
+    await flush()
+    const cell = wrapper.findAll('tbody button').find(button => button.attributes('title')?.includes('Иванов Иван'))
+    expect(cell).toBeTruthy()
+    await cell!.trigger('click')
+    await flush()
+    expect(portal.sliderTitles).toEqual(['Сделки: Минск · Иванов Иван · Новая'])
+  })
+
+  // ⚠ Решение владельца от 2026-09-05: сделки без «моей компании» — обычная группа. Плашки
+  // «поле почти не заполнено» больше нет, и группа стоит в общем порядке — первой, потому что
+  // сделок в ней больше всех. Выбор «смотреть её отдельно» отдан фильтру в панели.
+  it('сделки без «моей компании» — обычная группа, без плашки о качестве данных', async () => {
+    portal.deals = [
+      deal(1, 10, 1, 'NEW'),
+      ...Array.from({ length: 9 }, (_, index) => deal(100 + index, COMPANY_UNSET, 1, 'NEW'))
+    ]
+    const wrapper = await mountSuspended(ManagersPage)
+    await flush()
+    expect(wrapper.text()).not.toContain('почти не заполнено')
+    expect(wrapper.text()).toContain('Не указана')
+  })
+
+  /**
+   * Отбор, запомненный порталом за человеком (`user.option`).
+   *
+   * ⚠ Читается ДО первой выборки: иначе портал считал бы направление дважды — сначала по
+   * умолчанию, потом по восстановленному отбору. Проверяем по экрану: подпись под панелью
+   * строится по ПРИМЕНЁННОМУ отбору.
+   */
+  it('открывается с отбором, запомненным в прошлый раз', async () => {
+    portal.options['report.managers.v1'] = JSON.stringify({
+      categoryId: 1,
+      scope: 'in-work',
+      period: PERIOD,
+      companyId: 10
+    })
+    const wrapper = await mountSuspended(ManagersPage)
+    await flush()
+    expect(wrapper.text()).toContain('Оптовые продажи')
+  })
+
+  // ⚠ Ноль в сохранённой компании — «Без моей компании», а не «все». Потерять его значит открыть
+  // отчёт по всем компаниям там, где человек выбрал сделки без компании.
+  it('сохранённый ноль компании остаётся «без моей компании»', async () => {
+    portal.options['report.managers.v1'] = JSON.stringify({ categoryId: 0, scope: 'in-work', period: PERIOD, companyId: 0 })
+    const wrapper = await mountSuspended(ManagersPage)
+    await flush()
+    expect(wrapper.text()).toContain('без моей компании')
+  })
+
+  it('смена отбора запоминается в портале', async () => {
+    const wrapper = await mountSuspended(ManagersPage)
+    await flush()
+    const previous = wrapper.findAll('button').find(button => button.text() === 'Прошлый месяц')!
+    await previous.trigger('click')
+    await flush()
+    expect(portal.optionWrites.length).toBeGreaterThan(0)
+    expect(JSON.parse(String(portal.optionWrites.at(-1)!['report.managers.v1']))).toMatchObject({ categoryId: 0, scope: 'in-work' })
+  })
+
+  it('под пустым отбором экран говорит словами, а не показывает пустую таблицу', async () => {
+    portal.deals = []
+    const wrapper = await mountSuspended(ManagersPage)
+    await flush()
+    expect(wrapper.text()).toContain('Под этим отбором сделок нет')
+  })
+
+  it('при ошибке портала экран не утверждает, что сделок нет', async () => {
+    portal.batchFails = true
+    const wrapper = await mountSuspended(ManagersPage)
+    await flush()
+    const text = wrapper.text()
+    expect(text).toContain('Не удалось прочитать данные портала')
+    expect(text).not.toContain('Под этим отбором сделок нет')
+  })
+})

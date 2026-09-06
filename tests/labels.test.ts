@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ReportDictionaries } from '~/types/report'
-import { junkReasonLabel, labelFor, lossReasonLabel, sourceLabel } from '~/utils/labels'
+import { NO_SOURCE_LABEL, junkReasonLabel, labelFor, lossReasonLabel, sourceLabel, unlinkedSourceLabel } from '~/utils/labels'
 import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
 
 const dictionaries: ReportDictionaries = {
@@ -39,5 +39,21 @@ describe('обёртки по справочникам', () => {
   it('причина проигрыша', () => {
     expect(lossReasonLabel(dictionaries, 'LOSS_PRICE')).toBe('Цена')
     expect(lossReasonLabel(dictionaries, UNSPECIFIED_REASON)).toBe('Причина не указана')
+  })
+})
+
+describe('unlinkedSourceLabel', () => {
+  it('источник сделки — по справочнику', () => {
+    expect(unlinkedSourceLabel(dictionaries, 'CALL')).toBe('Входящий звонок')
+  })
+
+  // Остаток — не «другие источники», а именно «не указан»: это главная строка блока.
+  it('остаток называет прямо, а не «другими источниками»', () => {
+    expect(unlinkedSourceLabel(dictionaries, UNSPECIFIED_SOURCE)).toBe(NO_SOURCE_LABEL)
+    expect(NO_SOURCE_LABEL).not.toContain('Другие')
+  })
+
+  it('неизвестный код печатает как есть — по нему запись можно найти в CRM', () => {
+    expect(unlinkedSourceLabel(dictionaries, 'UC_X4F2K1')).toBe('UC_X4F2K1')
   })
 })
