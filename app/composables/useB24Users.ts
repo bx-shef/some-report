@@ -1,9 +1,6 @@
 import { adaptUsers, type B24UserRow } from '~/utils/b24Adapter'
 import { userListParams } from '~/utils/b24Query'
 
-/** Предел страниц `user.get` — защита от бесконечного `next`, а не от больших порталов. */
-const MAX_USER_PAGES = 100
-
 /** Сотрудники портала: имена по идентификатору и кто из них уволен. */
 export interface PortalUsers {
   /** id → «Фамилия Имя». Уволенные здесь ТОЖЕ есть — их сделки никуда не делись. */
@@ -15,8 +12,19 @@ export interface PortalUsers {
 /**
  * Сотрудники портала — общая выборка обоих отчётов.
  *
- * Право `user_brief`; читается страницами по 50 (`user.get`) и запоминается на время жизни
- * страницы: сотрудники за минуту не меняются.
+ * Право `user_brief`; читается ПОЛНОСТЬЮ (`callList` SDK) и запоминается на время жизни страницы:
+ * сотрудники за минуту не меняются.
+ *
+ * ⛔ Листать `user.get` руками НЕЛЬЗЯ, и это не стиль, а выученный урок. `AjaxResult.getData()`
+ * отдаёт `Object.freeze({ result, time })` — поля `next` там НЕТ ВОВСЕ, оно доступно только через
+ * `isMore()`/`getNext()`. Самодельный цикл читал `data.next`, всегда получал `undefined` и после
+ * ПЕРВОЙ страницы объявлял выборку законченной: в отчёт попадали ровно 50 сотрудников, а
+ * остальные шли под подписью «Сотрудник #5562». Числа при этом были верные — потому и не
+ * замечалось.
+ *
+ * ⚠ `callList` листает НЕ по `next`, а КУРСОРОМ: дописывает `'>ID'` в строчный `params.filter`,
+ * ставит свой `order` и `start: -1`. Отсюда требование к параметрам — условия строчным `filter`
+ * (см. `userListParams`), иначе они молча не применятся.
  *
  * ⚠ Проходов ДВА: активные и уволенные. Портал по умолчанию отдаёт только активных, а сделки
  * уволенного остаются — это и есть тот случай, ради которого менеджеры отчёта 2 перечисляются по
@@ -42,39 +50,40 @@ export function useB24Users() {
   function fetchUsers(): Promise<PortalUsers> {
     if (cache) return cache
     const attempt = (async () => {
-      /** Один проход по сотрудникам: строки и дошли ли мы до конца. */
+      /**
+       * Один проход по сотрудникам: ВСЕ строки и дошли ли мы до конца.
+       *
+       * ⚠ `callList`, а не `call` со `start`: он листает до конца сам (см. шапку про курсор).
+       *
+       * ⚠ Оборвался на середине — берём то, что успели. `callList` при сбое кладёт накопленные
+       * страницы в `getData()` и лишь помечает результат неуспешным: двести прочитанных фамилий
+       * лучше, чем ни одной, а `complete: false` уже говорит «неполно» — по нему результат не
+       * запоминается и перечитается на следующей выборке.
+       */
       async function readAll(active: boolean): Promise<{ rows: B24UserRow[], complete: boolean }> {
-        const rows: B24UserRow[] = []
         try {
-          for (let start = 0, pages = 0; pages < MAX_USER_PAGES; pages++) {
-            const result = await b24.getOrThrow().actions.v2.call.make<B24UserRow[]>({
-              method: 'user.get',
-              params: userListParams(start, active)
-            })
-            if (!result.isSuccess) return { rows, complete: false }
-            const data = result.getData() as { result?: unknown, next?: unknown } | undefined
-            if (!Array.isArray(data?.result)) return { rows, complete: false }
-            rows.push(...(data.result as B24UserRow[]))
-            if (typeof data.next !== 'number' || data.result.length === 0) return { rows, complete: true }
-            start = data.next
-          }
+          const result = await b24.getOrThrow().actions.v2.callList.make<B24UserRow>({
+            method: 'user.get',
+            params: userListParams(active)
+          })
+          const rows = result.getData()
+          const read = Array.isArray(rows) ? rows as B24UserRow[] : []
+          return { rows: read, complete: result.isSuccess && Array.isArray(rows) }
         } catch {
           // См. шапку: список — удобство подписи, а не данные отчёта.
-          return { rows, complete: false }
+          return { rows: [], complete: false }
         }
-        // Страницы кончились по предохранителю — значит, прочитали не всё.
-        return { rows, complete: false }
       }
 
       const active = await readAll(true)
       // ⚠ Оборвался первый проход — второго не делаем. Самая частая причина здесь одна: права
       // `user_brief` нет, и запрос уволенных упрётся в тот же отказ. Список всё равно не
       // запомнится и будет перечитан на следующей выборке — незачем тратить на это второй
-      // постраничный обход.
+      // полный проход.
       const fired = active.complete ? await readAll(false) : { rows: [] as B24UserRow[], complete: false }
       // ⚠ Запоминаем по ИМЕНАМ, а не по пометкам. Имена — это то, ради чего сюда ходят, и они уже
       // прочитаны; сбросить кэш из-за оборвавшегося второго прохода значило бы гонять оба
-      // постраничных обхода заново на КАЖДУЮ смену отбора (а её меняют кнопками, по многу раз).
+      // полных прохода заново на КАЖДУЮ смену отбора (а её меняют кнопками, по многу раз).
       // Цена решения: пометки «уволен» в такой сессии не появятся до перезагрузки страницы —
       // это заметно меньшее зло, чем десяток лишних запросов на каждое нажатие.
       if (!active.complete) cache = undefined

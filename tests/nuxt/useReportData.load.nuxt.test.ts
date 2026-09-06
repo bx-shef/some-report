@@ -24,7 +24,10 @@ const portal = vi.hoisted(() => ({
   batchFilters: {} as Record<string, Record<string, unknown>>,
   /** Уволенные — их портал отдаёт только по `user.get` с `ACTIVE: false`. */
   dismissedUsers: [] as Array<Record<string, unknown>>,
-  /** Сотрудники, которых отдаёт `user.get` страницами по 50. */
+  /**
+   * Штат портала. Читает его `callList` (полная выборка SDK); одиночный `user.get` — ловушка,
+   * отдающая только первую полусотню, чтобы возврат к ручному листанию было видно.
+   */
   users: [] as Array<{ ID: string, NAME?: string, LAST_NAME?: string }>,
   /** `user.get` падает (нет права) — отчёт от этого страдать не должен. */
   usersFail: false,
@@ -77,16 +80,21 @@ mockNuxtImport('useB24', () => () => ({
                 ? `${(params.filter as { TYPE_ID?: unknown })?.TYPE_ID === 1 ? 'created' : 'history'}:${params.filter?.['>=CREATED_TIME'] ?? '?'}`
                 : cursor && method === 'crm.lead.list' ? `${onlyId ? 'ids' : 'leads'}:${params.filter?.['>=DATE_CREATE'] ?? '?'}` : undefined
             if (method === 'user.get') {
-              portal.calls.push('user.get')
+              // ⛔ ЛОВУШКА, а не рабочий путь. Сотрудников читает `callList` (ниже), а здесь
+              // одиночный вызов отвечает ТОЧНО как настоящий SDK: `getData()` отдаёт
+              // `{ result }` и НИКАКОГО `next` — `AjaxResult.getData()` его срезает
+              // (`Object.freeze({ result, time })`), он доступен лишь через `isMore()`.
+              //
+              // ⚠ Прежде этот стенд возвращал `next` из `getData()` — и был ЩЕДРЕЕ реальности.
+              // Из-за этого тест на 60 сотрудников был зелёным, а на боевом портале в отчёт
+              // попадали ровно 50: самодельный цикл читал несуществующее поле и заканчивался
+              // после первой страницы. Верни кто-нибудь ручное листание — эта ветка отдаст ему
+              // одну страницу, и тест ниже покраснеет.
+              portal.calls.push('user.get:одиночный')
               if (portal.usersFail) return Promise.reject(new Error('insufficient_scope'))
-              // ⚠ Как живой портал: `ACTIVE` в фильтре разделяет работающих и уволенных. Стенд,
-              // отдающий на оба запроса один список, пометил бы уволенными всех подряд.
-              const active = (params as { FILTER?: { ACTIVE?: unknown } }).FILTER?.ACTIVE !== false
-              const all = active ? portal.users : portal.dismissedUsers
-              const start = (params as { start?: number }).start ?? 0
-              const page = all.slice(start, start + 50)
-              const next = start + 50 < all.length ? { next: start + 50 } : {}
-              return Promise.resolve({ isSuccess: true, getData: () => ({ result: page, ...next }), getErrorMessages: () => [] })
+              const active = (params as { filter?: { ACTIVE?: unknown } }).filter?.ACTIVE !== false
+              const page = (active ? portal.users : portal.dismissedUsers).slice(0, 50)
+              return Promise.resolve({ isSuccess: true, getData: () => ({ result: page }), getErrorMessages: () => [] })
             }
             if (key) {
               portal.calls.push(key)
@@ -112,6 +120,17 @@ mockNuxtImport('useB24', () => () => ({
         },
         callList: {
           make: ({ method, params }: { method: string, params: { filter: Record<string, unknown> } }) => {
+            // ⚠ Полная выборка SDK: он листает сам и отдаёт ВСЕ строки одним массивом. Именно
+            // так читаются сотрудники — и лиды со сделками ниже.
+            if (method === 'user.get') {
+              portal.calls.push('user.get')
+              if (portal.usersFail) return Promise.reject(new Error('insufficient_scope'))
+              // ⚠ Как живой портал: `ACTIVE` в фильтре разделяет работающих и уволенных. Стенд,
+              // отдающий на оба запроса один список, пометил бы уволенными всех подряд.
+              const active = (params as unknown as { filter?: { ACTIVE?: unknown } }).filter?.ACTIVE !== false
+              const all = active ? portal.users : portal.dismissedUsers
+              return Promise.resolve({ isSuccess: true, getData: () => all, getErrorMessages: () => [] })
+            }
             const from = String(params.filter['>=DATE_CREATE'] ?? '?')
             // Под фильтром по полям лида: сначала ID лидов, потом сделки по списку — свои ключи.
             const leadIds = params.filter.LEAD_ID
@@ -557,23 +576,29 @@ describe('load', () => {
       expect(data.dataset.value.deals).toEqual([])
     })
 
-    it('сотрудники — страницами user.get, один раз на открытие; в словаре «Фамилия Имя»', async () => {
+    it('сотрудники читаются ПОЛНОСТЬЮ, один раз на открытие; в словаре «Фамилия Имя»', async () => {
       portal.users = Array.from({ length: 60 }, (_, i) => ({ ID: String(i + 1), NAME: 'Имя', LAST_NAME: `Фамилия${i + 1}` }))
       const data = useReportData()
       const first = data.load(AUGUST)
       await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
       portal.pending[AUGUST.from]!([])
       await first
+      // ⚠ Шестьдесят, а не пятьдесят. Ровно это и ломалось на боевом: самодельное листание
+      // читало `next` из `getData()`, где его нет вовсе, и обрывалось после первой страницы —
+      // сотрудники с 51-го шли в отчёте под подписью «Сотрудник #N».
       expect(Object.keys(data.dataset.value.dictionaries.users ?? {})).toHaveLength(60)
       expect(data.dataset.value.dictionaries.users?.['60']).toBe('Фамилия60 Имя')
-      // Два прохода: активные (две страницы по 50 из 60) и уволенные (одна пустая).
-      expect(portal.calls.filter(c => c === 'user.get')).toHaveLength(3)
+      // Два прохода — активные и уволенные. Страницы внутри каждого листает SDK, не мы.
+      expect(portal.calls.filter(c => c === 'user.get')).toHaveLength(2)
+      // ⚠ И ни одного одиночного `user.get`: ручное листание сюда вернуться не должно.
+      expect(portal.calls.filter(c => c === 'user.get:одиночный')).toHaveLength(0)
 
       const second = data.load(SEPTEMBER)
       await vi.waitFor(() => expect(portal.pending[SEPTEMBER.from]).toBeDefined())
       portal.pending[SEPTEMBER.from]!([])
       await second
-      expect(portal.calls.filter(c => c === 'user.get')).toHaveLength(3)
+      // Второе открытие берёт сотрудников из памяти: за минуту они не меняются.
+      expect(portal.calls.filter(c => c === 'user.get')).toHaveLength(2)
     })
 
     /**
