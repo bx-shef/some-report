@@ -26,24 +26,36 @@ export function usePortalSlider() {
   /**
    * Открыть детализацию настоящим слайдером портала.
    *
-   * @returns удалось ли открыть. `false` — вызывающий показывает список сам.
+   * @returns удалось ли ПОПРОСИТЬ портал открыть слайдер. `false` — вызывающий показывает список
+   *   сам, своей панелью.
+   *
+   * ⚠ Промис `openSliderAppPage` НЕ ждём, и это принципиально. У `BX24.openApplication` он
+   * разрешается, когда слайдер ЗАКРЫЛИ, а не когда открыли: дождавшись его, мы объявили бы
+   * «открылось» в момент закрытия. Хуже другое — на неподдерживаемом устройстве родитель просто
+   * не отвечает, промис не разрешается никогда, и запасной путь не сработал бы вовсе: клик по
+   * числу не делал бы ничего. Поэтому здесь проверяется только то, что вызов ушёл.
+   *
+   * ⚠ Настройки слайдера едут с префиксом `bx24_` — так их читает портал. Без префикса `width` и
+   * `title` уезжают в `PLACEMENT_OPTIONS` как обычные данные приложения и молча игнорируются:
+   * слайдер открывается стандартной ширины с пустой шапкой.
    */
-  async function openDrill(payload: DrillSliderPayload): Promise<boolean> {
-    const frame = b24.get()
-    if (!frame) return false
+  function openDrill(payload: DrillSliderPayload): boolean {
     try {
-      await frame.slider.openSliderAppPage({
+      // ⚠ Чтение фрейма — ВНУТРИ try: у SDK своя жизнь, и падение на подступах к слайдеру должно
+      // отправлять на запасной путь, а не ронять обработчик клика целиком.
+      const frame = b24.get()
+      if (!frame) return false
+      void frame.slider.openSliderAppPage({
         ...encodeDrillPayload(payload),
-        width: DRILL_SLIDER_WIDTH,
+        bx24_width: DRILL_SLIDER_WIDTH,
         // ⚠ Заголовок задаём ЗДЕСЬ, а не только на странице: пока новый фрейм поднимается,
         // человек уже видит шапку слайдера. Пустая шапка на секунду читается как «открылось не
         // то», и её успевают закрыть.
-        title: payload.title
-      })
+        bx24_title: payload.title
+      }).catch(() => undefined)
       return true
     } catch {
-      // SDK падает на неподдерживаемых устройствах (мобильное приложение) — там останется
-      // запасной путь вызывающего.
+      // SDK падает СИНХРОННО на неподдерживаемых устройствах — там останется запасной путь.
       return false
     }
   }
@@ -53,25 +65,14 @@ export function usePortalSlider() {
    * детализации либо параметры негодные.
    */
   function drillPayload(): DrillSliderPayload | undefined {
-    const frame = b24.get()
-    if (!frame) return undefined
     try {
-      return decodeDrillPayload(frame.placement.options)
+      // ⚠ И здесь чтение фрейма внутри try: страница зовёт это до отрисовки, и исключение
+      // оставило бы человека с пустым экраном вместо оглавления приложения.
+      return decodeDrillPayload(b24.get()?.placement.options)
     } catch {
       return undefined
     }
   }
 
-  /** Закрыть себя — кнопка «Закрыть» на странице, открытой слайдером. */
-  async function closeSelf(): Promise<void> {
-    const frame = b24.get()
-    if (!frame) return
-    try {
-      await frame.slider.closeSliderAppPage()
-    } catch {
-      // Закрыть не удалось — у слайдера портала есть своя крестик-кнопка, человек не заперт.
-    }
-  }
-
-  return { inFrame, openDrill, drillPayload, closeSelf }
+  return { inFrame, openDrill, drillPayload }
 }

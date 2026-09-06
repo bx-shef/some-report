@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { APP_REPORTS } from '~/config/routes'
+import type { DrillSliderPayload } from '~/utils/drillSlider'
 
 /**
  * Главная страница приложения: выбор отчёта. Её открывает ПЛИТКА приложения в разделе
@@ -8,8 +9,15 @@ import { APP_REPORTS } from '~/config/routes'
  * ⚠ Заглушки «работает только внутри портала» здесь нет намеренно: страница не показывает ни
  * одного числа портала, а снаружи она — оглавление, из которого понятно, что вообще умеет
  * приложение. Данные закрыты на самих отчётах, каждым своим гейтом.
+ *
+ * ⚠ У страницы ДВА лица, и это не «на всякий случай». Портал открывает адрес обработчика
+ * приложения (`/app`) не только по плитке, но и когда мы сами просим его открыть слайдер
+ * детализации (`openSliderAppPage`): маршрутизации по `place` у портала нет, `place` — просто
+ * данные в `PLACEMENT_OPTIONS`. Значит, свежий фрейм слайдера приезжает СЮДА, и здесь же решается,
+ * что показать — оглавление или список записей.
  */
 const b24 = useB24()
+const slider = usePortalSlider()
 const route = useRoute()
 const inPortal = ref(false)
 /**
@@ -19,6 +27,12 @@ const inPortal = ref(false)
  * на первом кадре и врала бы ровно тем людям, для кого приложение и сделано.
  */
 const resolved = ref(false)
+/**
+ * Нагрузка слайдера детализации, если фрейм открыт ею. `undefined` — обычное открытие приложения.
+ *
+ * ⚠ Разбор проверяющий (`drillSlider.ts`): значение приходит от портала, то есть снаружи.
+ */
+const drill = ref<DrillSliderPayload | undefined>(undefined)
 
 useHead({ title: 'Отчёты' })
 
@@ -30,7 +44,10 @@ function target(path: string) {
 onMounted(async () => {
   await b24.init()
   inPortal.value = b24.isInit()
+  drill.value = slider.drillPayload()
   resolved.value = true
+  // Список детализации подгоняет высоту фрейма сам, когда прочитает первую страницу.
+  if (drill.value) return
   await nextTick()
   // Портал не знает высоту нашего содержимого: без этого фрейм остаётся высотой в один экран.
   await b24.fitWindow()
@@ -38,7 +55,15 @@ onMounted(async () => {
 </script>
 
 <template>
-  <main class="mx-auto max-w-4xl space-y-4 p-4 lg:p-6">
+  <ReportDrill
+    v-if="drill"
+    :payload="drill"
+  />
+
+  <main
+    v-else
+    class="mx-auto max-w-4xl space-y-4 p-4 lg:p-6"
+  >
     <h1 class="text-xl font-bold">
       Отчёты по CRM
     </h1>

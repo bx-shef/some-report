@@ -63,16 +63,21 @@ export function useManagerDrilldown(input: {
     pending.value = false
     params = plainDealListParams(next)
     afterId = 0
-    void slider.openDrill({
+    const asked = slider.openDrill({
       entity: 'deal',
+      dealScope: 'plain',
+      categoryId: input.filters.value.categoryId,
       title: next.title,
       filter: params.filter as DrillFilter,
       ...(next.total === undefined ? {} : { total: next.total })
-    }).then((opened) => {
-      if (opened || mine !== seq) return
-      open.value = true
-      void loadMore(mine)
     })
+    if (asked) {
+      // Панель прошлого клика гаснет: иначе она осталась бы под слайдером с чужим заголовком.
+      open.value = false
+      return
+    }
+    open.value = true
+    void loadMore(mine)
   }
 
   /** Следующая страница списка — курсором по `ID`, как и все выборки отчётов. */

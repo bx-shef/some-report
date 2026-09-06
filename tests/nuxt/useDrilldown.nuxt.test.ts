@@ -25,13 +25,14 @@ const portal = vi.hoisted(() => ({
 // просит портал его открыть.
 mockNuxtImport('usePortalSlider', () => () => ({
   inFrame: () => true,
-  openDrill: async (payload: { title: string, filter: Record<string, unknown> }) => {
+  // ⚠ Синхронный, как и настоящий: промис `openSliderAppPage` разрешается при ЗАКРЫТИИ слайдера,
+  // поэтому ждать его нельзя, и `openDrill` возвращает не промис, а «вызов ушёл».
+  openDrill: (payload: { title: string, filter: Record<string, unknown> }) => {
     if (portal.sliderFails) return false
     portal.sliderPages.push({ place: 'app-drill', ...payload })
     return true
   },
-  drillPayload: () => undefined,
-  closeSelf: async () => {}
+  drillPayload: () => undefined
 }))
 
 mockNuxtImport('useB24', () => () => ({
@@ -97,8 +98,8 @@ describe('useDrilldown', () => {
   it('портал: первая страница сразу, дальше по курсору ID, короткая страница — конец', async () => {
     const d = panel()
     d.show(drill.junk())
-    // ⚠ Панель поднимается ПОСЛЕ того, как слайдер ответил отказом, то есть через промис.
-    await vi.waitFor(() => expect(d.open.value).toBe(true))
+    // Слайдер здесь отказал (`panel()` возвращает `false`) — значит, поднялась запасная панель.
+    expect(d.open.value).toBe(true)
     expect(d.request.value?.title).toBe('Брак лидов')
     await vi.waitFor(() => expect(portal.calls).toHaveLength(1))
     expect(portal.calls[0]).toMatchObject({ method: 'crm.lead.list', filter: { 'STATUS_SEMANTIC_ID': 'F', '>ID': 0, '>=DATE_CREATE': '2026-08-01' } })

@@ -15,6 +15,31 @@ import type { DrillEntity } from '~/utils/drilldown'
  */
 export interface DrillSliderPayload {
   entity: DrillEntity
+  /**
+   * Как разбирать строки сделки: `unlinked` берёт дату ЗАКРЫТИЯ, остальные — создания.
+   *
+   * ⚠ Без этого признака список «успешные сделки без лида» показывал бы дату создания под
+   * числом, посчитанным по дате закрытия: сделка, закрытая в сентябре и созданная в мае, попадала
+   * бы в сентябрьский список с датой «май». Список, не сходящийся с числом над ним, хуже
+   * отсутствующего списка.
+   */
+  dealScope?: 'from-leads' | 'unlinked' | 'plain'
+  /** Направление сделок — по нему берутся ИМЕНА стадий: у каждого направления они свои. */
+  categoryId?: number
+  /**
+   * Готовые подписи стадий, код → название, — те же слова, что стоят в отчёте.
+   *
+   * ⚠ Нужны потому, что подпись причины провала НЕ равна названию стадии ни в одном справочнике
+   * портала: у заказчика одна причина — это пять-шесть кодов из разных направлений с разным
+   * регистром и тире вместо дефиса, и отчёт сводит их в одно каноничное название
+   * (`reasonMerge.ts`). Слайдер — отдельный фрейм: пересчитывать это сведение он не может, а
+   * прочитанный им справочник ОДНОГО направления дал бы либо чужое название, либо голый код.
+   * Строка «Отказ - Дорого: 15» открывала бы список из пятнадцати `C4:APOLOGY`.
+   *
+   * ⚠ Едут подписи только тех кодов, что стоят в фильтре, — их единицы. Класть сюда весь
+   * справочник нельзя: нагрузка идёт через параметры вызова портала, и длинную по дороге усечёт.
+   */
+  stageNames?: Record<string, string>
   /** Заголовок слайдера — та же подпись, что у числа, по которому нажали. */
   title: string
   /** ПОЛНЫЙ фильтр списка REST: период, отбор отчёта и условие клетки уже сведены вместе. */
@@ -23,8 +48,15 @@ export interface DrillSliderPayload {
   total?: number
 }
 
-/** Значение фильтра REST: строка, число или список строк — больше портал в фильтре и не принимает. */
-export type DrillFilterValue = string | number | Array<string | number>
+/**
+ * Значение фильтра REST: строка, число, `null` или список строк и чисел.
+ *
+ * ⚠ `null` здесь ОБЯЗАТЕЛЕН, и это не послабление. Отчёт по лидам берёт сделки условием
+ * `'!LEAD_ID': null` — «у сделки есть лид». Отвергни разбор `null`, и ВСЕ списки сделок этого
+ * отчёта («успешные из лидов», «проигранные», разрезы по причинам и источникам) открывали бы
+ * пустой слайдер с плашкой «нечего показывать» при совершенно исправном отчёте.
+ */
+export type DrillFilterValue = string | number | null | Array<string | number>
 export type DrillFilter = Record<string, DrillFilterValue>
 
 /**
@@ -59,13 +91,22 @@ export function encodeDrillPayload(payload: DrillSliderPayload): Record<string, 
 /** Имена, которые нельзя класть ключом в обычный объект, — см. шапку `decodeDrillPayload`. */
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
+/** Пределы нагрузки: см. `decodeDrillPayload`. С запасом к самому широкому нашему фильтру. */
+const MAX_FILTER_KEYS = 50
+const MAX_LIST_ITEMS = 1000
+/** Подписей стадий — по числу кодов ОДНОЙ причины провала (у заказчика их шесть), с запасом. */
+const MAX_STAGE_NAMES = 50
+
 /** Годное значение фильтра — или `undefined`, если портал прислал что-то другое. */
 function readFilterValue(value: unknown): DrillFilterValue | undefined {
   if (typeof value === 'string') return value
+  // ⚠ `null` — значимое условие REST («поле пусто»), а не «значения нет». См. `DrillFilterValue`.
+  if (value === null) return null
   // ⚠ `Number.isFinite`, а не `typeof === 'number'`: `NaN` и `Infinity` пролезли бы в фильтр и
   // ушли бы в портал строкой «NaN» — список вернулся бы пустым без единого сигнала.
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (!Array.isArray(value)) return undefined
+  if (value.length > MAX_LIST_ITEMS) return undefined
   const items: Array<string | number> = []
   for (const item of value) {
     if (typeof item === 'string') items.push(item)
@@ -75,6 +116,29 @@ function readFilterValue(value: unknown): DrillFilterValue | undefined {
     else return undefined
   }
   return items
+}
+
+/**
+ * Подписи стадий из нагрузки — или `undefined`, если их не прислали либо прислали негодные.
+ *
+ * ⚠ В отличие от фильтра, негодные подписи нагрузку НЕ отвергают: подпись — удобство, а не
+ * условие. Список без неё покажет те же записи кодом стадии, а вот отказ открыть список из-за
+ * косметики оставил бы человека без данных вовсе. Опасные ключи при этом всё равно отбрасываются:
+ * `stageNames['__proto__'] = '…'` молча не создаёт своего поля, и код стадии остался бы без
+ * подписи при заполненной на вид карте.
+ */
+function readStageNames(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const source = value as Record<string, unknown>
+  const keys = Object.keys(source)
+  if (!keys.length || keys.length > MAX_STAGE_NAMES) return undefined
+  const out: Record<string, string> = {}
+  for (const key of keys) {
+    if (!Object.hasOwn(source, key) || UNSAFE_KEYS.has(key)) continue
+    const name = source[key]
+    if (typeof name === 'string' && name.trim()) out[key] = name
+  }
+  return Object.keys(out).length ? out : undefined
 }
 
 /**
@@ -107,6 +171,11 @@ export function decodeDrillPayload(options: unknown): DrillSliderPayload | undef
   if (typeof data.filter !== 'object' || data.filter === null || Array.isArray(data.filter)) return undefined
 
   const source = data.filter as Record<string, unknown>
+  // ⚠ Потолок на размер: нагрузка едет через портал, и очень длинный фильтр по дороге может быть
+  // усечён — а усечённый JSON разбор отвергнет уже здесь, целиком, вместо того чтобы показать
+  // список по половине условия. Числа взяты с запасом: у самого широкого нашего фильтра девять
+  // ключей и списки в десятки кодов.
+  if (Object.keys(source).length > MAX_FILTER_KEYS) return undefined
   const filter: DrillFilter = {}
   for (const key of Object.keys(source)) {
     if (!Object.hasOwn(source, key)) continue
@@ -124,6 +193,21 @@ export function decodeDrillPayload(options: unknown): DrillSliderPayload | undef
   const total = typeof data.total === 'number' && Number.isInteger(data.total) && data.total >= 0
     ? data.total
     : undefined
+  const dealScope = data.dealScope === 'from-leads' || data.dealScope === 'unlinked' || data.dealScope === 'plain'
+    ? data.dealScope
+    : undefined
+  const categoryId = typeof data.categoryId === 'number' && Number.isInteger(data.categoryId) && data.categoryId >= 0
+    ? data.categoryId
+    : undefined
+  const stageNames = readStageNames(data.stageNames)
 
-  return { entity, title, filter, ...(total === undefined ? {} : { total }) }
+  return {
+    entity,
+    title,
+    filter,
+    ...(dealScope === undefined ? {} : { dealScope }),
+    ...(categoryId === undefined ? {} : { categoryId }),
+    ...(stageNames === undefined ? {} : { stageNames }),
+    ...(total === undefined ? {} : { total })
+  }
 }

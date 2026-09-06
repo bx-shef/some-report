@@ -94,12 +94,11 @@ function dealList(params: Record<string, unknown>) {
 // портал его открыть.
 mockNuxtImport('usePortalSlider', () => () => ({
   inFrame: () => portal.initialized,
-  openDrill: async (payload: { title: string }) => {
+  openDrill: (payload: { title: string }) => {
     portal.sliderTitles.push(payload.title)
     return true
   },
-  drillPayload: () => undefined,
-  closeSelf: async () => {}
+  drillPayload: () => undefined
 }))
 
 mockNuxtImport('useB24', () => () => ({

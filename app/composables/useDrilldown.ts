@@ -12,6 +12,7 @@ import {
 } from '~/utils/drilldown'
 import type { DrillFilter } from '~/utils/drillSlider'
 import { chunkIds } from '~/utils/filters'
+import { lossReasonLabel } from '~/utils/labels'
 
 /** Страница списка — как у списочных методов портала. */
 export const DRILL_PAGE_SIZE = 50
@@ -53,6 +54,35 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
   }
 
   /**
+   * Подписи стадий для слайдера: код стадии провала → каноничное название причины.
+   *
+   * ⚠ Без них слайдер печатал бы коды там, где в отчёте написаны слова. Название причины не
+   * лежит ни в одном справочнике портала целиком: отчёт сводит одноимённые стадии четырёх
+   * направлений в одно каноничное название (`reasonMerge.ts`), а слайдер — отдельный фрейм и
+   * пересчитать это сведение не может. Поэтому подписи едут готовыми, вместе с фильтром.
+   *
+   * ⚠ Едут только те коды, что список МОЖЕТ показать: перечисленные в `STAGE_ID`, а для остатка
+   * («прочие причины», условие `STAGE_SEMANTIC_ID: 'F'`) — все известные. Отправлять весь
+   * справочник на каждый клик незачем: у клика по названной причине это шесть кодов вместо сорока.
+   */
+  function stageNamesFor(filter: DrillListParams['filter']): Record<string, string> | undefined {
+    const codes = keyByCode()
+    const listed = filter.STAGE_ID
+    const wanted = Array.isArray(listed)
+      ? listed.map(String)
+      : typeof listed === 'string'
+        ? [listed]
+        : filter.STAGE_SEMANTIC_ID === 'F' ? Object.keys(codes) : []
+    const dictionaries = input.dataset.value.dictionaries
+    const out: Record<string, string> = {}
+    for (const code of wanted) {
+      const key = codes[code]
+      if (key) out[code] = lossReasonLabel(dictionaries, key)
+    }
+    return Object.keys(out).length ? out : undefined
+  }
+
+  /**
    * Открыть список за числом.
    *
    * ⚠ В портале список открывает НАСТОЯЩИЙ слайдер (`openSliderAppPage`, решение владельца от
@@ -86,16 +116,22 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
     afterId = 0
     // Случай 2: условие живёт не только в фильтре — слайдеру его не передать.
     if (!params.byLeadIds && !params.empty) {
-      void slider.openDrill({
+      const stageNames = next.entity === 'deal' ? stageNamesFor(params.filter) : undefined
+      const asked = slider.openDrill({
         entity: next.entity,
         title: next.title,
         filter: params.filter as DrillFilter,
+        ...(next.dealScope === undefined ? {} : { dealScope: next.dealScope }),
+        ...(stageNames === undefined ? {} : { stageNames }),
         ...(next.total === undefined ? {} : { total: next.total })
-      }).then((opened) => {
-        // Случай 3: не открылось — показываем панель, как раньше.
-        if (!opened && mine === seq) openPanel(mine)
       })
-      return
+      // Случай 3: попросить не вышло — показываем панель, как раньше.
+      if (asked) {
+        // Панель, открытая прошлым кликом, гаснет: иначе она осталась бы ПОД слайдером с пустым
+        // списком и чужим заголовком, и человек нашёл бы её, закрыв слайдер.
+        open.value = false
+        return
+      }
     }
     openPanel(mine)
   }

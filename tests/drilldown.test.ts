@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { crmPath, dealDrillRow, demoDrillRows, drill, drillListParams, leadDrillRow, plainDealListParams } from '~/utils/drilldown'
-import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE, buildReport } from '~/utils/metrics'
+import { crmPath, dealDrillRow, drill, drillListParams, leadDrillRow, plainDealListParams } from '~/utils/drilldown'
+import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
 import { buildMockDataset } from '~/utils/mockReport'
 
 /**
@@ -87,37 +87,6 @@ describe('строки списка', () => {
     expect(row.manager).toBeUndefined()
     expect(row.stage).toBe(dictionaries.lossReasons.LOSS_PRICE)
     expect(dealDrillRow({ ID: 9, CLOSEDATE: '2026-08-20', STAGE_ID: 'WON' }, dictionaries, {}, 'unlinked')).toMatchObject({ when: '2026-08-20', stage: 'WON', title: 'Сделка #9' })
-  })
-})
-
-describe('demoDrillRows', () => {
-  const report = buildReport(dataset.leads, dataset.deals, { conversionBase: 'quality-leads', firstResponseSlaMinutes: 120 })
-
-  it('списки демо-набора сходятся с числами на экране', () => {
-    expect(demoDrillRows(drill.leads(), dataset, {})).toHaveLength(report.summary.totalLeads)
-    expect(demoDrillRows(drill.junk(), dataset, {})).toHaveLength(report.summary.junk)
-    expect(demoDrillRows(drill.qualified(), dataset, {})).toHaveLength(report.summary.qualified)
-    expect(demoDrillRows(drill.wonDeals(), dataset, {})).toHaveLength(report.summary.wonDeals)
-    expect(demoDrillRows(drill.lostDeals(), dataset, {})).toHaveLength(report.lostDeals.count)
-    expect(demoDrillRows(drill.unprocessed(), dataset, {})).toHaveLength(report.processing!.unprocessed)
-    expect(demoDrillRows(drill.processed(), dataset, {})).toHaveLength(report.processing!.processed)
-    const [reason] = report.junkByReason
-    expect(demoDrillRows(drill.junkReason(reason!.reasonId, 'x', []), dataset, {})).toHaveLength(reason!.count)
-    const [loss] = report.lostDeals.byReason
-    expect(demoDrillRows(drill.lossReason(loss!.reasonId, 'x', { [loss!.reasonId]: [loss!.reasonId] }), dataset, {})).toHaveLength(loss!.count)
-    const [source] = report.bySource
-    expect(demoDrillRows(drill.bySource(source!.sourceId, 'won', 'x')!, dataset, {})).toHaveLength(source!.won)
-  })
-
-  it('под фильтрами отчёта — те же правила; блок 7 в демо пуст; карточек нет', () => {
-    const [sourceId] = Object.keys(dataset.dictionaries.sources)
-    const filtered = buildReport(...Object.values({ leads: dataset.leads.filter(l => l.sourceId === sourceId), deals: dataset.deals.filter(d => d.sourceId === sourceId) }) as [typeof dataset.leads, typeof dataset.deals], { conversionBase: 'quality-leads' })
-    expect(demoDrillRows(drill.leads(), dataset, { sourceId })).toHaveLength(filtered.summary.totalLeads)
-    expect(demoDrillRows(drill.unlinked(), dataset, {})).toEqual([])
-    const row = demoDrillRows(drill.leads(), dataset, {})[0]!
-    expect(row.path).toBe('')
-    expect(row.title).toMatch(/^Лид #/)
-    expect(row.manager).toBeTruthy()
   })
 })
 

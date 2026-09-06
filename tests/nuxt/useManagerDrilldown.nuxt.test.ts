@@ -27,13 +27,14 @@ const portal = vi.hoisted(() => ({
 // отдельном фрейме, и композабл лишь просит портал его открыть.
 mockNuxtImport('usePortalSlider', () => () => ({
   inFrame: () => true,
-  openDrill: async (payload: { title: string, filter: Record<string, unknown> }) => {
+  // ⚠ Синхронный, как и настоящий: промис `openSliderAppPage` разрешается при ЗАКРЫТИИ слайдера,
+  // поэтому ждать его нельзя, и `openDrill` возвращает не промис, а «вызов ушёл».
+  openDrill: (payload: { title: string, filter: Record<string, unknown> }) => {
     if (portal.sliderFails) return false
     portal.sliderPages.push({ place: 'app-drill', ...payload })
     return true
   },
-  drillPayload: () => undefined,
-  closeSelf: async () => {}
+  drillPayload: () => undefined
 }))
 
 mockNuxtImport('useB24', () => () => ({
@@ -162,9 +163,8 @@ describe('useManagerDrilldown', () => {
   it('закрытие панели выбрасывает страницу, которая ещё шла', async () => {
     const drill = panel()
     drill.show(drill.cellRequest('Сделки', {}, { companyId: 10 }, 4))
-    // ⚠ Двух тактов, а не одного: панель поднимается ПОСЛЕ того, как слайдер ответил отказом,
-    // то есть через промис. Закрыть её раньше — значит закрыть то, что ещё не открылось.
-    await nextTick()
+    // Слайдер отказал (`panel()` возвращает `false`) — панель поднялась ТУТ ЖЕ, `show`
+    // синхронный. Такт нужен только странице списка, которая уже ушла в портал.
     await nextTick()
     expect(drill.open.value).toBe(true)
     drill.open.value = false

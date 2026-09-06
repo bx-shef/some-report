@@ -20,6 +20,8 @@ const emit = defineEmits<{ drill: [DrillRequest] }>()
 const drillEnabled = useDrillEnabled()
 /** Кликабельно только там, где список есть чем открыть, — то есть внутри портала. */
 const clickable = computed(() => Boolean(props.request) && drillEnabled.value)
+/** Подсказка кнопки. Считается здесь, а не в шаблоне: там пришлось бы утверждать, что запрос есть. */
+const hint = computed(() => props.request ? `Открыть список: ${props.request.title}` : undefined)
 
 function open(): void {
   if (!props.request) return
@@ -32,7 +34,7 @@ function open(): void {
     v-if="clickable"
     type="button"
     class="drill-number"
-    :title="`Открыть список: ${request!.title}`"
+    :title="hint"
     @click="open"
   >
     <slot />

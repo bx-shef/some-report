@@ -1,6 +1,6 @@
-import type { ReportDataset, ReportDeal, ReportDictionaries, ReportFilters, ReportPeriod } from '~/types/report'
+import type { ReportDictionaries, ReportFilters, ReportPeriod } from '~/types/report'
 import { periodFilter, unlinkedWonDealsParams } from '~/utils/b24Query'
-import { applyFilters, dealRestFilter, demoLeadHasStatus, demoLeadStatus, leadRestFilter, needsLeadIds, stageCodesFor } from '~/utils/filters'
+import { dealRestFilter, leadRestFilter, needsLeadIds, stageCodesFor } from '~/utils/filters'
 import { INITIAL_LEAD_STATUS } from '~/utils/leadHistory'
 import { leadStageLabel, lossReasonLabel, sourceLabel } from '~/utils/labels'
 import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
@@ -253,72 +253,4 @@ export function dealDrillRow(row: B24DrillDealRow, dictionaries: ReportDictionar
     ...(toText(row.CURRENCY_ID) ? { currencyId: toText(row.CURRENCY_ID) } : {}),
     path: crmPath('deal', id)
   }
-}
-
-function matchesCondition(value: string, condition: string | string[] | number | undefined, negate = false): boolean {
-  if (condition === undefined) return true
-  // Числа приводим к строке: в фильтре REST `MYCOMPANY_ID: 10` и `'10'` — одно и то же (по сети
-  // всё равно уходит текст), и демо-набор обязан сравнивать их так же.
-  const hit = Array.isArray(condition) ? condition.map(String).includes(value) : String(condition) === value
-  return negate ? !hit : hit
-}
-
-/**
- * Те же списки для демо-набора — по строкам, чтобы предпросмотр открывал слайдер с теми же
- * числами, что на экране. Карточек в CRM у демо-строк нет (`path` пуст). Сделок без лида в
- * демо-наборе нет — список блока 7 пуст.
- */
-export function demoDrillRows(request: DrillRequest, dataset: ReportDataset, filters: ReportFilters): DrillRow[] {
-  const rows = applyFilters(dataset.leads, dataset.deals, filters)
-  const { extra } = request
-  if (request.entity === 'lead') {
-    return rows.leads
-      .filter((item) => {
-        // «Успех» в демо — сконвертированный (со сделкой), как `isQualified` в ядре: «потерян» —
-        // стадия успеха без сделки, в «квалифицировано» он не входит, и список не должен.
-        const semantic = item.outcome === 'junk' ? 'F' : item.outcome === 'converted' ? 'S' : 'P'
-        // Коды стадий приводим к строке: в фильтре REST число и строка — одно и то же.
-        const wanted = extra.STATUS_ID === undefined ? [] : [extra.STATUS_ID].flat().map(String)
-        const unwanted = extra['!STATUS_ID'] === undefined ? [] : [extra['!STATUS_ID']].flat().map(String)
-        return matchesCondition(semantic, extra.STATUS_SEMANTIC_ID)
-          && (!wanted.length || wanted.some(code => demoLeadHasStatus(item, code)))
-          && !unwanted.some(code => demoLeadHasStatus(item, code))
-          && matchesCondition(item.sourceId, extra.SOURCE_ID)
-      })
-      .map((item) => {
-        const manager = managerLabel(dataset.dictionaries, item.assignedById)
-        return {
-          id: item.id,
-          title: `Лид #${item.id}`,
-          when: item.createdAt,
-          stage: leadStageLabel(dataset.dictionaries, demoLeadStatus(item)),
-          source: sourceLabel(dataset.dictionaries, item.sourceId),
-          ...(manager ? { manager } : {}),
-          path: ''
-        }
-      })
-  }
-  if (request.dealScope === 'unlinked') return []
-  return rows.deals
-    .filter((item: ReportDeal) => {
-      const semantic = item.outcome === 'won' ? 'S' : item.outcome === 'lost' ? 'F' : 'P'
-      const stage = item.lossReasonId ?? ''
-      return matchesCondition(semantic, extra.STAGE_SEMANTIC_ID)
-        && matchesCondition(stage, extra.STAGE_ID)
-        && matchesCondition(stage, extra['!STAGE_ID'], true)
-        && matchesCondition(item.sourceId, extra.SOURCE_ID)
-    })
-    .map((item) => {
-      const manager = managerLabel(dataset.dictionaries, item.assignedById)
-      return {
-        id: item.id,
-        title: `Сделка #${item.id}`,
-        stage: item.outcome === 'won' ? 'Успешная' : item.outcome === 'lost' ? lossReasonLabel(dataset.dictionaries, item.lossReasonId ?? UNSPECIFIED_REASON) : 'В работе',
-        source: sourceLabel(dataset.dictionaries, item.sourceId),
-        ...(manager ? { manager } : {}),
-        amount: item.amount,
-        currencyId: dataset.currencyId,
-        path: ''
-      }
-    })
 }
