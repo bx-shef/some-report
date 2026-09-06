@@ -76,6 +76,17 @@ describe('activityDrillPayload', () => {
     expect(activityDrillPayload(row(), { kind: 'deed', deed: 'task' }, filters(), 1)?.activityScope).toBe('created')
   })
 
+  /**
+   * ⛔ Числа «успешно» и «провалено» посчитаны по дате ЗАКРЫТИЯ — список обязан показывать её же.
+   * Без этого признака под августовским числом встали бы майские даты создания, и сверить список
+   * с числом было бы нечем.
+   */
+  it('закрытые лиды просят список показывать дату закрытия, созданные — создания', () => {
+    expect(activityDrillPayload(row(), { kind: 'lead', outcome: 'won' }, filters(), 1)?.leadScope).toBe('closed')
+    expect(activityDrillPayload(row(), { kind: 'lead', outcome: 'lost' }, filters(), 1)?.leadScope).toBe('closed')
+    expect(activityDrillPayload(row(), { kind: 'lead', outcome: 'created' }, filters(), 1)?.leadScope).toBe('created')
+  })
+
   /** Заголовок повторяет то, по чему нажали, — иначе список читается как чужой. */
   it('заголовок называет и число, и сотрудника', () => {
     expect(activityDrillPayload(row(), { kind: 'talks', direction: 'out' }, filters(), 1)?.title)

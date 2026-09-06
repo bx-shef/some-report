@@ -328,6 +328,26 @@ describe('useActivityReport: предохранители и кэш звонко
     expect(state.error.value).toBeUndefined()
   })
 
+  /**
+   * ⛔ Главный случай: справочник УЖЕ прочитан, а следующий ответ портала пуст (лимит запросов).
+   * Считать по пустому свежему ответу — значит схлопнуть поддерево в один узел и молча потерять
+   * сотрудников подотделов при верных числах у остальных. Отделы за минуту не меняются, и прошлый
+   * справочник рядом — верен.
+   */
+  it('оборвавшийся справочник не отменяет уже прочитанное дерево', async () => {
+    const state = useActivityReport({ today: TODAY })
+    // Первый проход читает дерево целиком: 10 — узел, 11 и 12 — подотделы.
+    await state.load()
+    expect(state.departments.value).toHaveLength(3)
+
+    // Второй — портал отвечает отказом, но дерево уже известно.
+    portal.departmentsFail = true
+    await state.load({ ...state.filters.value, departmentId: 10 })
+    expect(state.departmentsIncomplete.value).toBe(false)
+    // Поддерево сработало: в отделе 10 — все трое, включая тех, кто в подотделах 11 и 12.
+    expect(state.report.value.rows.map(row => row.userId).sort()).toEqual([1, 2, 3])
+  })
+
   it('без выбранного отдела сбой справочника отчёту не мешает', async () => {
     portal.departmentsFail = true
     const state = useActivityReport({ today: TODAY })
