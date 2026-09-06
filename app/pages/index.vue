@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { APP_NAME } from '~/config/routes'
+
 /**
  * Публичная страница. Единственная, которую имеет смысл индексировать: рассказывает, что это за
  * приложение, и никаких данных портала не показывает.
@@ -14,7 +16,7 @@ useSeoMeta({
 <template>
   <main class="mx-auto max-w-3xl px-6 py-16">
     <h1 class="text-3xl font-bold">
-      Отчёты по CRM
+      {{ APP_NAME }}
     </h1>
     <p class="mt-4 text-base opacity-80">
       Приложение для Битрикс24 с тремя отчётами: <b>аналитика по лидам</b> — путь лида от

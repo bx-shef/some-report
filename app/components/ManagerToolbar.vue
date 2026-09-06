@@ -2,6 +2,7 @@
 import type { CategoryRef, DealScope, ManagerFilters, CompanyRef, StageRef } from '~/types/managers'
 import { COMPANY_UNSET, COMPANY_UNSET_FULL_LABEL, SCOPE_LABELS, stagesForScope } from '~/utils/managerLoad'
 import { formatCount, formatDate } from '~/utils/format'
+import { reportTitle } from '~/utils/pageTitle'
 
 /**
  * Панель отчёта «Сделки по менеджерам»: направление, охват, «моя компания» и период создания.
@@ -127,7 +128,7 @@ const appliedText = computed(() => {
   <div class="space-y-3">
     <div class="flex flex-wrap items-center gap-3">
       <h1 class="mr-auto text-xl font-bold">
-        Сделки по менеджерам
+        {{ reportTitle('/app/managers') }}
       </h1>
 
       <slot name="actions" />

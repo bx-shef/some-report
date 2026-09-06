@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { APP_REPORTS } from '~/config/routes'
+import { APP_NAME, APP_REPORTS } from '~/config/routes'
 import type { DrillRow } from '~/utils/drilldown'
 import type { DrillSliderPayload } from '~/utils/drillSlider'
 
@@ -158,7 +158,7 @@ async function openRow(row: DrillRow): Promise<void> {
     class="mx-auto max-w-4xl space-y-4 p-3 sm:p-4 lg:p-6"
   >
     <h1 class="text-xl font-bold">
-      Отчёты по CRM
+      {{ APP_NAME }}
     </h1>
 
     <p class="text-sm opacity-70">

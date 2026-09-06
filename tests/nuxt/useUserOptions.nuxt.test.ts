@@ -68,7 +68,7 @@ describe('useUserOptions: чтение', () => {
     expect(await options.read('report.leads.v1')).toBe(portal.options['report.leads.v1'])
   })
 
-  // ⚠ Один запрос на страницу: оба отчёта спрашивают свои ключи, а портал отвечает разом.
+  // ⚠ Один запрос на страницу: отчёты 1 и 2 спрашивают свои ключи, а портал отвечает разом.
   it('спрашивает портал один раз, дальше берёт из памяти', async () => {
     const options = useUserOptions()
     await options.read('report.leads.v1')

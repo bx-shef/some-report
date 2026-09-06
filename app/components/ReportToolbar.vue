@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { ReportPeriod } from '~/types/report'
 import { formatDate } from '~/utils/format'
+import { reportTitle } from '~/utils/pageTitle'
 
 /**
  * Панель отчёта: период.
@@ -37,7 +38,7 @@ const periodText = computed(() => {
   <div class="space-y-3">
     <div class="flex flex-wrap items-center gap-3">
       <h1 class="mr-auto text-xl font-bold">
-        Аналитика по лидам
+        {{ reportTitle('/app/leads') }}
       </h1>
 
       <!-- Кнопки экспорта — от страницы: панель периода про них не знает. -->

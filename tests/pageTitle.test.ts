@@ -76,13 +76,41 @@ function source(relative: string): string {
 }
 
 describe('страницы берут заголовок из одного места', () => {
-  it('каждый отчёт зовёт reportTitle со своим путём, а не пишет имя литералом', () => {
+  /**
+   * ⚠ Ищем ВЫЗОВ, а не точную строку: сверка литералом ломалась бы от переформатирования —
+   * тест, который краснеет на переносе строки, скоро начнут чинить не глядя.
+   */
+  function callsReportTitle(code: string, path: string): boolean {
+    const call = new RegExp(`reportTitle\\(\\s*['"\`]${path}['"\`]\\s*\\)`)
+    return call.test(code)
+  }
+
+  it('каждый отчёт берёт имя вкладки из reportTitle, а не пишет литералом', () => {
     for (const report of APP_REPORTS) {
-      const file = `app/pages${report.path}.vue`
-      const code = source(file)
-      expect(code).toContain(`useHead({ title: reportTitle('${report.path}') })`)
+      const code = source(`app/pages${report.path}.vue`)
+      expect(callsReportTitle(code, report.path)).toBe(true)
       // ⚠ Именно литерал и был дефектом: `useHead({ title: 'Отчёт' })` на отчёте 1.
-      expect(code).not.toMatch(/useHead\(\{\s*title:\s*['"`]/)
+      expect(code).not.toMatch(/useHead\(\s*\{\s*title:\s*['"`]/)
+    }
+  })
+
+  /**
+   * Заголовок НА ЭКРАНЕ — третья копия того же имени, после пункта меню и вкладки. Пока он был
+   * литералом, переименование отчёта в `APP_REPORTS` меняло меню и вкладку, а шапку отчёта — нет.
+   */
+  it('шапка каждого отчёта берёт имя оттуда же, что меню и вкладка', () => {
+    const toolbars: Record<string, string> = {
+      '/app/leads': 'app/components/ReportToolbar.vue',
+      '/app/managers': 'app/components/ManagerToolbar.vue',
+      '/app/activity': 'app/components/ActivityToolbar.vue'
+    }
+    for (const report of APP_REPORTS) {
+      const file = toolbars[report.path]
+      expect(file, `нет шапки для ${report.path}`).toBeDefined()
+      const code = source(file as string)
+      expect(callsReportTitle(code, report.path)).toBe(true)
+      // Литерал рядом с вызовом означал бы, что старая копия просто осталась.
+      expect(code).not.toContain(`>\n        ${report.title}\n`)
     }
   })
 
@@ -107,6 +135,21 @@ describe('тексты, перечисляющие отчёты', () => {
     const code = source('app/components/InPortalGate.vue')
     for (const report of APP_REPORTS) {
       expect(code).toContain(report.title)
+    }
+  })
+})
+
+describe('имя приложения на экране', () => {
+  /**
+   * ⚠ Заголовок НА ЭКРАНЕ — та же строка, что во вкладке. Пока он был литералом, `APP_NAME`
+   * существовал ради вкладки, а видимый заголовок продолжал жить своей жизнью: переименование
+   * приложения поменяло бы вкладку и НЕ поменяло бы то, что человек читает.
+   */
+  it('страницы, называющие приложение, берут имя из APP_NAME', () => {
+    for (const file of ['app/pages/index.vue', 'app/pages/app/index.vue']) {
+      const code = source(file)
+      expect(code).toContain('APP_NAME')
+      expect(code.replace(/^\s*\/\/.*$/gm, '')).not.toContain(`>\n      ${APP_NAME}\n`)
     }
   })
 })
