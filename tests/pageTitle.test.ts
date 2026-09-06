@@ -75,22 +75,35 @@ function source(relative: string): string {
   return readFileSync(join(repoRoot, relative), 'utf8')
 }
 
-describe('страницы берут заголовок из одного места', () => {
-  /**
-   * ⚠ Ищем ВЫЗОВ, а не точную строку: сверка литералом ломалась бы от переформатирования —
-   * тест, который краснеет на переносе строки, скоро начнут чинить не глядя.
-   */
-  function callsReportTitle(code: string, path: string): boolean {
-    const call = new RegExp(`reportTitle\\(\\s*['"\`]${path}['"\`]\\s*\\)`)
-    return call.test(code)
-  }
+/**
+ * Исходник БЕЗ комментариев.
+ *
+ * ⚠ Без этого гард — пустышка, и это доказано ломкой: закомментированный вызов
+ * `// useHead({ title: reportTitle('/app/leads') })` при полностью нерабочем коде оставлял тест
+ * зелёным. Подстрока в комментарии — не вызов.
+ */
+function code(relative: string): string {
+  return source(relative)
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '')
+}
 
+/**
+ * ⚠ Ищем ВЫЗОВ, а не точную строку: сверка литералом краснела бы от переноса строки, а тест,
+ * который ломается на переформатировании, скоро начнут чинить не глядя.
+ */
+function callsReportTitle(text: string, path: string): boolean {
+  return new RegExp(`reportTitle\\(\\s*['"\`]${path}['"\`]\\s*\\)`).test(text)
+}
+
+describe('страницы берут заголовок из одного места', () => {
   it('каждый отчёт берёт имя вкладки из reportTitle, а не пишет литералом', () => {
     for (const report of APP_REPORTS) {
-      const code = source(`app/pages${report.path}.vue`)
-      expect(callsReportTitle(code, report.path)).toBe(true)
+      const text = code(`app/pages${report.path}.vue`)
+      expect(callsReportTitle(text, report.path)).toBe(true)
       // ⚠ Именно литерал и был дефектом: `useHead({ title: 'Отчёт' })` на отчёте 1.
-      expect(code).not.toMatch(/useHead\(\s*\{\s*title:\s*['"`]/)
+      expect(text).not.toMatch(/useHead\(\s*\{\s*title:\s*['"`]/)
     }
   })
 
@@ -107,20 +120,24 @@ describe('страницы берут заголовок из одного ме�
     for (const report of APP_REPORTS) {
       const file = toolbars[report.path]
       expect(file, `нет шапки для ${report.path}`).toBeDefined()
-      const code = source(file as string)
-      expect(callsReportTitle(code, report.path)).toBe(true)
+      const text = code(file as string)
+      expect(callsReportTitle(text, report.path)).toBe(true)
       // Литерал рядом с вызовом означал бы, что старая копия просто осталась.
-      expect(code).not.toContain(`>\n        ${report.title}\n`)
+      expect(text).not.toContain(`>\n        ${report.title}\n`)
     }
   })
 
   it('хвост заголовка склеивает pageTitle, а не сам app.vue', () => {
-    const code = source('app/app.vue')
-    expect(code).toContain('pageTitle')
-    // Прежняя редакция склеивала хвост прямо здесь — и зашила туда имя первого отчёта.
-    expect(code).not.toContain('—')
+    const text = code('app/app.vue')
+    expect(text).toContain('pageTitle')
+    /**
+     * ⚠ Ловим СКЛЕЙКУ, а не символ тире: прежняя редакция гарда запрещала «—» во всём файле и
+     * покраснела бы от любого русского комментария. Дефект — шаблонная строка с подстановкой
+     * (`${title} — …`) прямо здесь, каким бы разделителем её ни собрали.
+     */
+    expect(text).not.toMatch(/`[^`]*\$\{/)
     for (const report of APP_REPORTS) {
-      expect(code).not.toContain(report.title)
+      expect(text).not.toContain(report.title)
     }
   })
 })
@@ -132,9 +149,9 @@ describe('тексты, перечисляющие отчёты', () => {
    * Перечисление в свободном тексте — ровно то место, куда новый отчёт не добавляют.
    */
   it('экран «вне портала» называет каждый отчёт', () => {
-    const code = source('app/components/InPortalGate.vue')
+    const text = code('app/components/InPortalGate.vue')
     for (const report of APP_REPORTS) {
-      expect(code).toContain(report.title)
+      expect(text).toContain(report.title)
     }
   })
 })
@@ -147,9 +164,9 @@ describe('имя приложения на экране', () => {
    */
   it('страницы, называющие приложение, берут имя из APP_NAME', () => {
     for (const file of ['app/pages/index.vue', 'app/pages/app/index.vue']) {
-      const code = source(file)
-      expect(code).toContain('APP_NAME')
-      expect(code.replace(/^\s*\/\/.*$/gm, '')).not.toContain(`>\n      ${APP_NAME}\n`)
+      const text = code(file)
+      expect(text).toContain('APP_NAME')
+      expect(text).not.toContain(`>\n      ${APP_NAME}\n`)
     }
   })
 })
