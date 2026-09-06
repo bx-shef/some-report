@@ -22,6 +22,8 @@ const portal = vi.hoisted(() => ({
   filters: {} as Record<string, Record<string, unknown>>,
   /** Фильтры команд последнего пакета счётчиков лидов. */
   batchFilters: {} as Record<string, Record<string, unknown>>,
+  /** Уволенные — их портал отдаёт только по `user.get` с `ACTIVE: false`. */
+  dismissedUsers: [] as Array<Record<string, unknown>>,
   /** Сотрудники, которых отдаёт `user.get` страницами по 50. */
   users: [] as Array<{ ID: string, NAME?: string, LAST_NAME?: string }>,
   /** `user.get` падает (нет права) — отчёт от этого страдать не должен. */
@@ -77,9 +79,13 @@ mockNuxtImport('useB24', () => () => ({
             if (method === 'user.get') {
               portal.calls.push('user.get')
               if (portal.usersFail) return Promise.reject(new Error('insufficient_scope'))
+              // ⚠ Как живой портал: `ACTIVE` в фильтре разделяет работающих и уволенных. Стенд,
+              // отдающий на оба запроса один список, пометил бы уволенными всех подряд.
+              const active = (params as { FILTER?: { ACTIVE?: unknown } }).FILTER?.ACTIVE !== false
+              const all = active ? portal.users : portal.dismissedUsers
               const start = (params as { start?: number }).start ?? 0
-              const page = portal.users.slice(start, start + 50)
-              const next = start + 50 < portal.users.length ? { next: start + 50 } : {}
+              const page = all.slice(start, start + 50)
+              const next = start + 50 < all.length ? { next: start + 50 } : {}
               return Promise.resolve({ isSuccess: true, getData: () => ({ result: page, ...next }), getErrorMessages: () => [] })
             }
             if (key) {
@@ -132,6 +138,7 @@ beforeEach(() => {
   portal.filters = {}
   portal.batchFilters = {}
   portal.users = []
+  portal.dismissedUsers = []
   portal.usersFail = false
 })
 
@@ -559,13 +566,30 @@ describe('load', () => {
       await first
       expect(Object.keys(data.dataset.value.dictionaries.users ?? {})).toHaveLength(60)
       expect(data.dataset.value.dictionaries.users?.['60']).toBe('Фамилия60 Имя')
-      expect(portal.calls.filter(c => c === 'user.get')).toHaveLength(2)
+      // Два прохода: активные (две страницы по 50 из 60) и уволенные (одна пустая).
+      expect(portal.calls.filter(c => c === 'user.get')).toHaveLength(3)
 
       const second = data.load(SEPTEMBER)
       await vi.waitFor(() => expect(portal.pending[SEPTEMBER.from]).toBeDefined())
       portal.pending[SEPTEMBER.from]!([])
       await second
-      expect(portal.calls.filter(c => c === 'user.get')).toHaveLength(2)
+      expect(portal.calls.filter(c => c === 'user.get')).toHaveLength(3)
+    })
+
+    /**
+     * ⚠ Уволенные в словаре ЕСТЬ, и это не мелочь оформления: их лиды никуда не делись, а портал
+     * по умолчанию отдаёт только работающих. Без второго прохода лид уволившегося подписан
+     * «Сотрудник #562» — число верное, а чьё оно, непонятно.
+     */
+    it('уволенные попадают в словарь имён вторым проходом', async () => {
+      portal.users = [{ ID: '1', NAME: 'Иван', LAST_NAME: 'Иванов' }]
+      portal.dismissedUsers = [{ ID: '562', NAME: 'Анна', LAST_NAME: 'Авдеева' }]
+      const data = useReportData()
+      const load = data.load(AUGUST)
+      await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+      portal.pending[AUGUST.from]!([])
+      await load
+      expect(data.dataset.value.dictionaries.users).toEqual({ 1: 'Иванов Иван', 562: 'Авдеева Анна' })
     })
 
     it('user.get упал — словарь пуст, отчёт цел, следующая выборка спрашивает снова', async () => {
@@ -586,7 +610,8 @@ describe('load', () => {
       portal.pending[SEPTEMBER.from]!([])
       await second
       expect(data.dataset.value.dictionaries.users).toEqual({ 562: 'Иванова Анна' })
-      expect(portal.calls.filter(c => c === 'user.get')).toHaveLength(2)
+      // Первая выборка упала на первом же проходе (1 вызов), вторая прошла оба (ещё 2).
+      expect(portal.calls.filter(c => c === 'user.get')).toHaveLength(3)
     })
 
     it('вне портала демо-набор фильтруется по строкам — сводка меньше полной', async () => {

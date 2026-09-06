@@ -60,7 +60,10 @@ describe('страница «Сделки по менеджерам» вне п�
     expect(text).toContain('Распределение')
     expect(text).toContain('Сделок')
     expect(text).toContain('Менеджеров')
-    expect(text).toContain('Без ответственного')
+    expect(text).toContain('Стадий')
+    // ⚠ Плитки «Без ответственного» на экране НЕТ: ответственный у сделки обязателен, и она
+    // всегда показывала ноль (решение владельца 2026-09-06).
+    expect(text).not.toContain('БЕЗ ОТВЕТСТВЕННОГО')
     expect(wrapper.findAll('svg path').length).toBeGreaterThan(0)
   })
 })

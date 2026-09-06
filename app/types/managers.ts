@@ -22,6 +22,15 @@ export interface CompanyRef {
 export interface ManagerRef {
   id: number
   name: string
+  /**
+   * Сотрудник уволен — в портале он есть, но помечен неактивным.
+   *
+   * ⚠ Это НЕ то же самое, что «не нашёлся». Уволенного портал отдаёт по `user.get` с
+   * `ACTIVE: false`, вместе с фамилией; а «не нашёлся» — это сбой чтения или сотрудник не из
+   * штата, и тогда имени у нас нет вовсе. Путать нельзя: пометка «уволен» на человеке, чьё имя
+   * мы просто не смогли прочитать, — это уже неправда про людей, а не про числа.
+   */
+  dismissed?: boolean
 }
 
 /** Стадия направления: код, имя и семантика из справочника портала. */
@@ -72,6 +81,8 @@ export interface ManagerFilters {
 export interface ManagerLoadRow {
   managerId: number
   managerName: string
+  /** Сотрудник уволен (`ACTIVE: false` в портале) — строка помечается на экране. */
+  dismissed?: boolean
   /** Код стадии → сколько сделок. Стадии без сделок в объект не попадают. */
   byStage: Record<string, number>
   /**

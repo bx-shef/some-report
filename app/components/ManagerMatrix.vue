@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { ManagerCellRef, ManagerLoadCompany, ManagerLoadReport } from '~/types/managers'
 import { companyFullLabel, UNLISTED_MANAGER_LABEL } from '~/utils/managerLoad'
-import { formatCount, formatPercent } from '~/utils/format'
+import { formatCount } from '~/utils/format'
 
 /**
  * Матрица «компания → менеджер → стадия»: по карточке на компанию, строка на менеджера, столбец на
@@ -69,9 +69,11 @@ const hasOther = computed(() => props.report.otherStages > 0)
           <h2 class="text-base font-semibold">
             {{ company.companyName }}
           </h2>
+          <!-- ⚠ Доли «от всех» здесь НЕТ, и это не забыли. Компания на экране одна (её выбирает
+               фильтр), итог отбора равен итогу компании — доля всегда 100 %, в любой выборке.
+               Число, которое не меняется никогда, не сообщает ничего и только занимает место. -->
           <p class="text-sm opacity-70">
             сделок: <span class="font-semibold">{{ formatCount(company.total) }}</span>
-            ({{ formatPercent(company.share) }} от всех)
           </p>
         </div>
       </template>
@@ -109,7 +111,16 @@ const hasOther = computed(() => props.report.otherStages > 0)
             >
               <td class="py-2 pr-3">
                 <div class="min-w-[12rem]">
-                  {{ row.managerName }}
+                  <span :class="row.dismissed ? 'opacity-70' : ''">{{ row.managerName }}</span>
+                  <!-- ⚠ Уволенный помечается СЛОВОМ, а не только приглушённым цветом: цвет в этом
+                       отчёте нигде не единственный носитель смысла, и «почему эта строка бледнее»
+                       — вопрос, на который таблица обязана отвечать сама. Сделки его остаются в
+                       отчёте: работа сделана, и из чисел компании она никуда не девается. -->
+                  <span
+                    v-if="row.dismissed"
+                    class="ml-1.5 rounded border border-[color:var(--chart-track)] px-1 py-0.5 align-middle text-[0.65rem] uppercase tracking-wide opacity-70"
+                    title="Сотрудник уволен: в портале он отмечен неактивным, но его сделки остаются в отчёте"
+                  >уволен</span>
                   <MetricBar
                     class="mt-1"
                     :value="peaks[company.companyId] ? row.total / peaks[company.companyId]! : 0"
@@ -234,11 +245,12 @@ const hasOther = computed(() => props.report.otherStages > 0)
         v-if="company.unlisted > 0"
         class="mt-3 text-xs opacity-60"
       >
-        Строка «{{ UNLISTED_MANAGER_LABEL }}» — разница между итогом компании и суммой строк:
-        сделки без ответственного или у сотрудника, которого не нашлось среди ответственных
-        (например, его сделки появились уже после того, как отчёт перечислил менеджеров).
-        Стадии у них известны — итог каждой колонки портал считает отдельно, — а списка по клику
-        за этими числами нет: «ответственный не из списка» фильтром не выразить.
+        Строка «{{ UNLISTED_MANAGER_LABEL }}» — разница между итогом компании и суммой строк.
+        Ответственный у сделки обязателен, поэтому причина здесь одна: сотрудник не попал в
+        перечисление — например, его сделки появились уже после того, как отчёт перечислил
+        менеджеров, или их больше, чем отчёт перечисляет за один проход. Стадии у этих сделок
+        известны — итог каждой колонки портал считает отдельно, — а списка по клику за числами
+        нет: «ответственный не из списка» фильтром не выразить.
       </p>
     </B24Card>
   </div>

@@ -44,6 +44,8 @@ const portal = vi.hoisted(() => ({
   /** Сколько раз портал спросили пакетом — по этому числу видно, что счётчиков не стало вдвое больше. */
   batches: 0,
   usersFail: false,
+  /** Уволенные — портал отдаёт их только по `user.get` с `ACTIVE: false`. */
+  dismissedUsers: [] as Array<Record<string, unknown>>,
   /** Портал отвечает ошибкой на пакет: отчёт обязан сказать об этом, а не показать нули. */
   batchFails: false,
   /** Направление, ответы по которому приходят с задержкой, — для проверки гонки. */
@@ -142,7 +144,12 @@ mockNuxtImport('useB24', () => () => ({
             if (method === 'crm.company.list') return ok([{ ID: '10', TITLE: 'Минск' }, { ID: '20', TITLE: 'Гомель' }])
             if (method === 'user.get') {
               if (portal.usersFail) throw new Error('insufficient_scope')
-              return ok([{ ID: '1', NAME: 'Иван', LAST_NAME: 'Иванов' }, { ID: '2', NAME: 'Пётр', LAST_NAME: 'Петров' }])
+              // ⚠ Как живой портал: `ACTIVE: false` — это отдельный список УВОЛЕННЫХ. Стенд,
+              // отдающий на оба запроса одно и то же, пометил бы уволенными всех подряд.
+              const active = (params as { FILTER?: { ACTIVE?: unknown } }).FILTER?.ACTIVE !== false
+              return ok(active
+                ? [{ ID: '1', NAME: 'Иван', LAST_NAME: 'Иванов' }, { ID: '2', NAME: 'Пётр', LAST_NAME: 'Петров' }]
+                : portal.dismissedUsers)
             }
             if (method === 'crm.deal.list') return ok(dealList(params).rows)
             if (method === 'user.option.get') return ok(portal.options)
@@ -175,6 +182,7 @@ beforeEach(() => {
   portal.initialized = true
   portal.batches = 0
   portal.usersFail = false
+  portal.dismissedUsers = []
   portal.batchFails = false
   portal.slowCategory = undefined
   portal.options = {}
@@ -251,6 +259,29 @@ describe('useManagerReport: живая выборка', () => {
     await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD, companyId: 20 })
     expect(state.companyOptions.value.map(company => company.id)).toContain(20)
     expect(state.companyTotals.value[20]).toBe(0)
+  })
+
+  /**
+   * ⚠ Уволенный — не «не найден». Портал отдаёт его вторым проходом `user.get` вместе с фамилией,
+   * и отчёт обязан показать имя, а не «Сотрудник #3»: сделки уволенного никуда не делись, и
+   * именно ради них менеджеры перечисляются по сделкам, а не по списку сотрудников.
+   */
+  it('уволенный подписан фамилией и помечен, а не превращается в «Сотрудник #N»', async () => {
+    portal.dismissedUsers = [{ ID: '3', NAME: 'Анна', LAST_NAME: 'Авдеева' }]
+    portal.deals = [deal(1, 10, 3, 'NEW')]
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    const row = state.report.value.companies[0]!.rows.find(item => item.managerId === 3)
+    expect(row?.managerName).toBe('Авдеева Анна')
+    expect(row?.dismissed).toBe(true)
+  })
+
+  // Работающего пометкой не трогаем: подпись «уволен» на действующем сотруднике хуже, чем её
+  // отсутствие на уволенном.
+  it('работающий сотрудник пометки не получает', async () => {
+    const state = useManagerReport({ today: TODAY })
+    await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })
+    expect(state.report.value.companies[0]!.rows.every(row => row.dismissed !== true)).toBe(true)
   })
 
   it('колонки — только стадии охвата, успешная стадия в «в работе» не попадает', async () => {

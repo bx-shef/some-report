@@ -84,19 +84,18 @@ function monthBounds(year: number, month: number): ReportPeriod {
  * ответ, за которым пришли.
  */
 export const PERIOD_PRESETS: readonly PeriodPreset[] = [
-  { id: 'this-month', label: 'Текущий месяц', resolve: today => monthBounds(today.getFullYear(), today.getMonth()) },
-  { id: 'prev-month', label: 'Прошлый месяц', resolve: today => monthBounds(today.getFullYear(), today.getMonth() - 1) },
-  // Календарная неделя — из ТЗ («день / неделя / месяц / квартал»). Стоит ДО «последних 7 дней»:
-  // в воскресенье их границы совпадают, и подсветка должна назвать интервал по календарю.
-  { id: 'this-week', label: 'Текущая неделя', resolve: today => weekBounds(today, 0) },
-  { id: 'prev-week', label: 'Прошлая неделя', resolve: today => weekBounds(today, -1) },
-  { id: 'last7', label: 'Последние 7 дней', resolve: today => ({ from: toIsoDate(shiftDays(today, -6)), to: toIsoDate(today) }) },
-  { id: 'last30', label: 'Последние 30 дней', resolve: today => ({ from: toIsoDate(shiftDays(today, -29)), to: toIsoDate(today) }) },
   { id: 'today', label: 'Сегодня', resolve: today => ({ from: toIsoDate(today), to: toIsoDate(today) }) },
   { id: 'yesterday', label: 'Вчера', resolve: (today) => {
     const day = toIsoDate(shiftDays(today, -1))
     return { from: day, to: day }
   } },
+  { id: 'last7', label: 'Последние 7 дней', resolve: today => ({ from: toIsoDate(shiftDays(today, -6)), to: toIsoDate(today) }) },
+  { id: 'last30', label: 'Последние 30 дней', resolve: today => ({ from: toIsoDate(shiftDays(today, -29)), to: toIsoDate(today) }) },
+  // Календарная неделя — из ТЗ («день / неделя / месяц / квартал»).
+  { id: 'this-week', label: 'Текущая неделя', resolve: today => weekBounds(today, 0) },
+  { id: 'prev-week', label: 'Прошлая неделя', resolve: today => weekBounds(today, -1) },
+  { id: 'this-month', label: 'Текущий месяц', resolve: today => monthBounds(today.getFullYear(), today.getMonth()) },
+  { id: 'prev-month', label: 'Прошлый месяц', resolve: today => monthBounds(today.getFullYear(), today.getMonth() - 1) },
   { id: 'this-quarter', label: 'Текущий квартал', resolve: (today) => {
     const firstMonth = Math.floor(today.getMonth() / 3) * 3
     return {
@@ -117,15 +116,33 @@ export function resolvePreset(id: PeriodPresetId, today: Date): ReportPeriod | u
 }
 
 /**
+ * Кто выигрывает подсветку, когда два интервала совпали.
+ *
+ * ⚠ Порядок кнопок на экране и порядок разбора — РАЗНЫЕ вещи, и раньше это была одна и та же
+ * строка. В воскресенье «текущая неделя» и «последние 7 дней» дают одни и те же даты, и назвать
+ * интервал надо по календарю: человек выбирал неделю, а не «семь дней назад». Стоило переставить
+ * кнопки так, как просил владелец (2026-09-06: сегодня, вчера, 7 дней, неделя, …), — и подсветка
+ * молча стала бы называть выбор чужим именем. Поэтому здесь свой список, а не `PERIOD_PRESETS`.
+ *
+ * Тот же случай у пары «текущий месяц» и «текущий квартал» — в марте, июне, сентябре и декабре,
+ * если месяц последний в квартале, границы не совпадут; а вот «текущий год» и «текущий квартал»
+ * совпадут никогда. Перечислены все календарные — от крупного к мелкому.
+ */
+const MATCH_ORDER: readonly PeriodPresetId[] = [
+  'this-year', 'this-quarter', 'this-month', 'prev-month', 'this-week', 'prev-week',
+  'today', 'yesterday', 'last7', 'last30'
+]
+
+/**
  * Какому интервалу соответствуют выбранные даты.
  *
  * Нужно, чтобы после ручного ввода «01.09 — 30.09» подсветился пресет «Текущий месяц», а не
  * «Произвольный»: иначе человек видит, что система не понимает того, что он только что выбрал.
  */
 export function matchPreset(period: ReportPeriod, today: Date): PeriodPresetId {
-  for (const preset of PERIOD_PRESETS) {
-    const bounds = preset.resolve?.(today)
-    if (bounds && bounds.from === period.from && bounds.to === period.to) return preset.id
+  for (const id of MATCH_ORDER) {
+    const bounds = PERIOD_PRESETS.find(preset => preset.id === id)?.resolve?.(today)
+    if (bounds && bounds.from === period.from && bounds.to === period.to) return id
   }
   return 'custom'
 }

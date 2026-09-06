@@ -451,7 +451,13 @@ export function useManagerReport(options: { today?: Date } = {}) {
         id === COMPANY_UNSET ? COMPANY_UNSET_LABEL : (companyNames[id] ?? `Компания #${id}`)
 
       const companies: CompanyRef[] = companyIds.map(id => ({ id, name: nameOf(id) }))
-      const managers: ManagerRef[] = managerChain.ids.map(id => ({ id, name: users[String(id)] ?? `Сотрудник #${id}` }))
+      // ⚠ Уволенные здесь ЕСТЬ и подписаны фамилией: их сделки никуда не делись, а список
+      // активных сотрудников их не отдаёт — ровно поэтому менеджеры и перечисляются по сделкам.
+      const managers: ManagerRef[] = managerChain.ids.map(id => ({
+        id,
+        name: users.names[String(id)] ?? `Сотрудник #${id}`,
+        ...(users.dismissed.has(String(id)) ? { dismissed: true } : {})
+      }))
 
       // Отложенные стадии — таблица БЕЗ колонок, а не с пустыми: иначе каждая строка показала бы
       // все свои сделки как «прочие стадии», то есть неправду.
@@ -479,7 +485,7 @@ export function useManagerReport(options: { today?: Date } = {}) {
         junkReasons: {},
         lossReasons: {},
         dealStages: stageNames(allStages),
-        users
+        users: users.names
       }
       filters.value = picked
       truncatedManagers.value = managerChain.truncated

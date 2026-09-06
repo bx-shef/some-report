@@ -50,11 +50,20 @@ const scopeItems = (Object.keys(SCOPE_LABELS) as DealScope[]).map(scope => ({ id
  * ⚠ «Без моей компании» — такая же кнопка, как остальные, а не служебная строка внизу экрана: на
  * боевом портале за всё время это самая крупная группа, и человек сам решает, смотреть её или нет.
  */
-const companyButtons = computed(() => props.companies.map(company => ({
-  id: company.id,
-  label: company.id === COMPANY_UNSET ? COMPANY_UNSET_FULL_LABEL : company.name,
-  total: props.companyTotals?.[company.id]
-})))
+const companyButtons = computed(() => props.companies
+  .map(company => ({
+    id: company.id,
+    label: company.id === COMPANY_UNSET ? COMPANY_UNSET_FULL_LABEL : company.name,
+    total: props.companyTotals?.[company.id]
+  }))
+  // ⚠ Кнопку с нулём не показываем (решение владельца 2026-09-06): нажимать её незачем — за ней
+  // заведомо пустой экран. Живее всего это у «Без моей компании»: она есть в списке ВСЕГДА, потому
+  // что перечислением её не найти, и на свежих периодах у неё ноль.
+  //
+  // ⚠ Исключение — выбранная сейчас компания: её кнопка остаётся, даже опустев. Иначе, сменив
+  // период, человек терял бы кнопку собственного выбора и не мог бы к нему вернуться: экран
+  // говорил бы «сделок нет» без единой нажатой кнопки.
+  .filter(company => company.total !== 0 || company.id === selectedCompany.value))
 
 function pickCategory(value: unknown): void {
   const categoryId = Number(value)

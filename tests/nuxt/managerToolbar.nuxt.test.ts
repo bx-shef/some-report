@@ -150,10 +150,31 @@ describe('ManagerToolbar', () => {
     expect(companyButton(wrapper, 'Гомель').attributes('aria-pressed')).toBe('true')
   })
 
-  // Ноль сделок — это ЧИСЛО на кнопке, а не пропуск: пустая компания остаётся видимой и выбираемой.
-  it('компания без сделок показывает ноль, а не пустое место', async () => {
+  /**
+   * ⚠ Кнопки с нулём нет вовсе (решение владельца 2026-09-06): нажимать её незачем — за ней
+   * заведомо пустой экран. Ярче всего это у «Без моей компании»: она есть в списке ВСЕГДА, потому
+   * что перечислением её не найти, и на свежих периодах у неё ноль.
+   */
+  it('компания без сделок из фильтра пропадает', async () => {
     const wrapper = await mount({ companyTotals: { ...COMPANY_TOTALS, 20: 0 } })
-    expect(companyButton(wrapper, 'Гомель').text()).toBe('Гомель0')
+    const labels = wrapper.find('[data-testid="company-filter"]').findAll('button').map(item => item.text())
+    expect(labels.some(label => label.startsWith('Гомель'))).toBe(false)
+    expect(labels.some(label => label.startsWith('Минск'))).toBe(true)
+  })
+
+  /**
+   * ⚠ Исключение — выбранная сейчас компания: её кнопка остаётся, даже опустев. Иначе, сменив
+   * период, человек терял бы кнопку собственного выбора и не мог бы к нему вернуться: экран
+   * говорил бы «сделок нет» без единой нажатой кнопки.
+   */
+  it('выбранная компания остаётся кнопкой, даже когда сделок у неё нет', async () => {
+    const wrapper = await mount({
+      companyTotals: { ...COMPANY_TOTALS, 20: 0 },
+      modelValue: { ...FILTERS, companyId: 20 }
+    })
+    const button = companyButton(wrapper, 'Гомель')
+    expect(button.text()).toBe('Гомель0')
+    expect(button.attributes('aria-pressed')).toBe('true')
   })
 
   it('«за всё время» из панели убрано — выбирать можно только конкретный период', async () => {

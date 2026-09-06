@@ -67,4 +67,40 @@ describe('ManagerMatrix', () => {
     expect(text).toContain('Ответственный не указан или не найден')
     expect(text).toContain('разница между итогом компании и суммой строк')
   })
+
+  /**
+   * ⚠ Доли «от всех» в шапке карточки НЕТ (решение владельца 2026-09-06): компанию выбирает
+   * фильтр, компания на экране одна, итог отбора равен итогу компании — значит, доля всегда
+   * 100 %, в любой выборке. Число, которое не меняется никогда, не сообщает ничего.
+   */
+  it('в шапке карточки — только число сделок, без доли «от всех»', async () => {
+    const text = (await mount()).text()
+    expect(text).toContain('сделок:')
+    expect(text).not.toContain('от всех')
+  })
+
+  /**
+   * ⚠ Уволенного помечаем СЛОВОМ, а не только приглушённым цветом: «почему эта строка бледнее» —
+   * вопрос, на который таблица обязана отвечать сама. Сделки его при этом остаются в отчёте:
+   * работа сделана, и из чисел компании она никуда не девается.
+   */
+  it('строку уволенного помечает словом, а его сделки оставляет в отчёте', async () => {
+    const withDismissed = {
+      ...report,
+      companies: report.companies.map((company, index) => index > 0
+        ? company
+        : { ...company, rows: company.rows.map((row, at) => at === 0 ? { ...row, dismissed: true } : row) })
+    }
+    const wrapper = await mountSuspended(ManagerMatrix, { props: { report: withDismissed } })
+    const first = wrapper.findAll('tbody tr')[0]!
+    expect(first.text()).toContain('Иванов Иван')
+    expect(first.text()).toContain('уволен')
+    // Число осталось кликабельным: список сделок уволенного собирается тем же фильтром.
+    expect(first.findAll('button.drill-number').length).toBeGreaterThan(0)
+  })
+
+  it('у работающего сотрудника пометки нет', async () => {
+    const rows = (await mount()).findAll('tbody tr')
+    expect(rows[0]!.text()).not.toContain('уволен')
+  })
 })

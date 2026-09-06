@@ -80,6 +80,7 @@ const legend = computed(() => {
   return (current?.rows ?? []).map((row, index) => ({
     key: `${row.managerId}`,
     label: row.managerName,
+    dismissed: row.dismissed === true,
     value: row.total,
     // ⚠ Доля берётся из ядра, а не считается здесь. Знаменатель у неё непростой (итог компании —
     // отдельный счётчик портала, а не сумма строк), и посчитанная в шаблоне доля разошлась бы с
@@ -145,7 +146,12 @@ const title = computed(() => {
 
       <div class="flex-1 space-y-4">
         <!-- «Статистика» — тот же столбик чисел, что стоял рядом с диаграммой в прежнем отчёте. -->
-        <dl class="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <!-- ⚠ Плитки «Без ответственного» здесь НЕТ, и это решение владельца от 2026-09-06:
+             ответственный у сделки обязателен (замер по боевому порталу — ни одной сделки без него
+             из 689 523), и плитка всегда показывала ноль. Постоянный ноль не сообщает ничего.
+             Остаток при этом не спрятан: если сумма строк вдруг не сойдётся с итогом компании,
+             об этом скажут строка в таблице и подпись под ней. -->
+        <dl class="grid grid-cols-3 gap-3">
           <div class="rounded-lg border border-[color:var(--chart-track)] px-3 py-2">
             <dt class="text-xs uppercase tracking-wide opacity-60">
               Сделок
@@ -179,17 +185,6 @@ const title = computed(() => {
               из {{ formatCount(totalStages) }} в направлении
             </dd>
           </div>
-          <div class="rounded-lg border border-[color:var(--chart-track)] px-3 py-2">
-            <dt class="text-xs uppercase tracking-wide opacity-60">
-              Без ответственного
-            </dt>
-            <dd class="mt-1 text-xl font-semibold leading-none tabular-nums">
-              {{ formatCount(report.unlisted) }}
-            </dd>
-            <dd class="mt-1 text-xs opacity-60">
-              вне строк таблицы
-            </dd>
-          </div>
         </dl>
 
         <!-- Легенда с числами — обязательный второй канал идентичности рядом с цветом. -->
@@ -203,7 +198,15 @@ const title = computed(() => {
               class="size-2.5 shrink-0 rounded-full border border-[color:var(--chart-track)]"
               :style="item.color ? { backgroundColor: item.color, borderColor: item.color } : undefined"
             />
-            <span class="flex-1 truncate">{{ item.label }}</span>
+            <span class="flex-1 truncate">
+              {{ item.label }}
+              <!-- Уволенный помечается и здесь: легенда и таблица обязаны говорить одно и то же. -->
+              <span
+                v-if="item.dismissed"
+                class="ml-1 text-[0.65rem] uppercase tracking-wide opacity-60"
+                title="Сотрудник уволен: в портале он отмечен неактивным, но его сделки остаются в отчёте"
+              >уволен</span>
+            </span>
             <button
               v-if="item.ref"
               type="button"

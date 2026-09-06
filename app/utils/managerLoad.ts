@@ -176,6 +176,9 @@ export function buildManagerLoad(input: ManagerLoadInput): ManagerLoadReport {
       rows.push({
         managerId: manager.id,
         managerName: manager.name,
+        // Пометка едет из справочника как есть: ядро про увольнения ничего не решает, оно
+        // только не теряет то, что уже известно про сотрудника.
+        ...(manager.dismissed ? { dismissed: true } : {}),
         byStage: rowStages,
         // Колонок не просили (стадии считаются по кнопке) — «прочих стадий» тоже нет: иначе
         // остатком оказались бы ВСЕ сделки строки, и экран сказал бы неправду.
@@ -185,8 +188,10 @@ export function buildManagerLoad(input: ManagerLoadInput): ManagerLoadReport {
       })
       managerIds.add(manager.id)
     }
-    // Итог компании — свой счётчик: сумма строк его не заменяет, потому что сделки уволенных и
-    // неназначенные в строки не попадают, а в компании они есть. Разница и есть `unlisted`.
+    // Итог компании — свой счётчик, а не сумма строк: между пакетами портал живёт, и сделка
+    // сотрудника, не попавшего в перечисление, в строки не попадёт, а в компании она есть.
+    // ⚠ Сделок БЕЗ ответственного среди причин нет: поле обязательное (замер по боевому порталу
+    // 2026-09-05 — ни одной из 689 523). Разница и есть `unlisted`.
     const rowsTotal = sum(rows.map(row => row.total))
     const companyTotal = Math.max(count(totals, companyKey(company.id)), rowsTotal)
     if (companyTotal === 0) continue
