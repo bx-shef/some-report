@@ -583,7 +583,7 @@ describe('load', () => {
      */
     it('уволенные попадают в словарь имён вторым проходом', async () => {
       portal.users = [{ ID: '1', NAME: 'Иван', LAST_NAME: 'Иванов' }]
-      portal.dismissedUsers = [{ ID: '562', NAME: 'Анна', LAST_NAME: 'Авдеева' }]
+      portal.dismissedUsers = [{ ID: '562', NAME: 'Анна', LAST_NAME: 'Авдеева', ACTIVE: false }]
       const data = useReportData()
       const load = data.load(AUGUST)
       await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())

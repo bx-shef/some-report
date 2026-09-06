@@ -127,6 +127,16 @@ describe('параметры запросов под фильтром', () => {
     expect(userListParams()).toEqual({ sort: 'ID', order: 'ASC', FILTER: { ACTIVE: true, USER_TYPE: 'employee' }, start: 0 })
     expect(userListParams(50).start).toBe(50)
   })
+
+  /**
+   * ⚠ Уволенные — ОТДЕЛЬНЫЙ проход: портал по умолчанию их не отдаёт, а сделки уволенного
+   * остаются. Потеряй этот параметр — второй проход вернул бы тот же штат, и весь отдел был бы
+   * помечен «уволен». Ни один unit-тест этого не ловил бы, кроме этого.
+   */
+  it('уволенные — тот же запрос, но с ACTIVE: false', () => {
+    expect(userListParams(0, false).FILTER).toEqual({ ACTIVE: false, USER_TYPE: 'employee' })
+    expect(userListParams(50, false).start).toBe(50)
+  })
 })
 
 describe('adaptUsers', () => {

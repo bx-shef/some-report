@@ -267,7 +267,7 @@ describe('useManagerReport: живая выборка', () => {
    * именно ради них менеджеры перечисляются по сделкам, а не по списку сотрудников.
    */
   it('уволенный подписан фамилией и помечен, а не превращается в «Сотрудник #N»', async () => {
-    portal.dismissedUsers = [{ ID: '3', NAME: 'Анна', LAST_NAME: 'Авдеева' }]
+    portal.dismissedUsers = [{ ID: '3', NAME: 'Анна', LAST_NAME: 'Авдеева', ACTIVE: false }]
     portal.deals = [deal(1, 10, 3, 'NEW')]
     const state = useManagerReport({ today: TODAY })
     await state.load({ categoryId: 0, scope: 'in-work', period: PERIOD })

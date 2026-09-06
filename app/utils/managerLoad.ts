@@ -50,7 +50,7 @@ export function companyFullLabel(companyId: number, companyName: string): string
 }
 
 /** Как подписан остаток «сделки компании вне строк таблицы». */
-export const UNLISTED_MANAGER_LABEL = 'Ответственный не указан или не найден'
+export const UNLISTED_MANAGER_LABEL = 'Ответственный не попал в перечисление'
 
 /** Подписи охвата — одни и те же в панели, в заголовке слайдера и в подписи под таблицей. */
 export const SCOPE_LABELS: Record<DealScope, string> = {

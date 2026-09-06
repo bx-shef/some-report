@@ -678,6 +678,8 @@ export interface B24UserRow {
   ID: string | number
   NAME?: string | null
   LAST_NAME?: string | null
+  /** `false` — сотрудник уволен. Портал отдаёт это поле и при `user_brief`. */
+  ACTIVE?: boolean | string | null
 }
 
 /**

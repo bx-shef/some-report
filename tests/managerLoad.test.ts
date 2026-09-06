@@ -270,3 +270,30 @@ describe('stageCountSeconds', () => {
     expect(stageCountSeconds(3000)).toBe(120)
   })
 })
+
+/**
+ * Пометка «уволен» едет из справочника в строку как есть: ядро про увольнения ничего не решает,
+ * оно только не теряет того, что уже известно про сотрудника.
+ */
+describe('уволенные в матрице', () => {
+  it('пометка доезжает до строки, а у работающих её нет вовсе', () => {
+    const report = buildManagerLoad({
+      companies: [{ id: 10, name: 'Минск' }],
+      managers: [{ id: 1, name: 'Иванов Иван', dismissed: true }, { id: 2, name: 'Петров Пётр' }],
+      stages: [{ id: 'NEW', name: 'Новая', semantic: 'P' }],
+      totals: {
+        [totalKey()]: 5,
+        [companyKey(10)]: 5,
+        [pairKey(10, 1)]: 3,
+        [pairKey(10, 2)]: 2,
+        [cellKey(10, 1, 'NEW')]: 3,
+        [cellKey(10, 2, 'NEW')]: 2
+      }
+    })
+    const rows = report.companies[0]!.rows
+    expect(rows.find(row => row.managerId === 1)?.dismissed).toBe(true)
+    // ⚠ Именно ОТСУТСТВИЕ поля, а не `false`: строка работающего не должна нести признак вовсе,
+    // иначе «нет пометки» и «пометка снята» станут неотличимы при сравнении объектов.
+    expect(Object.hasOwn(rows.find(row => row.managerId === 2)!, 'dismissed')).toBe(false)
+  })
+})

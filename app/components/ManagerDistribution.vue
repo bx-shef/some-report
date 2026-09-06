@@ -198,15 +198,15 @@ const title = computed(() => {
               class="size-2.5 shrink-0 rounded-full border border-[color:var(--chart-track)]"
               :style="item.color ? { backgroundColor: item.color, borderColor: item.color } : undefined"
             />
-            <span class="flex-1 truncate">
-              {{ item.label }}
-              <!-- Уволенный помечается и здесь: легенда и таблица обязаны говорить одно и то же. -->
-              <span
-                v-if="item.dismissed"
-                class="ml-1 text-[0.65rem] uppercase tracking-wide opacity-60"
-                title="Сотрудник уволен: в портале он отмечен неактивным, но его сделки остаются в отчёте"
-              >уволен</span>
-            </span>
+            <span class="min-w-0 flex-1 truncate">{{ item.label }}</span>
+            <!-- ⚠ Пометка стоит СНАРУЖИ обрезаемого имени (`shrink-0`): внутри `truncate` её
+                 съедало бы вместе с хвостом длинной фамилии, и на «Константинопольский Владимир»
+                 легенда молча расходилась бы с таблицей, где пометка есть. -->
+            <span
+              v-if="item.dismissed"
+              class="shrink-0 text-[0.65rem] uppercase tracking-wide opacity-60"
+              title="Сотрудник уволен: в портале он отмечен неактивным, но его сделки остаются в отчёте"
+            >уволен</span>
             <button
               v-if="item.ref"
               type="button"
