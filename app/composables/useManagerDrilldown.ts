@@ -1,4 +1,5 @@
 import type { Ref } from 'vue'
+import type { DrillFilter } from '~/utils/drillSlider'
 import type { ManagerFilters } from '~/types/managers'
 import type { ReportDictionaries } from '~/types/report'
 import {
@@ -11,7 +12,6 @@ import {
 } from '~/utils/drilldown'
 import { DRILL_PAGE_SIZE } from '~/composables/useDrilldown'
 import { cellDealFilter } from '~/utils/managerQuery'
-import { filterMockDeals, mockManagerDeals, MOCK_STAGES } from '~/utils/mockManagers'
 
 /**
  * Детализация отчёта «Сделки по менеджерам»: список сделок за числом матрицы.
@@ -25,11 +25,9 @@ import { filterMockDeals, mockManagerDeals, MOCK_STAGES } from '~/utils/mockMana
 export function useManagerDrilldown(input: {
   filters: Ref<ManagerFilters>
   dictionaries: Ref<ReportDictionaries>
-  isDemo: Ref<boolean>
-  /** «Сегодня»: от него построены даты демонстрационного набора, и список обязан их повторить. */
-  today: Date
 }) {
   const b24 = useB24()
+  const slider = usePortalSlider()
   const open = ref(false)
   const request = ref<DrillRequest | undefined>(undefined)
   const rows = ref<DrillRow[]>([])
@@ -42,7 +40,18 @@ export function useManagerDrilldown(input: {
   let params: DrillListParams | undefined
   let afterId = 0
 
-  /** Список за клеткой матрицы — тем же условием, что дало число. */
+  /**
+   * Список за клеткой матрицы — тем же условием, что дало число.
+   *
+   * ⚠ Открывает его НАСТОЯЩИЙ слайдер портала (решение владельца от 2026-09-06): отдельный фрейм
+   * поверх всего портала, а не панель внутри нашего. Условие здесь всегда самодостаточно (охват
+   * `plain` — полный фильтр списка), поэтому в параметры слайдера оно помещается целиком.
+   *
+   * ⚠ Панель внутри отчёта осталась ровно на один случай: слайдер отказал (мобильное приложение).
+   * Клик, после которого ничего не произошло, читается как поломка отчёта.
+   *
+   * ⚠ ВНЕ ПОРТАЛА детализации нет совсем: числа там не кликабельны, и сюда попасть неоткуда.
+   */
   function show(next: DrillRequest): void {
     const mine = ++seq
     request.value = next
@@ -52,15 +61,18 @@ export function useManagerDrilldown(input: {
     // Страница закрытого списка ещё могла идти: её «читаем…» не наш, иначе новая первая
     // страница не стартовала бы никогда (сторож от двух страниц с одним курсором).
     pending.value = false
-    open.value = true
-    if (input.isDemo.value) {
-      rows.value = demoRows(next)
-      done.value = true
-      return
-    }
     params = plainDealListParams(next)
     afterId = 0
-    void loadMore(mine)
+    void slider.openDrill({
+      entity: 'deal',
+      title: next.title,
+      filter: params.filter as DrillFilter,
+      ...(next.total === undefined ? {} : { total: next.total })
+    }).then((opened) => {
+      if (opened || mine !== seq) return
+      open.value = true
+      void loadMore(mine)
+    })
   }
 
   /** Следующая страница списка — курсором по `ID`, как и все выборки отчётов. */
@@ -88,30 +100,6 @@ export function useManagerDrilldown(input: {
     } finally {
       if (mine === seq) pending.value = false
     }
-  }
-
-  /**
-   * Тот же список для демо-набора — по его сделкам, чтобы предпросмотр открывал ровно то число,
-   * по которому нажали. Карточек в CRM у демо-строк нет (`path` пуст).
-   */
-  function demoRows(next: DrillRequest): DrillRow[] {
-    const filters = input.filters.value
-    const stages = MOCK_STAGES[filters.categoryId] ?? []
-    const companyId = next.extra.MYCOMPANY_ID
-    const managerId = next.extra.ASSIGNED_BY_ID
-    const stageId = next.extra.STAGE_ID
-    return filterMockDeals(mockManagerDeals(input.today), filters)
-      .filter(deal => (companyId === undefined || String(deal.companyId) === String(companyId))
-        && (managerId === undefined || String(deal.managerId) === String(managerId))
-        && (stageId === undefined || String(deal.stageId) === String(stageId)))
-      .map(deal => ({
-        id: deal.id,
-        title: deal.title,
-        when: deal.createdAt,
-        stage: stages.find(stage => stage.id === deal.stageId)?.name ?? deal.stageId,
-        manager: input.dictionaries.value.users?.[String(deal.managerId)] ?? `Сотрудник #${deal.managerId}`,
-        path: ''
-      }))
   }
 
   // Закрыли — идущая страница больше никому не нужна, следующая не должна стартовать, а

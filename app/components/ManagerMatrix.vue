@@ -26,6 +26,13 @@ const props = defineProps<{
 const emit = defineEmits<{ drill: [ManagerCellRef] }>()
 
 /**
+ * Числа кликабельны только внутри портала: список открывает настоящий слайдер Битрикс24, а вне
+ * фрейма его нет (решение владельца от 2026-09-06). Кнопка, которая заведомо ничего не сделает,
+ * читается как поломка отчёта. Ответ приходит от страницы — компонент про портал не знает.
+ */
+const clickable = useDrillEnabled()
+
+/**
  * Кому досталось больше всех в компании — по нему меряются полосы строк.
  *
  * Считается один раз на компанию, а не в каждой ячейке: строк в таблице десятки, и вызов из шаблона
@@ -134,7 +141,7 @@ const hasOther = computed(() => props.report.otherStages > 0)
                 class="py-2 pr-3 text-right tabular-nums"
               >
                 <button
-                  v-if="row.byStage[stage.id]"
+                  v-if="row.byStage[stage.id] && clickable"
                   type="button"
                   class="drill-number"
                   :title="`Открыть список: ${row.managerName}, ${stage.name}`"
@@ -142,6 +149,9 @@ const hasOther = computed(() => props.report.otherStages > 0)
                 >
                   {{ formatCount(row.byStage[stage.id]!) }}
                 </button>
+                <!-- ⚠ Вне портала ЧИСЛО остаётся, пропадает только ссылка: спрятать его значило
+                     бы соврать, что сделок нет. Прочерк — только у настоящего нуля. -->
+                <span v-else-if="row.byStage[stage.id]">{{ formatCount(row.byStage[stage.id]!) }}</span>
                 <span
                   v-else
                   class="opacity-30"
@@ -157,6 +167,7 @@ const hasOther = computed(() => props.report.otherStages > 0)
               </td>
               <td class="py-2 text-right font-semibold tabular-nums">
                 <button
+                  v-if="clickable"
                   type="button"
                   class="drill-number"
                   :title="`Открыть список: все сделки, ${row.managerName}`"
@@ -164,6 +175,7 @@ const hasOther = computed(() => props.report.otherStages > 0)
                 >
                   {{ formatCount(row.total) }}
                 </button>
+                <span v-else>{{ formatCount(row.total) }}</span>
               </td>
             </tr>
 
@@ -207,7 +219,7 @@ const hasOther = computed(() => props.report.otherStages > 0)
                 class="py-2 pr-3 text-right tabular-nums"
               >
                 <button
-                  v-if="company.byStage[stage.id]"
+                  v-if="company.byStage[stage.id] && clickable"
                   type="button"
                   class="drill-number"
                   :title="`Открыть список: ${company.companyName}, ${stage.name}`"
@@ -215,6 +227,7 @@ const hasOther = computed(() => props.report.otherStages > 0)
                 >
                   {{ formatCount(company.byStage[stage.id]!) }}
                 </button>
+                <span v-else-if="company.byStage[stage.id]">{{ formatCount(company.byStage[stage.id]!) }}</span>
                 <span
                   v-else
                   class="opacity-30"
@@ -228,6 +241,7 @@ const hasOther = computed(() => props.report.otherStages > 0)
               </td>
               <td class="py-2 text-right tabular-nums">
                 <button
+                  v-if="clickable"
                   type="button"
                   class="drill-number"
                   :title="`Открыть список: все сделки компании ${company.companyName}`"
@@ -235,6 +249,7 @@ const hasOther = computed(() => props.report.otherStages > 0)
                 >
                   {{ formatCount(company.total) }}
                 </button>
+                <span v-else>{{ formatCount(company.total) }}</span>
               </td>
             </tr>
           </tfoot>

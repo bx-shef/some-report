@@ -7,10 +7,10 @@ import {
   type DrillRequest,
   type DrillRow,
   dealDrillRow,
-  demoDrillRows,
   drillListParams,
   leadDrillRow
 } from '~/utils/drilldown'
+import type { DrillFilter } from '~/utils/drillSlider'
 import { chunkIds } from '~/utils/filters'
 
 /** Страница списка — как у списочных методов портала. */
@@ -25,8 +25,9 @@ export const DRILL_PAGE_SIZE = 50
  * набора (`filteredLeadIds`), кусками по 500: курсор идёт внутри куска, кусок исчерпан —
  * следующий. Иначе список разошёлся бы с числом, по которому нажали.
  */
-export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<ReportFilters>, isDemo: Ref<boolean> }) {
+export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<ReportFilters> }) {
   const b24 = useB24()
+  const slider = usePortalSlider()
   const open = ref(false)
   const request = ref<DrillRequest | undefined>(undefined)
   const rows = ref<DrillRow[]>([])
@@ -51,7 +52,24 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
     return out
   }
 
-  /** Открыть список за числом. Демо-набор — целиком из строк; портал — первая страница сразу. */
+  /**
+   * Открыть список за числом.
+   *
+   * ⚠ В портале список открывает НАСТОЯЩИЙ слайдер (`openSliderAppPage`, решение владельца от
+   * 2026-09-06) — отдельным фреймом поверх всего портала. Панель внутри отчёта остаётся запасным
+   * путём, и она нужна не «на всякий случай», а в трёх РАЗНЫХ случаях:
+   *
+   * 1. под фильтром по полям лида сделки читаются КУСКАМИ по списку ID лидов: такое условие одним
+   *    фильтром не выражается, а значит, и в параметры слайдера не помещается. Отправить туда
+   *    фильтр без кусков значило бы показать список ШИРЕ числа, по которому нажали;
+   * 2. условие числа спорит с фильтром — список пуст по построению, и спрашивать портал не о чем;
+   * 3. слайдер отказал (мобильное приложение) — клик, после которого ничего не произошло,
+   *    читается как поломка отчёта.
+   *
+   * ⚠ ВНЕ ПОРТАЛА детализации нет совсем (решение владельца от 2026-09-06): числа там не
+   *    кликабельны (`DrillNumber.vue`), и сюда попасть неоткуда. Демо-страница показывает
+   *    устройство отчёта, а не работающий список.
+   */
   function show(next: DrillRequest): void {
     const mine = ++seq
     request.value = next
@@ -61,20 +79,33 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
     // Страница закрытого списка ещё могла идти: её «читаем…» не наш, иначе новая первая
     // страница не стартовала бы никогда (сторож от двух страниц с одним курсором).
     pending.value = false
-    open.value = true
-    if (input.isDemo.value) {
-      rows.value = demoDrillRows(next, input.dataset.value, input.filters.value)
-      done.value = true
-      return
-    }
     const { dataset, filters } = input
     params = drillListParams(next, dataset.value.period, filters.value, dataset.value.dictionaries.lossReasonCodes ?? {})
     chunks = params.byLeadIds ? chunkIds(dataset.value.filteredLeadIds ?? []) : []
     chunkIndex = 0
     afterId = 0
+    // Случай 2: условие живёт не только в фильтре — слайдеру его не передать.
+    if (!params.byLeadIds && !params.empty) {
+      void slider.openDrill({
+        entity: next.entity,
+        title: next.title,
+        filter: params.filter as DrillFilter,
+        ...(next.total === undefined ? {} : { total: next.total })
+      }).then((opened) => {
+        // Случай 3: не открылось — показываем панель, как раньше.
+        if (!opened && mine === seq) openPanel(mine)
+      })
+      return
+    }
+    openPanel(mine)
+  }
+
+  /** Панель внутри отчёта — запасной путь, см. `show`. */
+  function openPanel(mine: number): void {
+    open.value = true
     // Условие числа спорит с фильтром — список пуст по построению; лидов под фильтром нет —
     // сделок нет. Ни то, ни другое портал не спрашивают (`LEAD_ID: [0]` отдал бы чужие).
-    if (params.empty || (params.byLeadIds && !chunks.length)) {
+    if (!params || params.empty || (params.byLeadIds && !chunks.length)) {
       done.value = true
       return
     }

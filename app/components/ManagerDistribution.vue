@@ -31,6 +31,13 @@ const props = defineProps<{
 const emit = defineEmits<{ drill: [ManagerCellRef] }>()
 
 /**
+ * Числа и сектора кликабельны только внутри портала: список открывает настоящий слайдер
+ * Битрикс24, а вне фрейма его нет (решение владельца от 2026-09-06). Ответ приходит от страницы —
+ * компонент про портал не знает.
+ */
+const clickable = useDrillEnabled()
+
+/**
  * Компания на экране: фильтр показывает одну, ядро отдаёт её же единственной группой.
  *
  * ⚠ Инвариант «компания ровно одна» держит `useManagerReport` (`companyIds = [companyId]`), а не
@@ -107,9 +114,11 @@ function pick(key: string): void {
  * ⚠ Считается по НАРИСОВАННЫМ узлам, а не по всем ссылкам: в `refs` лежат и менеджеры за
  * пределами кольца (их числа кликабельны в легенде), а сектора у них нет.
  */
-const pickable = computed(() => chart.value.nodes
-  .flatMap(node => [node.key, ...(node.children ?? []).map(child => child.key)])
-  .filter(key => key in chart.value.refs))
+const pickable = computed(() => clickable.value
+  ? chart.value.nodes
+      .flatMap(node => [node.key, ...(node.children ?? []).map(child => child.key)])
+      .filter(key => key in chart.value.refs)
+  : [])
 
 const title = computed(() => {
   const current = company.value
@@ -208,7 +217,7 @@ const title = computed(() => {
               title="Сотрудник уволен: в портале он отмечен неактивным, но его сделки остаются в отчёте"
             >уволен</span>
             <button
-              v-if="item.ref"
+              v-if="item.ref && clickable"
               type="button"
               class="drill-number tabular-nums"
               :title="`Открыть список: ${item.label}`"

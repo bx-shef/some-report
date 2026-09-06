@@ -42,7 +42,11 @@ const { pending: exportPending, error: exportError, exportExcel, exportPdf } = u
 const {
   open: drillOpen, request: drillRequest, rows: drillRows, pending: drillPending, error: drillError, done: drillDone,
   show: showDrill, loadMore: drillMore, openRow: openDrillRow
-} = useDrilldown({ dataset, filters: appliedFilters, isDemo })
+} = useDrilldown({ dataset, filters: appliedFilters })
+
+// Детализацию открывает настоящий слайдер портала — вне фрейма её нет совсем, и числа там
+// обычный текст (решение владельца от 2026-09-06).
+provideDrillEnabled(computed(() => b24.isInit()))
 
 useHead({ title: 'Отчёт' })
 

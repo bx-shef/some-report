@@ -30,6 +30,8 @@ vi.mock('jspdf', () => ({
  */
 const portal = vi.hoisted(() => ({
   initialized: true,
+  /** Заголовки, с которыми страница просила портал открыть слайдер детализации. */
+  sliderTitles: [] as string[],
   /** Сколько лидов «нашёл» портал: ноль под фильтром — подсказка про фильтр, не про портал. */
   leadTotal: 7,
   /** Отложенный ответ построчной выборки: тест сам решает, когда портал «ответил». */
@@ -50,6 +52,18 @@ function batchAnswer(commands: Record<string, unknown>) {
   }
   return { isSuccess: true, getData: () => data, getErrorMessages: () => [] }
 }
+
+// Настоящий слайдер портала: список детализации живёт в отдельном фрейме, страница лишь просит
+// портал его открыть.
+mockNuxtImport('usePortalSlider', () => () => ({
+  inFrame: () => portal.initialized,
+  openDrill: async (payload: { title: string }) => {
+    portal.sliderTitles.push(payload.title)
+    return true
+  },
+  drillPayload: () => undefined,
+  closeSelf: async () => {}
+}))
 
 mockNuxtImport('useB24', () => () => ({
   init: async () => {},
@@ -97,6 +111,7 @@ mockNuxtImport('useB24', () => () => ({
 
 beforeEach(() => {
   portal.initialized = true
+  portal.sliderTitles = []
   portal.leadTotal = 7
   portal.pending = {}
   portal.batchThrows = false
@@ -200,23 +215,27 @@ describe('страница отчёта в портале', () => {
 
   // Детализация по клику: слайдер с заголовком числа. В портале список читается страницами,
   // в демо — из строк макета; карточек CRM у демо-строк нет, и слайдер об этом говорит.
-  it('клик по числу открывает слайдер: в портале — список по запросу, в демо — строки макета', async () => {
+  /**
+   * ⚠ Список открывает НАСТОЯЩИЙ слайдер портала (решение владельца от 2026-09-06). В портале
+   * клик просит портал его открыть; ВНЕ портала детализации нет совсем — число там даже не
+   * кнопка, потому что открыть его нечем.
+   */
+  it('в портале число просит открыть слайдер, вне портала — это не кнопка', async () => {
     const wrapper = await mountSuspended(AppPage)
     await vi.waitFor(() => expect(mainKeys()).toHaveLength(1))
     portal.pending[mainKeys()[0]!]!([])
     await vi.waitFor(() => expect(wrapper.text()).toContain('1. Сводка'))
     const leads = wrapper.findAll('button').find((b: { attributes: (name: string) => string | undefined }) => b.attributes('title') === 'Открыть список: Лиды')!
     await leads.trigger('click')
-    await vi.waitFor(() => expect(document.body.textContent).toContain('Записей нет'))
+    await vi.waitFor(() => expect(portal.sliderTitles).toEqual(['Лиды']))
     wrapper.unmount()
 
     portal.initialized = false
     const demo = await mountSuspended(AppPage, { route: '/app?preview=1' })
     await vi.waitFor(() => expect(demo.text()).toContain('Это НЕ данные вашего портала'))
-    const junk = demo.findAll('button').find((b: { attributes: (name: string) => string | undefined }) => b.attributes('title') === 'Открыть список: Брак лидов')!
-    await junk.trigger('click')
-    await vi.waitFor(() => expect(document.body.textContent).toContain('карточек в CRM у них нет'))
-    expect(document.body.textContent).toContain('Лид #')
+    // Числа на месте, а кнопок за ними нет: открыть список вне портала нечем.
+    expect(demo.text()).toContain('Брак лидов')
+    expect(demo.findAll('button').some((b: { attributes: (name: string) => string | undefined }) => b.attributes('title')?.startsWith('Открыть список'))).toBe(false)
     demo.unmount()
   })
 

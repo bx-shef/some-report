@@ -14,7 +14,24 @@ import { buildMockDataset } from '~/utils/mockReport'
 const portal = vi.hoisted(() => ({
   calls: [] as Array<{ method: string, filter: Record<string, unknown> }>,
   pending: [] as Array<(rows: unknown[] | Error) => void>,
-  opened: [] as string[]
+  opened: [] as string[],
+  /** Страницы, открытые НАСТОЯЩИМ слайдером портала, — с параметрами вызова. */
+  sliderPages: [] as Array<Record<string, unknown>>,
+  /** Слайдер отказал (мобильное приложение): панель внутри отчёта обязана подхватить. */
+  sliderFails: false
+}))
+
+// Настоящий слайдер портала: страница детализации живёт в отдельном фрейме, и композабл лишь
+// просит портал его открыть.
+mockNuxtImport('usePortalSlider', () => () => ({
+  inFrame: () => true,
+  openDrill: async (payload: { title: string, filter: Record<string, unknown> }) => {
+    if (portal.sliderFails) return false
+    portal.sliderPages.push({ place: 'app-drill', ...payload })
+    return true
+  },
+  drillPayload: () => undefined,
+  closeSelf: async () => {}
 }))
 
 mockNuxtImport('useB24', () => () => ({
@@ -49,6 +66,8 @@ beforeEach(() => {
   portal.calls = []
   portal.pending = []
   portal.opened = []
+  portal.sliderPages = []
+  portal.sliderFails = false
 })
 
 const AUGUST = { from: '2026-08-01', to: '2026-08-31' }
@@ -56,16 +75,30 @@ const AUGUST = { from: '2026-08-01', to: '2026-08-31' }
 function live(extra: Partial<ReportDataset> = {}, filters: ReportFilters = {}) {
   const mock = buildMockDataset()
   const dataset = ref<ReportDataset>({ ...mock, leads: [], deals: [], period: AUGUST, dictionaries: { ...mock.dictionaries, users: { 562: 'Иванова Анна' } }, ...extra })
-  return useDrilldown({ dataset, filters: ref(filters), isDemo: ref(false) })
+  return useDrilldown({ dataset, filters: ref(filters) })
+}
+
+/**
+ * Тот же композабл, но с ОТКАЗАВШИМ слайдером — то есть на запасном пути.
+ *
+ * ⚠ Списком, страницами и ошибками занимается именно он: в обычном случае строки читает уже
+ * открытая страница слайдера (`useDrillPage`), и здешний композабл портал ни о чём не спрашивает.
+ * Панель при этом не мёртвый код — она поднимается там, где слайдера нет (мобильное приложение),
+ * и там, где условие числа одним фильтром не выражается (сделки по списку ID лидов).
+ */
+function panel(extra: Partial<ReportDataset> = {}, filters: ReportFilters = {}) {
+  portal.sliderFails = true
+  return live(extra, filters)
 }
 
 const leadRows = (from: number, count: number) => Array.from({ length: count }, (_, i) => ({ ID: String(from + i), TITLE: `Лид ${from + i}`, DATE_CREATE: '2026-08-10T10:00:00+03:00', STATUS_ID: 'JUNK', SOURCE_ID: 'CALL', ASSIGNED_BY_ID: '562' }))
 
 describe('useDrilldown', () => {
   it('портал: первая страница сразу, дальше по курсору ID, короткая страница — конец', async () => {
-    const d = live()
+    const d = panel()
     d.show(drill.junk())
-    expect(d.open.value).toBe(true)
+    // ⚠ Панель поднимается ПОСЛЕ того, как слайдер ответил отказом, то есть через промис.
+    await vi.waitFor(() => expect(d.open.value).toBe(true))
     expect(d.request.value?.title).toBe('Брак лидов')
     await vi.waitFor(() => expect(portal.calls).toHaveLength(1))
     expect(portal.calls[0]).toMatchObject({ method: 'crm.lead.list', filter: { 'STATUS_SEMANTIC_ID': 'F', '>ID': 0, '>=DATE_CREATE': '2026-08-01' } })
@@ -146,7 +179,7 @@ describe('useDrilldown', () => {
   })
 
   it('закрыли или открыли другое число — опоздавшая страница выбрасывается', async () => {
-    const d = live()
+    const d = panel()
     d.show(drill.leads())
     await vi.waitFor(() => expect(portal.calls).toHaveLength(1))
     d.open.value = false
@@ -168,7 +201,7 @@ describe('useDrilldown', () => {
   })
 
   it('ошибка страницы — своя, список остаётся тем, что уже прочитан; повтор — с чистой плашкой', async () => {
-    const d = live()
+    const d = panel()
     d.show(drill.leads())
     await vi.waitFor(() => expect(portal.calls).toHaveLength(1))
     portal.pending[0]!(new Error('нет доступа'))
@@ -185,7 +218,7 @@ describe('useDrilldown', () => {
 
   // Закрытие посреди страницы оставляло бы «читаем…» навсегда — новый список не стартовал бы.
   it('повторный show сбрасывает «читаем…» от отброшенной страницы; закрытие очищает строки', async () => {
-    const d = live()
+    const d = panel()
     d.show(drill.leads())
     await vi.waitFor(() => expect(portal.calls).toHaveLength(1))
     portal.pending[0]!(leadRows(1, 50))
@@ -194,7 +227,8 @@ describe('useDrilldown', () => {
     await nextTick()
     expect(d.rows.value).toEqual([])
     d.show(drill.junk())
-    expect(d.pending.value).toBe(true)
+    // ⚠ «Читаем…» поднимается вместе с панелью, то есть после ответа слайдера, — ждём его.
+    await vi.waitFor(() => expect(d.pending.value).toBe(true))
     await vi.waitFor(() => expect(portal.calls).toHaveLength(2))
   })
 
@@ -205,16 +239,14 @@ describe('useDrilldown', () => {
     expect(await d.openRow({ id: 2, title: 'y', path: '' })).toBe(false)
   })
 
-  it('демо-набор: список из строк, целиком, без запросов; карточек нет', async () => {
-    const dataset = ref(buildMockDataset())
-    const d = useDrilldown({ dataset, filters: ref({}), isDemo: ref(true) })
-    d.show(drill.junk())
-    expect(d.done.value).toBe(true)
-    expect(d.rows.value.length).toBeGreaterThan(0)
-    expect(d.rows.value[0]!.path).toBe('')
-    expect(portal.calls).toEqual([])
-    expect(await d.openRow(d.rows.value[0]!)).toBe(false)
-    expect(await d.openRow({ id: 1, title: 'x', path: '/crm/lead/details/1/' })).toBe(true)
-    expect(portal.opened).toEqual(['/crm/lead/details/1/'])
+  /**
+   * ⚠ Демо-набора у детализации больше НЕТ (решение владельца от 2026-09-06): вне портала список
+   * не работает совсем, и числа там не кликабельны (`DrillNumber.vue`). Проверяем, что путь сюда
+   * действительно закрыт — портал в этом случае не спрашивают вовсе.
+   */
+  it('карточку без пути не открываем и портал об этом не спрашиваем', async () => {
+    const d = live()
+    expect(await d.openRow({ id: 1, title: 'x', path: '' })).toBe(false)
+    expect(portal.opened).toEqual([])
   })
 })

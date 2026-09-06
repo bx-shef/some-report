@@ -38,7 +38,11 @@ const savedOptions = useUserOptions()
 const {
   open: drillOpen, request: drillRequest, rows: drillRows, pending: drillPending,
   error: drillError, done: drillDone, show: showDrill, loadMore: drillMore, openRow: openDrillRow, cellRequest
-} = useManagerDrilldown({ filters: appliedFilters, dictionaries, isDemo, today })
+} = useManagerDrilldown({ filters: appliedFilters, dictionaries })
+
+// Детализацию открывает настоящий слайдер портала — вне фрейма её нет совсем, и числа там
+// обычный текст (решение владельца от 2026-09-06).
+provideDrillEnabled(computed(() => b24.isInit()))
 
 useHead({ title: 'Сделки по менеджерам' })
 
