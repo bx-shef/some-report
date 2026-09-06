@@ -60,7 +60,14 @@ describe('страница «Сделки по менеджерам» вне п�
     expect(text).toContain('Распределение')
     expect(text).toContain('Сделок')
     expect(text).toContain('Менеджеров')
-    expect(text).toContain('Без ответственного')
+    expect(text).toContain('Стадий')
+    // ⚠ Плитки «Без ответственного» на экране НЕТ: ответственный у сделки обязателен, и она
+    // всегда показывала ноль (решение владельца 2026-09-06).
+    //
+    // ⚠ Сравнение именно в том регистре, что лежит в DOM. `uppercase` в разметке — это CSS
+    // `text-transform`, до `textContent` он не доходит: проверка заглавными была зелёной и с
+    // возвращённой плиткой, то есть не сторожила ровно то, ради чего написана.
+    expect(text).not.toContain('Без ответственного')
     expect(wrapper.findAll('svg path').length).toBeGreaterThan(0)
   })
 })

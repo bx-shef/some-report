@@ -23,9 +23,6 @@ import { fromIsoDate, toIsoDate } from '~/utils/period'
 const from = defineModel<string>('from', { default: '' })
 const to = defineModel<string>('to', { default: '' })
 
-/** «Сегодня» — снаружи, как и в панели: будущее выбрать нельзя, а в тестах день должен быть задан. */
-const props = defineProps<{ today: Date }>()
-
 const inputDate = useTemplateRef<{ inputsRef?: { $el?: HTMLElement }[] }>('inputDate')
 const calendarOpen = ref(false)
 
@@ -61,8 +58,14 @@ function pickRange(range: { start?: DateValue, end?: DateValue } | null): void {
   if (start && end) calendarOpen.value = false
 }
 
-/** Будущее выбрать нельзя: лидов, созданных завтра, не бывает. */
-const maxValue = computed(() => toCalendar(toIsoDate(props.today)))
+/**
+ * ⚠ Верхней границы у выбора дат НЕТ, и это решение владельца от 2026-09-06.
+ *
+ * Раньше будущее было закрыто рассуждением «лидов, созданных завтра, не бывает». Рассуждение
+ * верное, а запрет — вредный: человек набирает диапазон руками, начиная с любого края, и поле,
+ * молча отказывающееся принимать дату, читается как поломка, а не как забота. Пустой результат за
+ * будущий период отчёт и так покажет честно — и это понятнее заблокированного календаря.
+ */
 </script>
 
 <template>
@@ -72,7 +75,6 @@ const maxValue = computed(() => toCalendar(toIsoDate(props.today)))
     range
     locale="ru"
     size="sm"
-    :max-value="maxValue"
     data-testid="period-input"
   >
     <template #trailing>
@@ -96,7 +98,6 @@ const maxValue = computed(() => toCalendar(toIsoDate(props.today)))
             range
             locale="ru"
             :number-of-months="2"
-            :max-value="maxValue"
             data-testid="period-calendar"
             @update:model-value="pickRange"
           />

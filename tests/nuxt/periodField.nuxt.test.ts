@@ -9,10 +9,8 @@ import PeriodField from '~/components/PeriodField.vue'
  * ⚠ Месяц у `Date` с нуля, у `CalendarDate` с единицы — ошибка на единицу здесь не падает, а
  * тихо сдвигает весь период на месяц. Поэтому обе стороны преобразования под тестом.
  */
-const TODAY = new Date(2026, 8, 3)
-
 async function mount(from = '', to = '') {
-  return mountSuspended(PeriodField, { props: { from, to, today: TODAY } })
+  return mountSuspended(PeriodField, { props: { from, to } })
 }
 
 /** Календарь b24ui эмитит диапазон — находим его и эмитим сами, как сделал бы клик. */
@@ -74,5 +72,21 @@ describe('PeriodField', () => {
     calendarOf(wrapper).vm.$emit('update:modelValue', { start: new CalendarDate(2028, 2, 29), end: new CalendarDate(2028, 2, 29) })
     await wrapper.vm.$nextTick()
     expect(wrapper.emitted('update:from')?.at(-1)).toEqual(['2028-02-29'])
+  })
+
+  /**
+   * ⚠ Будущее выбирать МОЖНО (решение владельца 2026-09-06). Раньше верхняя граница стояла по
+   * «сегодня» с рассуждением «лидов, созданных завтра, не бывает». Рассуждение верное, а запрет
+   * вредный: диапазон набирают руками с любого края, и поле, молча отказывающееся принимать
+   * дату, читается как поломка, а не как забота.
+   */
+  it('верхней границы у выбора дат нет — будущее не заблокировано', async () => {
+    const wrapper = await mount('2026-09-01', '2026-09-30')
+    // ⚠ Проверяем СВОЙСТВО компонента, а не DOM-атрибут: `max-value` в разметку не попадает
+    // вовсе, и проверка по атрибуту была бы зелёной всегда — в том числе с восстановленным
+    // запретом.
+    expect(wrapper.findComponent({ name: 'B24InputDate' }).props('maxValue')).toBeUndefined()
+    await wrapper.find('[data-testid="period-calendar-open"]').trigger('click')
+    expect(calendarOf(wrapper).props('maxValue')).toBeUndefined()
   })
 })

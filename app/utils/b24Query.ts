@@ -198,13 +198,17 @@ export function leadIdsParams(period: ReportPeriod, leadFilter: Record<string, s
 }
 
 /**
- * Сотрудники портала для фильтра по менеджеру — постранично через `start`.
+ * Сотрудники портала — постранично через `start`.
  *
  * `user.get` — не список CRM: у него свои `sort`/`order` и `FILTER`, курсор по `>ID` через
  * `filter` не подходит. Сотрудников сотни, не тысячи, — десяток страниц по 50.
+ *
+ * ⚠ `active: false` даёт УВОЛЕННЫХ, и читать их отдельным проходом обязательно. По умолчанию
+ * портал отдаёт только активных, а сделки уволенного никуда не деваются: без второго прохода
+ * его строка в отчёте подписана «Сотрудник #5562» — числа верные, а чьи они, непонятно.
  */
-export function userListParams(start = 0) {
-  return { sort: 'ID', order: 'ASC', FILTER: { ACTIVE: true, USER_TYPE: 'employee' }, start }
+export function userListParams(start = 0, active = true) {
+  return { sort: 'ID', order: 'ASC', FILTER: { ACTIVE: active, USER_TYPE: 'employee' }, start }
 }
 
 /** Поля записи истории: чей лид, куда перешёл и когда. Создание (`TYPE_ID = 1`) не берём — см. фильтр. */

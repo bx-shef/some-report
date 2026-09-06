@@ -84,7 +84,6 @@ const {
       <PeriodField
         v-model:from="customFrom"
         v-model:to="customTo"
-        :today="today"
       />
       <B24Alert
         v-if="customProblem"

@@ -422,8 +422,11 @@ export function useReportData() {
       filters.value = next
       void usersPromise.then((users) => {
         if (mine !== seq) return
+        // ⚠ В список фильтра идут и УВОЛЕННЫЕ: их лиды никуда не делись, и «показать лиды
+        // уволившегося» — обычный вопрос руководителя. Пометки «уволен» в выпадающем списке нет:
+        // выбор менеджера — это фильтр по идентификатору, а не карточка сотрудника.
         // Без `await` между чтением и записью — как и у фоновых выборок (см. блок 6).
-        dataset.value = { ...dataset.value, dictionaries: { ...dataset.value.dictionaries, users } }
+        dataset.value = { ...dataset.value, dictionaries: { ...dataset.value.dictionaries, users: users.names } }
       })
       warnings.value = {
         mergedLossReasons: reasons.foldedCodes,

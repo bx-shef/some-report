@@ -40,6 +40,20 @@ const categoryItems = computed(() => props.categories.map(category => ({ id: cat
 const scopeItems = (Object.keys(SCOPE_LABELS) as DealScope[]).map(scope => ({ id: scope, label: SCOPE_LABELS[scope] }))
 
 /**
+ * Какая кнопка подсвечена.
+ *
+ * ⚠ Не `model.companyId`, а «выбранная человеком ИЛИ применённая отчётом». Компанию можно не
+ * выбирать вовсе — тогда её выбирает отчёт (самую крупную под отбором) и присылает в
+ * `appliedFilters`. По одному `model` не была бы подсвечена ни одна кнопка при том, что на экране
+ * конкретная компания, а первое нажатие на неё же считалось бы сменой отбора и уходило бы в
+ * портал за тем же самым экраном.
+ *
+ * ⚠ Порядок именно такой: выбор человека важнее применённого. Иначе, пока идёт выборка, кнопка
+ * оставалась бы подсвеченной на прошлой компании — той, которую уже не показывают.
+ */
+const selectedCompany = computed(() => model.value.companyId ?? props.appliedFilters?.companyId)
+
+/**
  * Кнопки фильтра «Моя компания» — как кнопки периода, и по той же причине: их видно все сразу,
  * вместе с числами, и выбор — одно нажатие вместо «открыть список, найти, нажать».
  *
@@ -50,11 +64,20 @@ const scopeItems = (Object.keys(SCOPE_LABELS) as DealScope[]).map(scope => ({ id
  * ⚠ «Без моей компании» — такая же кнопка, как остальные, а не служебная строка внизу экрана: на
  * боевом портале за всё время это самая крупная группа, и человек сам решает, смотреть её или нет.
  */
-const companyButtons = computed(() => props.companies.map(company => ({
-  id: company.id,
-  label: company.id === COMPANY_UNSET ? COMPANY_UNSET_FULL_LABEL : company.name,
-  total: props.companyTotals?.[company.id]
-})))
+const companyButtons = computed(() => props.companies
+  .map(company => ({
+    id: company.id,
+    label: company.id === COMPANY_UNSET ? COMPANY_UNSET_FULL_LABEL : company.name,
+    total: props.companyTotals?.[company.id]
+  }))
+  // ⚠ Кнопку с нулём не показываем (решение владельца 2026-09-06): нажимать её незачем — за ней
+  // заведомо пустой экран. Живее всего это у «Без моей компании»: она есть в списке ВСЕГДА, потому
+  // что перечислением её не найти, и на свежих периодах у неё ноль.
+  //
+  // ⚠ Исключение — выбранная сейчас компания: её кнопка остаётся, даже опустев. Иначе, сменив
+  // период, человек терял бы кнопку собственного выбора и не мог бы к нему вернуться: экран
+  // говорил бы «сделок нет» без единой нажатой кнопки.
+  .filter(company => company.total !== 0 || company.id === selectedCompany.value))
 
 function pickCategory(value: unknown): void {
   const categoryId = Number(value)
@@ -81,20 +104,6 @@ function pickCompany(companyId: number): void {
   if (props.disabled || selectedCompany.value === companyId) return
   model.value = { ...model.value, companyId }
 }
-
-/**
- * Какая кнопка подсвечена.
- *
- * ⚠ Не `model.companyId`, а «выбранная человеком ИЛИ применённая отчётом». Компанию можно не
- * выбирать вовсе — тогда её выбирает отчёт (самую крупную под отбором) и присылает в
- * `appliedFilters`. По одному `model` не была бы подсвечена ни одна кнопка при том, что на экране
- * конкретная компания, а первое нажатие на неё же считалось бы сменой отбора и уходило бы в
- * портал за тем же самым экраном.
- *
- * ⚠ Порядок именно такой: выбор человека важнее применённого. Иначе, пока идёт выборка, кнопка
- * оставалась бы подсвеченной на прошлой компании — той, которую уже не показывают.
- */
-const selectedCompany = computed(() => model.value.companyId ?? props.appliedFilters?.companyId)
 
 /** Подпись под панелью: по чему именно посчитаны числа на экране. */
 const appliedText = computed(() => {
