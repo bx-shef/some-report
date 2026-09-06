@@ -236,7 +236,6 @@ async function fit() {
           :pending="drillPending"
           :error="drillError"
           :done="drillDone"
-          :is-demo="isDemo"
           @more="drillMore"
           @open-row="openDrillRow"
         />

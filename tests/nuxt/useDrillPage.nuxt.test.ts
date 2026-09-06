@@ -20,15 +20,22 @@ const portal = vi.hoisted(() => ({
   /** Пакет справочников упал — подписи пропадают, числа остаются. */
   booksFail: false,
   /** Сколько раз спрашивали справочники: их читают один раз на НАПРАВЛЕНИЕ. */
-  books: 0
+  books: 0,
+  /** Команды последнего пакета справочников: списку лидов стадии сделок не нужны. */
+  bookKeys: [] as string[],
+  /** Задержка ответа `user.get` — им проверяется, что опоздавшие имена перерисуют строки. */
+  usersGate: Promise.resolve() as Promise<void>,
+  /** Задержка ответа списка — ею проверяется сторож от гонки при смене условия. */
+  gate: Promise.resolve() as Promise<void>
 }))
 
 mockNuxtImport('useB24Batch', () => () => ({
   batchResults: async () => ({}),
   batchTotals: async () => ({}),
   batchRowsChecked: async () => ({ rows: {}, complete: true }),
-  batchRows: async () => {
+  batchRows: async (commands: Record<string, unknown>) => {
     portal.books++
+    portal.bookKeys = Object.keys(commands)
     if (portal.booksFail) throw new Error('пакет не прошёл')
     return {
       sources: [{ STATUS_ID: 'CALL', NAME: 'Звонок' }],
@@ -39,7 +46,11 @@ mockNuxtImport('useB24Batch', () => () => ({
 }))
 
 mockNuxtImport('useB24Users', () => () => ({
-  fetchUsers: async () => ({ names: { 7: 'Иванов Иван' }, dismissed: new Set<string>() })
+  fetchUsers: async () => {
+    // Ворота: тест может задержать имена и проверить, что строки перерисуются, когда те придут.
+    await portal.usersGate
+    return { names: { 7: 'Иванов Иван' }, dismissed: new Set<string>() }
+  }
 }))
 
 mockNuxtImport('useB24', () => () => ({
@@ -54,6 +65,9 @@ mockNuxtImport('useB24', () => () => ({
           make: async ({ method, params }: { method: string, params: Record<string, unknown> }) => {
             portal.calls.push({ method, params })
             const next = portal.pages.shift()
+            // Ворота: тест может задержать ОТВЕТ, оставив запрос в полёте. Только так проверяется
+            // сторож от гонки — иначе второй старт успевает раньше, чем первый дойдёт до портала.
+            await portal.gate
             if (next instanceof Error) return { isSuccess: false, getData: () => undefined, getErrorMessages: () => [next.message] }
             return { isSuccess: true, getData: () => ({ result: next ?? [] }), getErrorMessages: () => [] }
           }
@@ -68,6 +82,9 @@ beforeEach(() => {
   portal.pages = []
   portal.booksFail = false
   portal.books = 0
+  portal.bookKeys = []
+  portal.usersGate = Promise.resolve()
+  portal.gate = Promise.resolve()
 })
 
 const PAYLOAD: DrillSliderPayload = {
@@ -160,16 +177,18 @@ describe('useDrillPage', () => {
   })
 
   /**
-   * ⚠ Стадии берутся у НУЖНОГО направления: у каждого они свои (`DEAL_STAGE_<id>`). Направление
-   * приезжает в нагрузке — потеряй его, и список из направления 1 печатал бы коды там, где в
-   * таблице над ним написаны слова.
+   * ⚠ Проверяем СЧЁТЧИК СПРАВОЧНИКОВ, а не число запросов списка. Прежняя редакция этого теста
+   * считала `crm.deal.list` — то есть страницы, а не справочники; убери кэш совсем, и она
+   * осталась бы зелёной. Справочники на каждой странице — это лишний пакет на каждое нажатие
+   * «Показать ещё», а при неудаче второго — ещё и две системы подписей в одной таблице.
    */
-  it('справочники читаются один раз на страницу', async () => {
+  it('справочники читаются один раз на весь список, а не на каждую страницу', async () => {
     portal.pages = [page(50), page(1, 51)]
     const drill = useDrillPage()
     await drill.start(PAYLOAD)
     await drill.loadMore()
     expect(portal.calls.filter(call => call.method === 'crm.deal.list')).toHaveLength(2)
+    expect(portal.books).toBe(1)
   })
 
   it('повторный старт сбрасывает строки и курсор', async () => {
@@ -211,11 +230,85 @@ describe('useDrillPage', () => {
     portal.pages = [page(1), page(1), page(1)]
     const drill = useDrillPage()
     await drill.start(PAYLOAD)
-    const once = portal.calls.length
     await drill.start(PAYLOAD)
-    expect(portal.calls.length - once).toBe(1)
+    // Счётчик обнуляем ЗДЕСЬ: сколько пакетов ушло раньше, этому тесту неинтересно, а привязка к
+    // накопленному числу делала бы его хрупким к любой правке соседних шагов.
+    expect(portal.books).toBe(1)
+    portal.books = 0
     await drill.start({ ...PAYLOAD, categoryId: 4 })
-    expect(portal.books).toBe(2)
+    expect(portal.books).toBe(1)
+  })
+
+  /**
+   * ⚠ Список лидов стадий сделок не касается вовсе: `leadDrillRow` в `dealStages` не заглядывает.
+   * Лишняя команда в пакете — ответ, который некуда деть, на каждое открытие слайдера.
+   */
+  it('списку лидов стадии сделок не запрашиваются', async () => {
+    portal.pages = [page(1)]
+    const drill = useDrillPage()
+    await drill.start({ ...PAYLOAD, entity: 'lead' })
+    expect(portal.bookKeys).not.toContain('dealStages')
+    expect(portal.bookKeys).toContain('leadStatuses')
+  })
+
+  /**
+   * ⚠ Имена сотрудников приходят ВТОРЫМ проходом `user.get` по всему порталу и запросто опаздывают
+   * за первой страницей. Разложи строки один раз при получении — первая страница осталась бы с
+   * «Сотрудник #7», вторая приехала бы с фамилией: один список, две системы подписей.
+   */
+  it('опоздавшие имена сотрудников перерисовывают УЖЕ показанные строки', async () => {
+    let release = (): void => {}
+    portal.usersGate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    portal.pages = [page(1)]
+    const drill = useDrillPage()
+    await drill.start(PAYLOAD)
+    expect(drill.rows.value[0]?.manager).toBe('Сотрудник #7')
+    release()
+    await portal.usersGate
+    await nextTick()
+    expect(drill.rows.value[0]?.manager).toBe('Иванов Иван')
+  })
+
+  /**
+   * ⚠ Сбой справочников НЕ должен уносить с собой имена сотрудников: это разные запросы. Раньше
+   * подписка на имена стояла после `await` пакета — ошибка уводила в `catch`, и совершенно
+   * исправный список сотрудников пропадал вместе со стадиями.
+   */
+  it('упавшие справочники не уносят имена сотрудников', async () => {
+    portal.booksFail = true
+    portal.pages = [page(1)]
+    const drill = useDrillPage()
+    await drill.start(PAYLOAD)
+    await nextTick()
+    expect(drill.rows.value[0]?.manager).toBe('Иванов Иван')
+    expect(drill.rows.value[0]?.stage).toBe('C1:NEW')
+  })
+
+  /**
+   * ⚠ Сторож от гонки: повторный старт на неотвеченной странице. Без него ответ ПРОШЛОГО условия
+   * доклеился бы к очищенным строкам — записи одного числа под заголовком другого.
+   */
+  it('ответ сменённого списка выбрасывается', async () => {
+    let open = (): void => {}
+    portal.gate = new Promise<void>((resolve) => {
+      open = resolve
+    })
+    portal.pages = [page(3), page(2, 100)]
+    const drill = useDrillPage()
+    const first = drill.start(PAYLOAD)
+    // Дожидаемся, что первый запрос УШЁЛ в портал, и только потом меняем условие: иначе первый
+    // старт отвалится ещё на справочниках, и гонки, ради которой стоит сторож, не случится вовсе.
+    await vi.waitFor(() => expect(portal.calls).toHaveLength(1))
+    const second = drill.start({ ...PAYLOAD, title: 'Другое число', filter: { CATEGORY_ID: 2 } })
+    await vi.waitFor(() => expect(portal.calls).toHaveLength(2))
+    // Оба ответа портал отдаёт только теперь — первый вернётся к уже сменённому условию.
+    open()
+    await Promise.all([first, second])
+    // Строки ТОЛЬКО второго старта: 5 означало бы, что ответ первого доклеился к очищенным.
+    expect(drill.rows.value).toHaveLength(2)
+    expect(drill.rows.value[0]?.id).toBe(100)
   })
 
   it('лиды читаются своим методом', async () => {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { APP_REPORTS } from '~/config/routes'
+import type { DrillRow } from '~/utils/drilldown'
 import type { DrillSliderPayload } from '~/utils/drillSlider'
 
 /**
@@ -19,12 +20,16 @@ import type { DrillSliderPayload } from '~/utils/drillSlider'
 const b24 = useB24()
 const slider = usePortalSlider()
 const route = useRoute()
+const { rows, pending, error, done, start, loadMore } = useDrillPage()
 const inPortal = ref(false)
 /**
  * Проверка «мы во фрейме?» закончилась.
  *
- * ⚠ До неё плашку «страница открыта вне портала» не показываем: внутри портала она мелькала бы
- * на первом кадре и врала бы ровно тем людям, для кого приложение и сделано.
+ * ⚠ До неё не показываем НИЧЕГО, кроме «Загрузка…», — ни плашки «вне портала» (внутри портала
+ * она мелькала бы на первом кадре и врала бы ровно тем, для кого приложение и сделано), ни самого
+ * оглавления. Оглавление по умолчанию было хуже всего: во фрейме слайдера детализации человек
+ * успевал увидеть — и нажать — плитки выбора отчёта, и слайдер уезжал на страницу отчёта вместо
+ * списка, за которым его открыли.
  */
 const resolved = ref(false)
 /**
@@ -33,6 +38,17 @@ const resolved = ref(false)
  * ⚠ Разбор проверяющий (`drillSlider.ts`): значение приходит от портала, то есть снаружи.
  */
 const drill = ref<DrillSliderPayload | undefined>(undefined)
+/**
+ * Фрейм открыт детализацией, а нагрузка негодная.
+ *
+ * ⚠ Отдельно от `drill`, потому что молчать здесь нельзя. Человек нажал на число и ждёт список;
+ * показать ему вместо списка оглавление приложения — соврать так, что не поймёшь, что случилось.
+ * Разбор отвергает нагрузку целиком при малейшей порче (`drillSlider.ts`), а испортить её может
+ * что угодно по дороге через портал, — значит, этот исход штатный, а не «никогда не бывает».
+ */
+const drillBroken = ref(false)
+/** Портал не открыл карточку: клик без последствий читается как поломка отчёта. */
+const openError = ref<string | undefined>(undefined)
 
 useHead({ title: 'Отчёты' })
 
@@ -45,20 +61,77 @@ onMounted(async () => {
   await b24.init()
   inPortal.value = b24.isInit()
   drill.value = slider.drillPayload()
+  drillBroken.value = !drill.value && slider.drillRequested()
   resolved.value = true
-  // Список детализации подгоняет высоту фрейма сам, когда прочитает первую страницу.
-  if (drill.value) return
-  await nextTick()
-  // Портал не знает высоту нашего содержимого: без этого фрейм остаётся высотой в один экран.
-  await b24.fitWindow()
+  if (drill.value) {
+    await start(drill.value)
+    await fit()
+    return
+  }
+  await fit()
 })
+
+/**
+ * Подогнать высоту фрейма под содержимое.
+ *
+ * ⚠ Портал её не знает: без этого фрейм слайдера остаётся высотой в один экран, и список не
+ * долистать. То же самое делают все остальные страницы приложения.
+ */
+async function fit(): Promise<void> {
+  await nextTick()
+  await b24.fitWindow()
+}
+
+/** После каждой доклеенной страницы фрейм подрастает — иначе новым строкам некуда показаться. */
+async function more(): Promise<void> {
+  await loadMore()
+  await fit()
+}
+
+/** Открыть карточку в CRM — тем же слайдером портала, поверх этого. */
+async function openRow(row: DrillRow): Promise<void> {
+  if (!row.path) return
+  openError.value = undefined
+  // ⚠ Отказ портала показываем плашкой, как и ошибку списка: клик, после которого ничего не
+  // произошло, читается как поломка отчёта, а не как «портал не смог».
+  if (!await b24.openPath(row.path)) {
+    openError.value = 'Портал не открыл карточку — попробуйте ещё раз или откройте её из CRM.'
+  }
+}
 </script>
 
 <template>
   <ReportDrill
     v-if="drill"
     :payload="drill"
+    :rows="rows"
+    :pending="pending"
+    :done="done"
+    :error="error"
+    :open-error="openError"
+    @more="more()"
+    @open="openRow"
   />
+
+  <main
+    v-else-if="!resolved"
+    class="mx-auto max-w-4xl p-4 lg:p-6"
+  >
+    <p class="text-sm opacity-70">
+      Загрузка…
+    </p>
+  </main>
+
+  <main
+    v-else-if="drillBroken"
+    class="mx-auto max-w-4xl p-4 lg:p-6"
+  >
+    <B24Alert
+      color="air-primary-alert"
+      title="Список не открылся"
+      description="Портал передал негодные параметры списка. Закройте это окно и нажмите на число ещё раз — если повторится, откройте отчёт заново."
+    />
+  </main>
 
   <main
     v-else
@@ -89,7 +162,7 @@ onMounted(async () => {
     </div>
 
     <B24Alert
-      v-if="resolved && !inPortal"
+      v-if="!inPortal"
       color="air-primary-warning"
       title="Страница открыта вне портала"
       description="Живые данные отчёты берут только внутри Битрикс24 — из раздела «CRM-аналитика» → «Приложения». Снаружи они показывают демонстрационный набор."

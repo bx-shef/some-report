@@ -16,9 +16,9 @@ const rows: DrillRow[] = [
 
 let current: Awaited<ReturnType<typeof mountSuspended>> | undefined
 
-async function render(props: Partial<{ rows: DrillRow[], pending: boolean, error: string, done: boolean, isDemo: boolean, request: DrillRequest }> = {}) {
+async function render(props: Partial<{ rows: DrillRow[], pending: boolean, error: string, done: boolean, request: DrillRequest }> = {}) {
   current = await mountSuspended(ReportDrilldown, {
-    props: { open: true, request: drill.junk(), rows, pending: false, done: true, isDemo: false, ...props },
+    props: { open: true, request: drill.junk(), rows, pending: false, done: true, ...props },
     attachTo: document.body
   })
   await current.vm.$nextTick()
@@ -95,12 +95,21 @@ describe('ReportDrilldown', () => {
     }
   })
 
-  it('пусто и дочитано — «Записей нет»; ошибка — плашка; демо — подпись про вымышленные записи', async () => {
+  it('пусто и дочитано — «Записей нет»; ошибка — плашка', async () => {
     await render({ rows: [] })
     expect(bodyText()).toContain('Записей нет')
     current?.unmount()
-    await render({ error: 'нет доступа', isDemo: true })
+    await render({ error: 'нет доступа' })
     expect(bodyText()).toContain('Не удалось прочитать записи')
-    expect(bodyText()).toContain('карточек в CRM у них нет')
+  })
+
+  /**
+   * ⚠ Демо-подписи здесь больше нет, и это проверяется, а не подразумевается: числа на
+   * демо-странице не кликабельны вовсе (`useDrillEnabled`), попасть сюда с демо-набором неоткуда,
+   * а плашка про вымышленные записи внутри портала была бы прямой неправдой.
+   */
+  it('про демо-набор панель не говорит ничего — попасть сюда с ним неоткуда', async () => {
+    await render()
+    expect(bodyText()).not.toContain('вымышленные')
   })
 })

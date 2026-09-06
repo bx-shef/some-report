@@ -15,59 +15,61 @@ import { formatCount, formatDate, formatMoney } from '~/utils/format'
  * обработчик и так открывает `/app`, и проще показать здесь нужный экран, чем никуда не уезжать
  * через два обхода Nuxt.
  *
+ * ⚠ Компонент только РИСУЕТ: ни портала, ни выборки. Данные и обе операции портала (подгонка
+ * высоты фрейма, открытие карточки) — на странице. Иначе рисующий компонент завёл бы знание о
+ * SDK — ровно то, ради чего в этом же PR появился `useDrillEnabled`.
+ *
  * ⚠ Панель b24ui, которая была раньше, жила в НАШЕМ фрейме и потому накрывала только его: во весь
  * экран портала выйти не могла, а рядом с настоящими слайдерами читалась как панель внутри
  * панели. Решение владельца от 2026-09-06.
  */
-const props = defineProps<{ payload: DrillSliderPayload }>()
-
-const b24 = useB24()
-const { rows, pending, error, done, start, loadMore } = useDrillPage()
-
-/** Отказ портала открыть карточку: молчать нельзя — клик без последствий читается как поломка. */
-const openError = ref<string | undefined>(undefined)
-
-onMounted(async () => {
-  await start(props.payload)
-  await nextTick()
-  // ⚠ Портал не знает высоту нашего содержимого: без этого фрейм слайдера остаётся высотой в один
-  // экран, и список не долистать. То же самое делают все остальные страницы приложения.
-  await b24.fitWindow()
-})
-
-/** После каждой доклеенной страницы фрейм подрастает — иначе новые строки некуда показать. */
-async function more(): Promise<void> {
-  await loadMore()
-  await nextTick()
-  await b24.fitWindow()
-}
+const props = defineProps<{
+  payload: DrillSliderPayload
+  rows: DrillRow[]
+  pending: boolean
+  done: boolean
+  /** Список не прочитался. */
+  error?: string
+  /** Портал не открыл карточку: молчать нельзя — клик без последствий читается как поломка. */
+  openError?: string
+}>()
+const emit = defineEmits<{ more: [], open: [DrillRow] }>()
 
 /**
  * «Показано M из N»: N — то число, по которому нажали, известно без единого запроса. Без него на
  * квартале список «Лиды» — две сотни страниц, и масштаб виден только тому, кто долистал.
  */
 const description = computed(() => {
-  const current = props.payload
-  const what = current.entity === 'deal' ? 'сделок' : 'лидов'
-  const shown = formatCount(rows.value.length)
-  if (done.value) return `${what}: ${shown}`
-  return current.total === undefined
+  const what = props.payload.entity === 'deal' ? 'сделок' : 'лидов'
+  const shown = formatCount(props.rows.length)
+  if (props.done) return `${what}: ${shown}`
+  return props.payload.total === undefined
     ? `показано ${what}: ${shown}, есть ещё`
-    : `показано ${shown} из ${formatCount(current.total)} ${what}`
+    : `показано ${shown} из ${formatCount(props.payload.total)} ${what}`
 })
 
 const isDeal = computed(() => props.payload.entity === 'deal')
+/** Первая страница ещё идёт: показывать нечего, и «Показать ещё» тут — приглашение к пустоте. */
+const booting = computed(() => props.pending && !props.rows.length)
 
-/** Открыть карточку в CRM — тем же слайдером портала, поверх этого. */
-async function openRow(row: DrillRow): Promise<void> {
-  if (!row.path) return
-  openError.value = undefined
-  // ⚠ Отказ портала показываем плашкой, как и ошибку списка: клик, после которого ничего не
-  // произошло, читается как поломка отчёта, а не как «портал не смог».
-  if (!await b24.openPath(row.path)) {
-    openError.value = 'Портал не открыл карточку — попробуйте ещё раз или откройте её из CRM.'
-  }
-}
+const sentinel = useTemplateRef<HTMLElement>('sentinel')
+let observer: IntersectionObserver | undefined
+
+// ⚠ Конец списка показался на экране — просим следующую страницу, как это делала панель. Без
+// наблюдателя «Лиды» за квартал (двести страниц по замеру в METRICS.md) листались бы двумя
+// сотнями нажатий. Не чаще одной страницы за раз: композабл вторую параллельную не пустит, но и
+// просить её незачем.
+watch(sentinel, (el) => {
+  observer?.disconnect()
+  observer = undefined
+  if (!el || typeof IntersectionObserver === 'undefined') return
+  observer = new IntersectionObserver((entries) => {
+    if (entries.some(entry => entry.isIntersecting) && !props.pending && !props.done) emit('more')
+  })
+  observer.observe(el)
+}, { flush: 'post' })
+
+onBeforeUnmount(() => observer?.disconnect())
 </script>
 
 <template>
@@ -76,10 +78,7 @@ async function openRow(row: DrillRow): Promise<void> {
       <h1 class="text-lg font-semibold">
         {{ payload.title }}
       </h1>
-      <p
-        v-if="description"
-        class="mt-1 text-sm opacity-70"
-      >
+      <p class="mt-1 text-sm opacity-70">
         {{ description }}
       </p>
     </header>
@@ -101,7 +100,14 @@ async function openRow(row: DrillRow): Promise<void> {
     />
 
     <p
-      v-if="!rows.length && done && !pending"
+      v-if="booting"
+      class="text-sm opacity-70"
+    >
+      Читаем записи…
+    </p>
+
+    <p
+      v-else-if="!rows.length && done"
       class="text-sm opacity-70"
     >
       Записей нет.
@@ -148,7 +154,7 @@ async function openRow(row: DrillRow): Promise<void> {
                 type="button"
                 class="drill-number"
                 :title="`Открыть карточку в CRM: ${row.title}`"
-                @click="openRow(row)"
+                @click="emit('open', row)"
               >
                 {{ row.title }}
               </button>
@@ -176,20 +182,23 @@ async function openRow(row: DrillRow): Promise<void> {
       </table>
     </div>
 
-    <div class="mt-4 flex items-center gap-3">
+    <div
+      v-if="!done"
+      class="mt-4 flex items-center gap-3"
+    >
       <B24Button
-        v-if="!done"
         :loading="pending"
         color="air-secondary"
         size="sm"
-        @click="more()"
+        @click="emit('more')"
       >
         Показать ещё
       </B24Button>
+      <!-- Метка для наблюдателя: показалась на экране — значит, докрутили до конца списка. -->
       <span
-        v-else-if="pending"
-        class="text-sm opacity-70"
-      >Читаем…</span>
+        ref="sentinel"
+        aria-hidden="true"
+      />
     </div>
   </div>
 </template>

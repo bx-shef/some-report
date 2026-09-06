@@ -24,7 +24,6 @@ const portal = vi.hoisted(() => ({
 // Настоящий слайдер портала: страница детализации живёт в отдельном фрейме, и композабл лишь
 // просит портал его открыть.
 mockNuxtImport('usePortalSlider', () => () => ({
-  inFrame: () => true,
   // ⚠ Синхронный, как и настоящий: промис `openSliderAppPage` разрешается при ЗАКРЫТИИ слайдера,
   // поэтому ждать его нельзя, и `openDrill` возвращает не промис, а «вызов ушёл».
   openDrill: (payload: { title: string, filter: Record<string, unknown> }) => {
@@ -32,7 +31,8 @@ mockNuxtImport('usePortalSlider', () => () => ({
     portal.sliderPages.push({ place: 'app-drill', ...payload })
     return true
   },
-  drillPayload: () => undefined
+  drillPayload: () => undefined,
+  drillRequested: () => false
 }))
 
 mockNuxtImport('useB24', () => () => ({
@@ -241,13 +241,32 @@ describe('useDrilldown', () => {
   })
 
   /**
-   * ⚠ Демо-набора у детализации больше НЕТ (решение владельца от 2026-09-06): вне портала список
-   * не работает совсем, и числа там не кликабельны (`DrillNumber.vue`). Проверяем, что путь сюда
-   * действительно закрыт — портал в этом случае не спрашивают вовсе.
+   * ⚠ Главный путь этого композабла: слайдер согласился — панель НЕ поднимается, портал списком
+   * не тревожат вовсе, а условие уезжает в параметрах вызова целиком.
+   *
+   * ⚠ И вместе с ним — подписи причин провала (`stageNames`). Название причины не лежит ни в
+   * одном справочнике портала: отчёт сводит одноимённые стадии четырёх направлений в одно
+   * каноничное имя, а слайдер — отдельный фрейм и пересчитать сведение не может. Потеряй их — и
+   * строка «Отказ - Дорого: 15» открыла бы список из пятнадцати `C4:APOLOGY`.
    */
-  it('карточку без пути не открываем и портал об этом не спрашиваем', async () => {
+  it('слайдер согласился — панель молчит, а условие и подписи уехали целиком', () => {
+    const d = live({ dictionaries: { ...buildMockDataset().dictionaries, lossReasons: { LOSE: 'Отказ - Дорого' }, lossReasonCodes: { LOSE: ['LOSE', 'C4:APOLOGY'] } } })
+    d.show(drill.lossReason('LOSE', 'Отказ - Дорого', { LOSE: ['LOSE', 'C4:APOLOGY'] }))
+    expect(d.open.value).toBe(false)
+    expect(portal.calls).toEqual([])
+    const sent = portal.sliderPages[0]!
+    expect(sent).toMatchObject({ place: 'app-drill', entity: 'deal', title: 'Проигранные сделки: Отказ - Дорого' })
+    const filter = sent.filter as Record<string, unknown>
+    expect(filter.STAGE_ID).toEqual(['LOSE', 'C4:APOLOGY'])
+    expect(filter['!LEAD_ID']).toBeNull()
+    // Оба кода одной причины подписаны ОДНИМ каноничным именем — тем, что стоит в отчёте.
+    expect(sent.stageNames).toEqual({ 'LOSE': 'Отказ - Дорого', 'C4:APOLOGY': 'Отказ - Дорого' })
+  })
+
+  // Списку ЛИДОВ подписи причин провала не нужны: у лида стадии свои, и лишнее в нагрузке — вес.
+  it('лидам подписи стадий сделок не отправляются', () => {
     const d = live()
-    expect(await d.openRow({ id: 1, title: 'x', path: '' })).toBe(false)
-    expect(portal.opened).toEqual([])
+    d.show(drill.junk())
+    expect(portal.sliderPages[0]?.stageNames).toBeUndefined()
   })
 })

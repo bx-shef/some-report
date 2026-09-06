@@ -91,11 +91,46 @@ export function encodeDrillPayload(payload: DrillSliderPayload): Record<string, 
 /** Имена, которые нельзя класть ключом в обычный объект, — см. шапку `decodeDrillPayload`. */
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
+/**
+ * Поля CRM, по которым отчёт вообще умеет строить условие. Всё остальное нагрузку отвергает.
+ *
+ * ⚠ Белый список, а не «всё, кроме опасных имён», — и это не перестраховка. `openSliderAppPage`
+ * открывает наш фрейм по параметру ВЫЗОВА: позвать его может любое приложение портала, у которого
+ * есть доступ к `BX24`. Читать CRM оно будет НАШИМ токеном с правом `crm` — своего может и не
+ * быть. Списком полей мы не даём чужому фильтру спросить у портала то, чего этот отчёт не
+ * спрашивает никогда.
+ *
+ * ⚠ Пополнять список — вместе с новым условием в `drilldown.ts`/`managerQuery.ts`, иначе список
+ * молча не откроется. Ровно поэтому он лежит здесь, а не «где-нибудь в конфиге»: рядом с разбором.
+ */
+const ALLOWED_FILTER_FIELDS = new Set([
+  // Периоды: у лида и сделки — дата создания, у сделок без лида — дата закрытия, у истории — CREATED_TIME.
+  'DATE_CREATE', 'CLOSEDATE', 'CREATED_TIME',
+  // Отбор отчёта и условия клеток.
+  'ID', 'SOURCE_ID', 'ASSIGNED_BY_ID', 'STATUS_ID', 'STAGE_ID',
+  'STATUS_SEMANTIC_ID', 'STAGE_SEMANTIC_ID', 'LEAD_ID', 'TYPE_ID',
+  'CATEGORY_ID', 'MYCOMPANY_ID'
+])
+
+/**
+ * Ключ фильтра REST → имя поля без приставки сравнения (`!`, `>`, `<`, `>=`, `<=`).
+ *
+ * ⚠ Приставку снимаем, а не сверяем ключ целиком: иначе белый список пришлось бы вести в пяти
+ * вариантах на каждое поле, и первый же забытый вариант закрыл бы рабочий список.
+ */
+function filterField(key: string): string {
+  return key.replace(/^[!<>=]+/, '')
+}
+
 /** Пределы нагрузки: см. `decodeDrillPayload`. С запасом к самому широкому нашему фильтру. */
 const MAX_FILTER_KEYS = 50
 const MAX_LIST_ITEMS = 1000
-/** Подписей стадий — по числу кодов ОДНОЙ причины провала (у заказчика их шесть), с запасом. */
-const MAX_STAGE_NAMES = 50
+/**
+ * Подписей стадий — с запасом к 25 кодам провала четырёх направлений заказчика
+ * ([`PORTAL.md`](../../docs/PORTAL.md)). Потолок держат ОБЕ стороны: отправитель обрезает
+ * осмысленно, приёмник — на случай подделанной нагрузки.
+ */
+export const MAX_STAGE_NAMES = 50
 
 /** Годное значение фильтра — или `undefined`, если портал прислал что-то другое. */
 function readFilterValue(value: unknown): DrillFilterValue | undefined {
@@ -107,6 +142,10 @@ function readFilterValue(value: unknown): DrillFilterValue | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (!Array.isArray(value)) return undefined
   if (value.length > MAX_LIST_ITEMS) return undefined
+  // ⚠ Пустой список — не «условие ни на что», а условие, которого портал НЕ ВИДИТ: `STAGE_ID: []`
+  // он пропускает, и под заголовком одной причины провала открылся бы весь период. Отчёт таких
+  // условий не строит вовсе — пустой отбор он решает без запроса.
+  if (!value.length) return undefined
   const items: Array<string | number> = []
   for (const item of value) {
     if (typeof item === 'string') items.push(item)
@@ -116,6 +155,19 @@ function readFilterValue(value: unknown): DrillFilterValue | undefined {
     else return undefined
   }
   return items
+}
+
+/**
+ * Открыт ли фрейм КАК детализация — по `place` из параметров вызова.
+ *
+ * ⚠ Отдельно от разбора нагрузки, и это важно: «открыли детализацию, но параметры негодные» и
+ * «открыли приложение обычным способом» — РАЗНЫЕ случаи, и вести себя страница обязана по-разному.
+ * В первом человек нажал на число и ждёт список: показать ему вместо списка оглавление
+ * приложения значит соврать молча. Во втором оглавление — ровно то, что он и просил.
+ */
+export function isDrillFrame(options: unknown): boolean {
+  if (typeof options !== 'object' || options === null) return false
+  return (options as Record<string, unknown>).place === DRILL_SLIDER_PLACE
 }
 
 /**
@@ -130,10 +182,13 @@ function readFilterValue(value: unknown): DrillFilterValue | undefined {
 function readStageNames(value: unknown): Record<string, string> | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const source = value as Record<string, unknown>
-  const keys = Object.keys(source)
-  if (!keys.length || keys.length > MAX_STAGE_NAMES) return undefined
   const out: Record<string, string> = {}
-  for (const key of keys) {
+  // ⚠ Лишние подписи ОБРЕЗАЕМ, а не отвергаем все. Отвергнув, мы получили бы худший исход из
+  // возможных: у заказчика четыре направления и 25 кодов провала, пятое направление перевалило
+  // бы за потолок — и список, где не хватало бы нескольких подписей, вместо этого потерял бы ВСЕ,
+  // показав пятнадцать `C4:APOLOGY` под заголовком «Отказ - Дорого».
+  for (const key of Object.keys(source)) {
+    if (Object.keys(out).length >= MAX_STAGE_NAMES) break
     if (!Object.hasOwn(source, key) || UNSAFE_KEYS.has(key)) continue
     const name = source[key]
     if (typeof name === 'string' && name.trim()) out[key] = name
@@ -151,7 +206,7 @@ function readStageNames(value: unknown): Record<string, string> | undefined {
  * данных и не могут объяснить.
  */
 export function decodeDrillPayload(options: unknown): DrillSliderPayload | undefined {
-  if (typeof options !== 'object' || options === null) return undefined
+  if (!isDrillFrame(options)) return undefined
   const raw = (options as Record<string, unknown>)[DRILL_PAYLOAD_KEY]
   if (typeof raw !== 'string' || !raw.trim()) return undefined
 
@@ -181,6 +236,8 @@ export function decodeDrillPayload(options: unknown): DrillSliderPayload | undef
     if (!Object.hasOwn(source, key)) continue
     // См. шапку: такой ключ не «пропускаем», а отвергаем всю нагрузку.
     if (UNSAFE_KEYS.has(key)) return undefined
+    // Поле не из тех, по которым отчёт строит условия, — нагрузка чужая целиком (см. белый список).
+    if (!ALLOWED_FILTER_FIELDS.has(filterField(key))) return undefined
     const value = readFilterValue(source[key])
     // Негодное значение — негодная нагрузка целиком: см. шапку про «половину условия».
     if (value === undefined) return undefined

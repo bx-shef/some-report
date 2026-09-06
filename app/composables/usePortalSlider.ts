@@ -1,4 +1,4 @@
-import { decodeDrillPayload, encodeDrillPayload, DRILL_SLIDER_WIDTH, type DrillSliderPayload } from '~/utils/drillSlider'
+import { decodeDrillPayload, encodeDrillPayload, isDrillFrame, DRILL_SLIDER_WIDTH, type DrillSliderPayload } from '~/utils/drillSlider'
 
 /**
  * Настоящий слайдер портала для СВОИХ страниц приложения.
@@ -17,11 +17,6 @@ import { decodeDrillPayload, encodeDrillPayload, DRILL_SLIDER_WIDTH, type DrillS
  */
 export function usePortalSlider() {
   const b24 = useB24()
-
-  /** Внутри портала мы или нет — только там слайдер существует. */
-  function inFrame(): boolean {
-    return b24.isInit()
-  }
 
   /**
    * Открыть детализацию настоящим слайдером портала.
@@ -74,5 +69,21 @@ export function usePortalSlider() {
     }
   }
 
-  return { inFrame, openDrill, drillPayload }
+  /**
+   * Открыт ли ЭТОТ фрейм как детализация — независимо от того, годная приехала нагрузка или нет.
+   *
+   * ⚠ Нужно отдельно от `drillPayload`, потому что «нажал на число, а параметры испортились по
+   * дороге» и «открыл приложение плиткой» дают одно и то же `undefined`, а показывать нужно
+   * РАЗНОЕ: в первом случае человек ждёт список и обязан узнать, что списка не будет; во втором
+   * оглавление — ровно то, что он просил.
+   */
+  function drillRequested(): boolean {
+    try {
+      return isDrillFrame(b24.get()?.placement.options)
+    } catch {
+      return false
+    }
+  }
+
+  return { openDrill, drillPayload, drillRequested }
 }

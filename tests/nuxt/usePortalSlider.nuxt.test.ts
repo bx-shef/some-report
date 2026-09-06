@@ -97,18 +97,33 @@ describe('usePortalSlider', () => {
   })
 
   it('нагрузку своего фрейма читает обратно, чужие параметры — не детализация', () => {
-    sdk.options = { [DRILL_PAYLOAD_KEY]: JSON.stringify(PAYLOAD) }
+    sdk.options = { place: DRILL_SLIDER_PLACE, [DRILL_PAYLOAD_KEY]: JSON.stringify(PAYLOAD) }
     sdk.frame = frame(Promise.resolve())
     expect(usePortalSlider().drillPayload()).toEqual(PAYLOAD)
+    expect(usePortalSlider().drillRequested()).toBe(true)
 
     sdk.options = { place: 'CRM_ANALYTICS_MENU' }
     sdk.frame = frame(Promise.resolve())
     expect(usePortalSlider().drillPayload()).toBeUndefined()
+    expect(usePortalSlider().drillRequested()).toBe(false)
+  })
+
+  /**
+   * ⚠ «Нажал на число, а параметры испортились» и «открыл приложение плиткой» дают одинаковое
+   * `undefined` — и требуют РАЗНОГО на экране. Без этого признака страница показала бы человеку,
+   * ждущему список, оглавление приложения и не сказала бы ни слова.
+   */
+  it('испорченная нагрузка — всё ещё фрейм детализации, а не обычное открытие', () => {
+    sdk.options = { place: DRILL_SLIDER_PLACE, [DRILL_PAYLOAD_KEY]: '{обрезано по дороге' }
+    sdk.frame = frame(Promise.resolve())
+    expect(usePortalSlider().drillPayload()).toBeUndefined()
+    expect(usePortalSlider().drillRequested()).toBe(true)
   })
 
   // Страница зовёт это ДО отрисовки: исключение оставило бы человека с пустым экраном.
   it('сбой SDK при чтении нагрузки не роняет страницу', () => {
     sdk.throws = true
     expect(usePortalSlider().drillPayload()).toBeUndefined()
+    expect(usePortalSlider().drillRequested()).toBe(false)
   })
 })

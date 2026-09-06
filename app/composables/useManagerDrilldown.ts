@@ -1,5 +1,4 @@
 import type { Ref } from 'vue'
-import type { DrillFilter } from '~/utils/drillSlider'
 import type { ManagerFilters } from '~/types/managers'
 import type { ReportDictionaries } from '~/types/report'
 import {
@@ -68,7 +67,7 @@ export function useManagerDrilldown(input: {
       dealScope: 'plain',
       categoryId: input.filters.value.categoryId,
       title: next.title,
-      filter: params.filter as DrillFilter,
+      filter: params.filter,
       ...(next.total === undefined ? {} : { total: next.total })
     })
     if (asked) {

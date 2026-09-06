@@ -10,8 +10,8 @@ import {
   drillListParams,
   leadDrillRow
 } from '~/utils/drilldown'
-import type { DrillFilter } from '~/utils/drillSlider'
 import { chunkIds } from '~/utils/filters'
+import { MAX_STAGE_NAMES } from '~/utils/drillSlider'
 import { lossReasonLabel } from '~/utils/labels'
 
 /** Страница списка — как у списочных методов портала. */
@@ -64,6 +64,11 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
    * ⚠ Едут только те коды, что список МОЖЕТ показать: перечисленные в `STAGE_ID`, а для остатка
    * («прочие причины», условие `STAGE_SEMANTIC_ID: 'F'`) — все известные. Отправлять весь
    * справочник на каждый клик незачем: у клика по названной причине это шесть кодов вместо сорока.
+   *
+   * ⚠ Потолок держим и ЗДЕСЬ, а не только при разборе. У заказчика четыре направления и 25 кодов
+   * провала; появится пятое — карта перевалила бы за `MAX_STAGE_NAMES`, и обрезал бы её уже
+   * приёмник, произвольно. Обрезать на этой стороне честнее: здесь известно, какие коды в
+   * условии, и первыми уезжают именно они.
    */
   function stageNamesFor(filter: DrillListParams['filter']): Record<string, string> | undefined {
     const codes = keyByCode()
@@ -76,6 +81,7 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
     const dictionaries = input.dataset.value.dictionaries
     const out: Record<string, string> = {}
     for (const code of wanted) {
+      if (Object.keys(out).length >= MAX_STAGE_NAMES) break
       const key = codes[code]
       if (key) out[code] = lossReasonLabel(dictionaries, key)
     }
@@ -120,7 +126,7 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
       const asked = slider.openDrill({
         entity: next.entity,
         title: next.title,
-        filter: params.filter as DrillFilter,
+        filter: params.filter,
         ...(next.dealScope === undefined ? {} : { dealScope: next.dealScope }),
         ...(stageNames === undefined ? {} : { stageNames }),
         ...(next.total === undefined ? {} : { total: next.total })

@@ -26,7 +26,6 @@ const portal = vi.hoisted(() => ({
 // Настоящий слайдер портала — тот же стенд, что и у `useB24`: страница детализации живёт в
 // отдельном фрейме, и композабл лишь просит портал его открыть.
 mockNuxtImport('usePortalSlider', () => () => ({
-  inFrame: () => true,
   // ⚠ Синхронный, как и настоящий: промис `openSliderAppPage` разрешается при ЗАКРЫТИИ слайдера,
   // поэтому ждать его нельзя, и `openDrill` возвращает не промис, а «вызов ушёл».
   openDrill: (payload: { title: string, filter: Record<string, unknown> }) => {
@@ -185,7 +184,13 @@ describe('useManagerDrilldown', () => {
     await nextTick()
     await nextTick()
     expect(portal.sliderPages).toHaveLength(1)
-    expect(portal.sliderPages[0]?.place).toBe('app-drill')
+    const sent = portal.sliderPages[0]!
+    // ⚠ Сверяем нагрузку ЦЕЛИКОМ, а не только `place`. Условие клетки едет в отдельный фрейм, где
+    // состояния отчёта нет вовсе: потеряй тут `categoryId` — и список подписал бы стадии словами
+    // чужого направления; потеряй `dealScope` — взял бы не ту дату; потеряй `total` — не сказал бы
+    // «показано M из N».
+    expect(sent).toMatchObject({ place: 'app-drill', entity: 'deal', title: 'Сделки: Минск', dealScope: 'plain', categoryId: 0, total: 4 })
+    expect(sent.filter).toMatchObject({ CATEGORY_ID: 0, MYCOMPANY_ID: 10, ASSIGNED_BY_ID: 101 })
     expect(drill.open.value).toBe(false)
     // Строки читает уже открытый слайдер — этот композабл портал ни о чём не спрашивает.
     expect(portal.calls).toHaveLength(0)

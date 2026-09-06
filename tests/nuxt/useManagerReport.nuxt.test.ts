@@ -93,7 +93,6 @@ function dealList(params: Record<string, unknown>) {
 // Настоящий слайдер портала: список детализации живёт в отдельном фрейме, страница лишь просит
 // портал его открыть.
 mockNuxtImport('usePortalSlider', () => () => ({
-  inFrame: () => portal.initialized,
   openDrill: (payload: { title: string }) => {
     portal.sliderTitles.push(payload.title)
     return true

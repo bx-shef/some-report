@@ -1,4 +1,5 @@
 import type { ReportDictionaries, ReportFilters, ReportPeriod } from '~/types/report'
+import type { DrillFilterValue } from '~/utils/drillSlider'
 import { periodFilter, unlinkedWonDealsParams } from '~/utils/b24Query'
 import { dealRestFilter, leadRestFilter, needsLeadIds, stageCodesFor } from '~/utils/filters'
 import { INITIAL_LEAD_STATUS } from '~/utils/leadHistory'
@@ -134,7 +135,15 @@ export const drill = {
 export interface DrillListParams {
   method: 'crm.lead.list' | 'crm.deal.list'
   select: string[]
-  filter: Record<string, unknown>
+  /**
+   * Условие списка.
+   *
+   * ⚠ Типизировано значениями фильтра СЛАЙДЕРА (`DrillFilterValue`), а не `unknown`: отсюда
+   * условие уезжает в параметры вызова портала, и там его встречает проверяющий разбор. Положи
+   * сюда билдер фильтра булево или вложенный объект — при `unknown` компилятор промолчал бы, а
+   * список просто не открылся бы на боевом портале без единого объяснения почему.
+   */
+  filter: Record<string, DrillFilterValue>
   /**
    * Сделки под фильтром по менеджеру или стадии лида — только по списку ID лидов (`LEAD_ID in`),
    * как и в самом отчёте; список у композабла, здесь только признак.

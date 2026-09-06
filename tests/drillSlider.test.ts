@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 import {
   DRILL_PAYLOAD_KEY,
   DRILL_SLIDER_PLACE,
+  MAX_STAGE_NAMES,
   decodeDrillPayload,
   encodeDrillPayload,
+  isDrillFrame,
   type DrillSliderPayload
 } from '~/utils/drillSlider'
 
@@ -22,7 +24,53 @@ const PAYLOAD: DrillSliderPayload = {
   total: 27
 }
 
+/**
+ * Параметры вызова, собранные ВРУЧНУЮ, — чтобы подсунуть разбору то, чего `encodeDrillPayload`
+ * никогда не соберёт.
+ *
+ * ⚠ `place` кладём обязательно: без него фрейм — не детализация вовсе, и разбор отвергнет любую,
+ * даже безупречную нагрузку. Пиши тест без `place` — он был бы зелёным по неверной причине.
+ */
+function options(data: unknown): Record<string, unknown> {
+  return { place: DRILL_SLIDER_PLACE, [DRILL_PAYLOAD_KEY]: typeof data === 'string' ? data : JSON.stringify(data) }
+}
+
 describe('нагрузка слайдера детализации', () => {
+  /**
+   * ⚠ `place` — заявленный механизм «фрейм узнаёт, что он детализация». Пока он только писался,
+   * но не проверялся, любой другой плейсмент со случайным ключом `payload` в своих параметрах
+   * нарисовал бы список записей вместо оглавления приложения.
+   */
+  it('без своего `place` это не детализация, какой бы годной ни была нагрузка', () => {
+    expect(decodeDrillPayload({ [DRILL_PAYLOAD_KEY]: JSON.stringify(PAYLOAD) })).toBeUndefined()
+    expect(decodeDrillPayload({ place: 'CRM_ANALYTICS_MENU', [DRILL_PAYLOAD_KEY]: JSON.stringify(PAYLOAD) })).toBeUndefined()
+    expect(isDrillFrame(encodeDrillPayload(PAYLOAD))).toBe(true)
+    expect(isDrillFrame({ place: 'CRM_ANALYTICS_MENU' })).toBe(false)
+  })
+
+  /**
+   * ⚠ Пустой список — не «условие ни на что»: портал его пропускает, и под заголовком одной
+   * причины провала открылся бы весь период. Отчёт таких условий не строит — пустой отбор он
+   * решает вовсе без запроса.
+   */
+  it('пустой список значений отвергает нагрузку', () => {
+    expect(decodeDrillPayload(options({ ...PAYLOAD, filter: { STAGE_ID: [] } }))).toBeUndefined()
+  })
+
+  /**
+   * ⚠ Белый список полей, а не «всё, кроме опасных имён»: наш фрейм открывается по параметру
+   * ВЫЗОВА, значит, позвать его может любое приложение портала, а читать CRM оно будет НАШИМ
+   * токеном. Полем не из списка чужой фильтр спросил бы то, чего этот отчёт не спрашивает никогда.
+   */
+  it('поле не из списка полей отчёта отвергает нагрузку, приставки сравнения — нет', () => {
+    expect(decodeDrillPayload(options({ ...PAYLOAD, filter: { UF_CRM_SECRET: 'x' } }))).toBeUndefined()
+    expect(decodeDrillPayload(options({ ...PAYLOAD, filter: { PHONE: '+375' } }))).toBeUndefined()
+    for (const key of ['>=DATE_CREATE', '<DATE_CREATE', '!STATUS_ID', '!LEAD_ID', 'MYCOMPANY_ID']) {
+      const decoded = decodeDrillPayload(options({ ...PAYLOAD, filter: { [key]: key === '!LEAD_ID' ? null : '1' } }))
+      expect(decoded?.filter).toHaveProperty(key)
+    }
+  })
+
   it('собранное читается обратно без потерь', () => {
     const params = encodeDrillPayload(PAYLOAD)
     expect(params.place).toBe(DRILL_SLIDER_PLACE)
@@ -47,10 +95,10 @@ describe('нагрузка слайдера детализации', () => {
       ['параметр пуст', { [DRILL_PAYLOAD_KEY]: '  ' }],
       ['не JSON', { [DRILL_PAYLOAD_KEY]: '{' }],
       ['JSON, но массив', { [DRILL_PAYLOAD_KEY]: '[1,2]' }],
-      ['чужая сущность', { [DRILL_PAYLOAD_KEY]: JSON.stringify({ ...PAYLOAD, entity: 'company' }) }],
-      ['заголовок пуст', { [DRILL_PAYLOAD_KEY]: JSON.stringify({ ...PAYLOAD, title: '   ' }) }],
-      ['фильтра нет', { [DRILL_PAYLOAD_KEY]: JSON.stringify({ entity: 'lead', title: 'Лиды' }) }],
-      ['фильтр — массив', { [DRILL_PAYLOAD_KEY]: JSON.stringify({ ...PAYLOAD, filter: ['NEW'] }) }]
+      ['чужая сущность', options({ ...PAYLOAD, entity: 'company' })],
+      ['заголовок пуст', options({ ...PAYLOAD, title: '   ' })],
+      ['фильтра нет', options({ entity: 'lead', title: 'Лиды' })],
+      ['фильтр — массив', options({ ...PAYLOAD, filter: ['NEW'] })]
     ]
     it.each(bad)('%s', (_name, options) => {
       expect(decodeDrillPayload(options)).toBeUndefined()
@@ -61,7 +109,7 @@ describe('нагрузка слайдера детализации', () => {
      * увидел бы весь портал и поверил бы, потому что заголовок верный.
      */
     it('пустой фильтр — не «без условия», а негодная нагрузка', () => {
-      expect(decodeDrillPayload({ [DRILL_PAYLOAD_KEY]: JSON.stringify({ ...PAYLOAD, filter: {} }) })).toBeUndefined()
+      expect(decodeDrillPayload(options({ ...PAYLOAD, filter: {} }))).toBeUndefined()
     })
 
     /**
@@ -75,7 +123,7 @@ describe('нагрузка слайдера детализации', () => {
       ['список списков', [['NEW']]]
     ])('значение фильтра «%s» отвергает нагрузку целиком', (_name, value) => {
       const raw = JSON.stringify({ ...PAYLOAD, filter: { ...PAYLOAD.filter, STAGE_ID: value } })
-      expect(decodeDrillPayload({ [DRILL_PAYLOAD_KEY]: raw })).toBeUndefined()
+      expect(decodeDrillPayload(options(raw))).toBeUndefined()
     })
 
     /**
@@ -92,7 +140,7 @@ describe('нагрузка слайдера детализации', () => {
       ['constructor', '{"constructor":"NEW","STATUS_ID":"NEW"}']
     ])('опасный ключ фильтра (%s) отвергает нагрузку', (_name, filter) => {
       const raw = `{"entity":"lead","title":"Лиды","filter":${filter}}`
-      expect(decodeDrillPayload({ [DRILL_PAYLOAD_KEY]: raw })).toBeUndefined()
+      expect(decodeDrillPayload(options(raw))).toBeUndefined()
       expect(({} as Record<string, unknown>).polluted).toBeUndefined()
     })
   })
@@ -119,7 +167,7 @@ describe('нагрузка слайдера детализации', () => {
    */
   it('слишком широкая нагрузка отвергается', () => {
     const many = Object.fromEntries(Array.from({ length: 51 }, (_, i) => [`F${i}`, 'x']))
-    expect(decodeDrillPayload({ [DRILL_PAYLOAD_KEY]: JSON.stringify({ ...PAYLOAD, filter: many }) })).toBeUndefined()
+    expect(decodeDrillPayload(options({ ...PAYLOAD, filter: many }))).toBeUndefined()
     const longList = { ...PAYLOAD, filter: { ID: Array.from({ length: 1001 }, (_, i) => i) } }
     expect(decodeDrillPayload({ [DRILL_PAYLOAD_KEY]: JSON.stringify(longList) })).toBeUndefined()
   })
@@ -133,11 +181,23 @@ describe('нагрузка слайдера детализации', () => {
     const payload: DrillSliderPayload = { ...PAYLOAD, stageNames: { 'C4:APOLOGY': 'Отказ - Дорого' } }
     expect(decodeDrillPayload(encodeDrillPayload(payload))).toEqual(payload)
 
-    for (const bad of [{}, 'строка', ['C4:APOLOGY'], Object.fromEntries(Array.from({ length: 51 }, (_, i) => [`S${i}`, 'x']))]) {
-      const decoded = decodeDrillPayload({ [DRILL_PAYLOAD_KEY]: JSON.stringify({ ...PAYLOAD, stageNames: bad }) })
+    for (const bad of [{}, 'строка', ['C4:APOLOGY']]) {
+      const decoded = decodeDrillPayload(options({ ...PAYLOAD, stageNames: bad }))
       expect(decoded?.filter).toEqual(PAYLOAD.filter)
       expect(decoded?.stageNames).toBeUndefined()
     }
+  })
+
+  /**
+   * ⚠ Лишние подписи ОБРЕЗАЮТСЯ, а не отвергаются все. Отвергнув, мы получили бы худший исход:
+   * список, где не хватало бы нескольких подписей, потерял бы вместо этого ВСЕ и показал бы
+   * пятнадцать `C4:APOLOGY` под заголовком «Отказ - Дорого».
+   */
+  it('подписей больше потолка — лишние обрезаются, остальные остаются', () => {
+    const many = Object.fromEntries(Array.from({ length: MAX_STAGE_NAMES + 10 }, (_, i) => [`S${i}`, `Причина ${i}`]))
+    const decoded = decodeDrillPayload(options({ ...PAYLOAD, stageNames: many }))
+    expect(Object.keys(decoded?.stageNames ?? {})).toHaveLength(MAX_STAGE_NAMES)
+    expect(decoded?.stageNames?.S0).toBe('Причина 0')
   })
 
   /**
@@ -152,12 +212,12 @@ describe('нагрузка слайдера детализации', () => {
       + '"stageNames":{"__proto__":"Взлом","C4:APOLOGY":"Отказ - Дорого"}}'
     // Сторож самой проверки: у разобранного JSON опасный ключ — СВОЙ, значит, его есть что выкидывать.
     expect(Object.keys(JSON.parse(raw).stageNames)).toContain('__proto__')
-    expect(decodeDrillPayload({ [DRILL_PAYLOAD_KEY]: raw })?.stageNames).toEqual({ 'C4:APOLOGY': 'Отказ - Дорого' })
+    expect(decodeDrillPayload(options(raw))?.stageNames).toEqual({ 'C4:APOLOGY': 'Отказ - Дорого' })
   })
 
   it('опасное имя `prototype` тоже отвергает нагрузку', () => {
     const raw = '{"entity":"lead","title":"Лиды","filter":{"prototype":"NEW","STATUS_ID":"NEW"}}'
-    expect(decodeDrillPayload({ [DRILL_PAYLOAD_KEY]: raw })).toBeUndefined()
+    expect(decodeDrillPayload(options(raw))).toBeUndefined()
   })
 
   it.each([
@@ -172,6 +232,6 @@ describe('нагрузка слайдера детализации', () => {
   // Отрицательное или дробное «всего» — не число записей: подпись «показано 5 из −3» бессмысленна.
   it.each([[-1], [3.5]])('негодное «всего» (%s) просто отбрасывается, нагрузка остаётся годной', (total) => {
     const raw = JSON.stringify({ ...PAYLOAD, total })
-    expect(decodeDrillPayload({ [DRILL_PAYLOAD_KEY]: raw })).toEqual({ ...PAYLOAD, total: undefined })
+    expect(decodeDrillPayload(options(raw))).toEqual({ ...PAYLOAD, total: undefined })
   })
 })
