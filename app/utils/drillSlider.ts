@@ -32,6 +32,14 @@ export interface DrillSliderPayload {
    * сверить список с числом было бы нечем.
    */
   activityScope?: 'created' | 'overdue'
+  /**
+   * Как разбирать строки лида: `closed` берёт дату ЗАКРЫТИЯ, `created` — создания.
+   *
+   * ⚠ Третий такой признак в этой нагрузке, и все три про одно: список обязан показывать ту дату,
+   * по которой посчитано число над ним. Числа «успешно» и «провалено» в отчёте 3 считаются по
+   * `DATE_CLOSED`.
+   */
+  leadScope?: 'created' | 'closed'
   /** Направление сделок — по нему берутся ИМЕНА стадий: у каждого направления они свои. */
   categoryId?: number
   /**
@@ -423,6 +431,9 @@ export function readDrillPayload(stored: unknown, nonce: string): DrillPayloadRe
   const activityScope = data.activityScope === 'created' || data.activityScope === 'overdue'
     ? data.activityScope
     : undefined
+  const leadScope = data.leadScope === 'created' || data.leadScope === 'closed'
+    ? data.leadScope
+    : undefined
   const dealScope = data.dealScope === 'from-leads' || data.dealScope === 'unlinked' || data.dealScope === 'plain'
     ? data.dealScope
     : undefined
@@ -439,6 +450,7 @@ export function readDrillPayload(stored: unknown, nonce: string): DrillPayloadRe
       filter,
       ...(dealScope === undefined ? {} : { dealScope }),
       ...(activityScope === undefined ? {} : { activityScope }),
+      ...(leadScope === undefined ? {} : { leadScope }),
       ...(categoryId === undefined ? {} : { categoryId }),
       ...(stageNames === undefined ? {} : { stageNames }),
       ...(total === undefined ? {} : { total })

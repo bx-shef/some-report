@@ -103,7 +103,7 @@ export function activityDrillPayload(
         filter: callDrillFilter(period, part, filters.thresholdSeconds, {
           userId: row.userId,
           ...(cell.kind === 'talks' && cell.direction ? { direction: cell.direction } : {})
-        }) as DrillSliderPayload['filter'],
+        }),
         total
       }
     }
@@ -112,7 +112,7 @@ export function activityDrillPayload(
         entity: 'activity',
         activityScope: 'created',
         title: `${deedTitle(cell)}${who}`,
-        filter: deedFilter(period, row.userId, cell.deed, cell.direction) as DrillSliderPayload['filter'],
+        filter: deedFilter(period, row.userId, cell.deed, cell.direction),
         total
       }
     case 'overdue':
@@ -123,14 +123,17 @@ export function activityDrillPayload(
         // объяснения.
         activityScope: 'overdue',
         title: `${TITLES.overdue}${who}`,
-        filter: overdueFilter(period, row.userId) as DrillSliderPayload['filter'],
+        filter: overdueFilter(period, row.userId),
         total
       }
     case 'lead':
       return {
         entity: 'lead',
+        // ⚠ «Успешно» и «провалено» посчитаны по дате ЗАКРЫТИЯ — список обязан показывать её же,
+        // иначе под августовским числом встанут майские даты создания.
+        leadScope: cell.outcome === 'created' ? 'created' : 'closed',
         title: `${TITLES[cell.outcome]}${who}`,
-        filter: leadCountFilter(period, row.userId, cell.outcome) as DrillSliderPayload['filter'],
+        filter: leadCountFilter(period, row.userId, cell.outcome),
         total
       }
   }

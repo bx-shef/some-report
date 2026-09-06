@@ -1,4 +1,5 @@
 import type { ActivityFilters, ActivityUser, CallDirection, DeedKind } from '~/types/activity'
+import type { DrillFilter } from '~/utils/drillSlider'
 import { CALL_SUCCESS_CODE } from '~/types/activity'
 import type { ReportPeriod } from '~/types/report'
 import type { BatchCommand } from '~/utils/b24Query'
@@ -52,7 +53,7 @@ export function deedFilter(
   userId: number,
   kind: DeedKind,
   direction?: CallDirection
-): Record<string, unknown> {
+): DrillFilter {
   return {
     ...periodFilter(period, 'CREATED'),
     [DEED_RESPONSIBLE_FIELD]: userId,
@@ -72,7 +73,7 @@ export function deedFilter(
  * `periodFilter` спрашивает «создано В периоде», а здесь вопрос другой — «срок истёк К этому
  * моменту».
  */
-export function overdueFilter(period: ReportPeriod, userId: number): Record<string, unknown> {
+export function overdueFilter(period: ReportPeriod, userId: number): DrillFilter {
   return {
     [DEED_RESPONSIBLE_FIELD]: userId,
     'COMPLETED': 'N',
@@ -98,7 +99,7 @@ export function leadCountFilter(
   period: ReportPeriod,
   userId: number,
   outcome: 'created' | 'won' | 'lost'
-): Record<string, unknown> {
+): DrillFilter {
   const assigned = { ASSIGNED_BY_ID: userId }
   if (outcome === 'created') return { ...assigned, ...periodFilter(period) }
   return {
@@ -173,8 +174,12 @@ export function callDrillFilter(
   part: CallPart,
   thresholdSeconds: number,
   options: { userId?: number, direction?: CallDirection } = {}
-): Record<string, unknown> {
-  const base: Record<string, unknown> = {
+): DrillFilter {
+  // ⚠ Тип НЕ `Record<string, unknown>`, а `DrillFilter`, и это не педантизм: условие уезжает в
+  // слайдер через портал и разбирается там проверяюще. Положи сюда булево или вложенный объект —
+  // компилятор промолчал бы, а `readDrillPayload` на том конце отверг бы нагрузку целиком, и
+  // человек получил бы «список не открылся» при исправном отчёте.
+  const base: DrillFilter = {
     ...periodFilter(period, 'CALL_START_DATE'),
     // ⚠ `userId: 0` — это «звонок без сотрудника», ЗНАЧЕНИЕ, а не «фильтра нет»: привычное
     // `options.userId ? …` молча превратило бы эту строку во «все звонки портала».
@@ -219,8 +224,8 @@ export const CALL_TYPE_CODE: Record<CallDirection, number> = {
 export function callListParams(period: ReportPeriod, start = 0): Record<string, unknown> {
   return {
     // ⚠ Границы строит `periodFilter` — та же функция, что у остальных выборок отчёта. Своя копия
-    // здесь однажды разошлась бы с ней в том, включён ли последний день периода, и два отчёта
-    // считали бы один месяц по-разному.
+    // здесь однажды разошлась бы с ней в том, включён ли последний день периода, и тогда звонки
+    // считались бы за один месяц, а дела и лиды — за слегка другой.
     FILTER: periodFilter(period, 'CALL_START_DATE'),
     SORT: 'CALL_START_DATE',
     ORDER: 'ASC',

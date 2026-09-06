@@ -91,9 +91,30 @@ describe('ActivityToolbar', () => {
     expect(wrapper.text()).toContain('Демо-данные')
   })
 
-  /** Без справочника отделов фильтр закрыт: пустой список выбирать не из чего. */
+  /**
+   * Без справочника отделов фильтр закрыт: пустой список выбирать не из чего.
+   *
+   * ⚠ Проверяем именно БЛОКИРОВКУ, а не наличие элемента. Прежняя редакция теста называлась
+   * «фильтр отключён», а спрашивала `exists()` — то есть проходила бы и после удаления
+   * `:disabled` целиком. Ревью поймало это как тест-пустышку.
+   */
   it('без отделов фильтр отделов отключён', async () => {
     const wrapper = await mount({ departments: [] })
-    expect(wrapper.find('[data-testid="department-filter"]').exists()).toBe(true)
+    const filter = wrapper.findComponent({ name: 'B24SelectMenu' })
+    expect(filter.exists()).toBe(true)
+    expect(filter.props('disabled')).toBe(true)
+  })
+
+  it('со справочником фильтр отделов доступен', async () => {
+    const wrapper = await mount()
+    expect(wrapper.findComponent({ name: 'B24SelectMenu' }).props('disabled')).toBe(false)
+  })
+
+  /** ⚠ Пока идёт выборка, отбор не меняют: каждая смена — секунды запросов к порталу. */
+  it('во время выборки вся панель заблокирована', async () => {
+    const wrapper = await mount({ disabled: true })
+    const menus = wrapper.findAllComponents({ name: 'B24SelectMenu' })
+    expect(menus.length).toBeGreaterThan(0)
+    expect(menus.every(menu => menu.props('disabled') === true)).toBe(true)
   })
 })

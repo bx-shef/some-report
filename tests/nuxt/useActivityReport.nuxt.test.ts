@@ -1,7 +1,7 @@
 // @vitest-environment nuxt
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockNuxtImport } from '@nuxt/test-utils/runtime'
-import { useActivityReport } from '~/composables/useActivityReport'
+import { CALL_MAX_PAGES, useActivityReport } from '~/composables/useActivityReport'
 import { NO_USER_LABEL, totalCalls } from '~/utils/activityLoad'
 
 /**
@@ -32,6 +32,10 @@ const portal = vi.hoisted(() => ({
   callsFail: false,
   /** Портал отвечает ошибкой на пакет счётчиков. */
   batchFails: false,
+  /** Отделы отвечают ошибкой — фильтр обязан сказать об этом, а не потерять людей молча. */
+  departmentsFail: false,
+  /** Телефония НИКОГДА не отдаёт короткую страницу: так проверяется предохранитель по страницам. */
+  callsEndless: false,
   users: [] as Array<Record<string, unknown>>,
   dismissedUsers: [] as Array<Record<string, unknown>>,
   departments: [] as Array<Record<string, unknown>>,
@@ -107,6 +111,7 @@ mockNuxtImport('useB24', () => () => ({
             if (method === 'department.get') {
               // ⚠ Как живой портал: `filter` не понимает вовсе, страницы только по `start`.
               if ('filter' in params) throw new Error('department.get не принимает filter')
+              if (portal.departmentsFail) throw new Error('лимит запросов')
               const start = Number(params.start ?? 0)
               return ok(portal.departments.slice(start, start + 50))
             }
@@ -115,6 +120,10 @@ mockNuxtImport('useB24', () => () => ({
               portal.callPages++
               // ⛔ Строчный `filter` метод НЕ понимает: он вернул бы весь портал за всё время.
               if ('filter' in params) throw new Error('voximplant.statistic.get требует ЗАГЛАВНЫЙ FILTER')
+              // Портал, у которого звонки не кончаются: каждая страница ПОЛНАЯ.
+              if (portal.callsEndless) {
+                return ok(Array.from({ length: 50 }, (_, i) => call(portal.callPages * 50 + i, 1, '1', '120')))
+              }
               const filter = (params.FILTER ?? {}) as Record<string, unknown>
               const rows = portal.calls.filter(row => matches(row, filter))
               const start = Number(params.start ?? 0)
@@ -142,6 +151,8 @@ beforeEach(() => {
   portal.callPages = 0
   portal.callsFail = false
   portal.batchFails = false
+  portal.departmentsFail = false
+  portal.callsEndless = false
   portal.users = [
     { ID: '1', NAME: 'Иван', LAST_NAME: 'Иванов', UF_DEPARTMENT: [11] },
     { ID: '2', NAME: 'Пётр', LAST_NAME: 'Петров', UF_DEPARTMENT: [12] }
@@ -284,5 +295,85 @@ describe('useActivityReport', () => {
     await state.load()
     expect(state.isDemo.value).toBe(true)
     expect(state.report.value.rows.length).toBeGreaterThan(0)
+  })
+})
+
+describe('useActivityReport: предохранители и кэш звонков', () => {
+  /**
+   * ⚠ «Молча показанная половина хуже честного „здесь не всё“» — правило проекта. Если условие
+   * выхода из цикла сломается или `callsTruncated` перестанут ставить, отчёт покажет часть
+   * звонков как итог, и заметить это можно будет только сверкой с CRM вручную.
+   */
+  it('звонков больше предела — отчёт говорит об этом и останавливается', async () => {
+    portal.callsEndless = true
+    const state = useActivityReport({ today: TODAY })
+    await state.load()
+    await waitForCalls(state)
+    expect(state.callsTruncated.value).toBe(true)
+    // Читать бесконечно нельзя: предел страниц — жёсткий.
+    expect(portal.callPages).toBeLessThanOrEqual(CALL_MAX_PAGES)
+    expect(state.callsPending.value).toBe(false)
+  })
+
+  /**
+   * ⛔ Сбой справочника отделов — самый тихий из возможных: поддерево схлопывается в один узел, и
+   * сотрудники ПОДотделов исчезают из таблицы при верных числах у остальных.
+   */
+  it('сбой справочника отделов не молчит и не теряет людей тайком', async () => {
+    portal.departmentsFail = true
+    const state = useActivityReport({ today: TODAY })
+    await state.load({ ...state.filters.value, departmentId: 10 })
+    expect(state.departmentsIncomplete.value).toBe(true)
+    // Числа остальных при этом посчитаны: сбой отделов — не ошибка отчёта.
+    expect(state.error.value).toBeUndefined()
+  })
+
+  it('без выбранного отдела сбой справочника отчёту не мешает', async () => {
+    portal.departmentsFail = true
+    const state = useActivityReport({ today: TODAY })
+    await state.load()
+    expect(state.departmentsIncomplete.value).toBe(false)
+    expect(state.report.value.rows.length).toBeGreaterThan(0)
+  })
+
+  /** ⚠ Отделов может быть больше страницы: `department.get` листается смещением, по 50. */
+  it('отделы читаются страницами, а не первой страницей', async () => {
+    portal.departments = Array.from({ length: 63 }, (_, i) => ({ ID: String(1000 + i), NAME: `Отдел ${i}` }))
+    const state = useActivityReport({ today: TODAY })
+    await state.load()
+    expect(state.departments.value).toHaveLength(63)
+  })
+
+  /**
+   * ⛔ Порог применяет ЯДРО, а не портал: перечитывать звонки при его смене нечего. Без кэша
+   * человек, меняющий порог, получал бы вторую двухминутную выборку — и настройка, сделанная
+   * ради быстрого ответа, оказалась бы самой дорогой кнопкой отчёта.
+   */
+  it('смена порога пересчитывает из кэша, не трогая портал', async () => {
+    const state = useActivityReport({ today: TODAY })
+    await state.load()
+    await waitForCalls(state)
+    const pagesAfterFirst = portal.callPages
+    expect(pagesAfterFirst).toBeGreaterThan(0)
+
+    await state.load({ ...state.filters.value, thresholdSeconds: 150 })
+    await waitForCalls(state)
+    // Ни одной новой страницы телефонии: период тот же.
+    expect(portal.callPages).toBe(pagesAfterFirst)
+    // А числа при этом ДРУГИЕ — пересчёт действительно случился.
+    expect(state.report.value.thresholdSeconds).toBe(150)
+    expect(state.report.value.rows.find(row => row.userId === 1)?.tooShort).toBe(3)
+  })
+
+  /** ⚠ Сменился ПЕРИОД — записи другие, кэш недействителен, портал спрашиваем заново. */
+  it('смена периода перечитывает звонки', async () => {
+    const state = useActivityReport({ today: TODAY })
+    await state.load()
+    await waitForCalls(state)
+    const pagesAfterFirst = portal.callPages
+
+    await state.load({ ...state.filters.value, period: { from: '2020-01-01', to: '2020-01-31' } })
+    await waitForCalls(state)
+    expect(portal.callPages).toBeGreaterThan(pagesAfterFirst)
   })
 })

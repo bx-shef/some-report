@@ -23,7 +23,8 @@ const today = new Date()
 
 const {
   report, departments, filters: appliedFilters,
-  pending, callsPending, callPagesRead, callsTruncated, step, error, callsError, isDemo, load
+  pending, callsPending, callPagesRead, callsTruncated, departmentsIncomplete,
+  step, error, callsError, isDemo, load
 } = useActivityReport({ today })
 
 /** Выбранный отбор. Применённый живёт в композабле — подпись строится по нему. */
@@ -200,10 +201,7 @@ watch(callsPending, () => {
           :description="emptyNote"
         />
 
-        <ActivitySummary
-          :report="report"
-          :calls-pending="callsPending"
-        />
+        <ActivitySummary :report="report" />
 
         <p
           v-if="callsNote"
@@ -226,6 +224,15 @@ watch(callsPending, () => {
           color="air-primary-warning"
           title="Звонков больше, чем отчёт читает за раз"
           description="Показаны не все разговоры периода: их слишком много для одного прохода. Выберите период короче — например, одну неделю."
+        />
+
+        <!-- ⚠ Молчать тут нельзя: без справочника отдел схлопывается в один узел, и люди из
+             подотделов исчезают из таблицы при совершенно верных числах у остальных. -->
+        <B24Alert
+          v-if="departmentsIncomplete"
+          color="air-primary-warning"
+          title="Справочник отделов не прочитался"
+          description="Отдел выбран, но дерево отделов портал не отдал — значит, сотрудники ПОДотделов в таблицу не попали. Обновите страницу; если не помогло, проверьте право department у приложения."
         />
 
         <B24Alert

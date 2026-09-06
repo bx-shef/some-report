@@ -30,9 +30,10 @@ import { resolvePreset } from '~/utils/period'
  *    лидов пакетами по 50. Замер боевого портала: 0,38 с на пакет, 736 команд на 92 сотрудника —
  *    около шести секунд, и таблица уже на экране.
  * 2. **Фоновый.** Звонки — СТРОКАМИ, потому что сумму длительности `total` не даёт вовсе. Месяц
- *    заказчика под правилом порога — 209 страниц; пакет их не ускоряет (портал выполняет команды
+ *    заказчика — 381 страница; пакет их не ускоряет (портал выполняет команды
  *    пакета последовательно), ускоряет только параллельность запросов: восемь разом дают
- *    четырёхкратный выигрыш, ≈ 1,5 минуты на месяц ([`docs/PORTAL.md`](../../docs/PORTAL.md)).
+ *    выигрыш вчетверо: замер 2026-09-06 — 370 мс на страницу, ≈ 2,4 минуты на месяц
+ *    ([`docs/PORTAL.md`](../../docs/PORTAL.md)).
  *
  * ⚠ Поэтому таблица обязана показываться БЕЗ звонков, а `report.callsKnown` — говорить экрану, что
  * нули в их столбцах означают «ещё читаем», а не «не звонил».
@@ -67,7 +68,8 @@ export const DEPARTMENT_MAX_PAGES = 10
 /**
  * Предел страниц звонков — предохранитель, а не ожидаемое число.
  *
- * ⚠ Месяц заказчика — 380 страниц. Квартал был бы больше тысячи, то есть минут пять чтения;
+ * ⚠ Месяц заказчика — 381 страница, около двух с половиной минут. Квартал — больше тысячи, то
+ * есть минут семь чтения;
  * упёршись в предел, отчёт не молчит, а ГОВОРИТ, что звонки посчитаны не все, — молча показанная
  * половина хуже честного «здесь не всё».
  */
@@ -112,6 +114,13 @@ export function useActivityReport(options: { today?: Date } = {}) {
   const callsError = ref<string | undefined>(undefined)
   /** Звонков больше, чем отчёт согласен прочитать: показанные числа — не все. */
   const callsTruncated = ref(false)
+  /**
+   * Отдел выбран, а справочник отделов не прочитался.
+   *
+   * ⚠ Отдельный признак, потому что последствие тихое: без дерева поддерево отдела схлопывается в
+   * один узел, и люди из подотделов исчезают из таблицы при совершенно исправных числах.
+   */
+  const departmentsIncomplete = ref(false)
   /** Что делаем прямо сейчас — выборка идёт секунды, и молчать всё это время нельзя. */
   const step = ref<string | undefined>(undefined)
   /** Сколько страниц звонков уже прочитано — единственный честный признак движения фона. */
@@ -122,13 +131,34 @@ export function useActivityReport(options: { today?: Date } = {}) {
    * порядке, в каком их спросили. Медленный ответ прошлого отбора, придя последним, положил бы на
    * экран числа одного периода под подписью другого.
    *
-   * ⚠ Тот же номер сторожит и ФОНОВОЕ чтение звонков: оно живёт полторы минуты и переживает две-три
+   * ⚠ Тот же номер сторожит и ФОНОВОЕ чтение звонков: оно живёт минуты и переживает две-три
    * смены отбора. Без сторожа звонки августа доехали бы в сентябрьскую таблицу.
    */
   let seq = 0
 
   /** Сотрудники и их отделы, под которыми собрана таблица, — нужны фону, чтобы пересобрать её. */
   let assembled: { users: ActivityUser[], totals: Record<string, number>, departmentPicked: boolean } | undefined
+
+  /**
+   * Сырые записи звонков ПЕРИОДА — как их отдал портал, без применённых порога и отдела.
+   *
+   * ⛔ Ради этого кэша всё и затевалось: порог и отдел применяет ЯДРО, а не портал
+   * (`callListParams` фильтрует только по периоду — иначе недозвоны и короткие считать было бы не
+   * из чего). Значит при смене порога или отдела перечитывать портал НЕЧЕГО: те же строки дадут
+   * другие числа. Без кэша человек, решивший посмотреть «а если считать от 9 секунд», получал бы
+   * не мгновенный пересчёт, а вторую двухминутную выборку — и порог, объявленный настройкой,
+   * оказался бы самой дорогой кнопкой отчёта.
+   *
+   * ⚠ Ключ — ПЕРИОД, и только он: сменился период — записи другие, кэш недействителен.
+   * ⚠ `complete` важен отдельно: оборвавшееся чтение переиспользовать можно (числа те же, что уже
+   * на экране), но продолжать надо с портала, а не выдавать неполное за готовое.
+   */
+  let callCache: { period: string, rows: B24CallRow[], complete: boolean } | undefined
+
+  /** Ключ кэша звонков. Период — единственное, что уезжает в фильтр портала. */
+  function callCacheKey(period: ActivityFilters['period']): string {
+    return `${period.from}|${period.to}`
+  }
 
   /**
    * Отделы портала. Ошибка — пустой список: фильтр просто не предложит отделов.
@@ -188,6 +218,7 @@ export function useActivityReport(options: { today?: Date } = {}) {
    */
   async function loadCalls(applied: ActivityFilters, mine: number): Promise<void> {
     const rows: B24CallRow[] = []
+    const key = callCacheKey(applied.period)
     callsPending.value = true
     callsError.value = undefined
     callsTruncated.value = false
@@ -203,11 +234,17 @@ export function useActivityReport(options: { today?: Date } = {}) {
         if (mine !== seq) return
         for (const rowsOfPage of pages) rows.push(...rowsOfPage)
         callPagesRead.value += pages.length
+        // ⚠ Кэш пополняется ПО ХОДУ, а не в конце: смени человек порог на середине чтения —
+        // пересчитать будет из чего, и заново портал спрашивать не придётся.
+        callCache = { period: key, rows: [...rows], complete: false }
         // ⚠ Пересобираем из ВСЕХ накопленных строк, а не досчитываем: ядро — чистая функция, и
         // складывать её результаты между собой было бы вторым, непроверенным сложением.
         applyCalls(rows, applied, mine)
         // Короткая страница означает, что записи кончились: у портала это конец выборки.
-        if (pages.some(one => one.length < CALL_PAGE_SIZE)) return
+        if (pages.some(one => one.length < CALL_PAGE_SIZE)) {
+          callCache = { period: key, rows: [...rows], complete: true }
+          return
+        }
       }
       // Дошли до предела страниц — значит, звонков больше, чем отчёт читает.
       callsTruncated.value = true
@@ -260,12 +297,22 @@ export function useActivityReport(options: { today?: Date } = {}) {
     error.value = undefined
     callsError.value = undefined
     callsTruncated.value = false
+    departmentsIncomplete.value = false
     try {
       step.value = 'Читаем сотрудников и отделы'
       // Отделы и сотрудники не зависят друг от друга — спрашиваем разом, а не по очереди.
       const [portalUsers, departmentList] = await Promise.all([fetchUsers(), fetchDepartments()])
       if (stale()) return
       if (departmentList.length) departments.value = departmentList
+      // ⚠ Считаем по тому справочнику, что реально ЕСТЬ, а не по свежему ответу. `department.get`
+      // мог упереться в лимит запросов и вернуть пустоту: тогда `departmentSubtree` свелось бы к
+      // одному узлу, сотрудники подотделов молча пропали бы из таблицы, а подпись под панелью
+      // продолжала бы называть выбранный отдел. Прошлый справочник тем временем лежит рядом и
+      // верен — отделы за минуту не меняются.
+      const knownDepartments = departmentList.length ? departmentList : departments.value
+      // ⚠ Отдел выбран, а дерева нет вовсе — это НЕ «показать всех»: под подписью «Отдел закупок»
+      // человек увидел бы весь портал. Отчёт в таком случае говорит, что справочник не прочитался.
+      departmentsIncomplete.value = next.departmentId !== undefined && knownDepartments.length === 0
 
       const everyone: ActivityUser[] = Object.entries(portalUsers.names).map(([id, name]) => ({
         id: Number(id),
@@ -275,7 +322,7 @@ export function useActivityReport(options: { today?: Date } = {}) {
       }))
       // ⚠ Сужаем ПОСЛЕ чтения, а не фильтром портала: полный список нужен, чтобы фильтр отделов
       // предлагал все отделы, а не только те, что внутри уже выбранного.
-      const users = usersInDepartment(everyone, departmentList, next.departmentId)
+      const users = usersInDepartment(everyone, knownDepartments, next.departmentId)
 
       step.value = `Считаем дела и лиды: ${users.length} сотрудников`
       const totals = await batchTotals(activityCounterBatch(users, next))
@@ -292,9 +339,21 @@ export function useActivityReport(options: { today?: Date } = {}) {
       pending.value = false
       step.value = undefined
 
-      // ⚠ Звонки НЕ ждём: таблица уже на экране, а они идут полторы минуты. `void` здесь намеренно
-      // — `load()` завершается вместе с быстрым этапом, иначе страница показывала бы «считаем» всё
-      // время фонового чтения.
+      // ⛔ Звонки перечитываем ТОЛЬКО при смене периода. Порог и отдел применяет ядро поверх уже
+      // прочитанных строк, и портал на них не влияет вовсе: те же записи дадут другие числа
+      // мгновенно. Без этого смена порога стоила бы второй двухминутной выборки — ровно та
+      // цена, ради ухода от которой порог и делали настройкой.
+      const cached = callCache?.period === callCacheKey(next.period) ? callCache : undefined
+      if (cached) {
+        applyCalls(cached.rows, next, mine)
+        // Прочитано было не всё — дочитываем с портала, но уже показывая то, что есть.
+        if (!cached.complete) void loadCalls(next, mine)
+        return
+      }
+
+      // ⚠ Звонки НЕ ждём: таблица уже на экране, а они идут около трёх минут. `void` здесь
+      // намеренно — `load()` завершается вместе с быстрым этапом, иначе страница показывала бы
+      // «считаем» всё время фонового чтения.
       void loadCalls(next, mine)
     } catch (e) {
       if (!stale()) error.value = e instanceof Error ? e.message : String(e)
@@ -316,6 +375,7 @@ export function useActivityReport(options: { today?: Date } = {}) {
     callsPending,
     callPagesRead,
     callsTruncated,
+    departmentsIncomplete,
     step,
     error,
     callsError,

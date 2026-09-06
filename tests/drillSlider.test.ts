@@ -10,6 +10,7 @@ import {
   isDrillFrame,
   newDrillNonce,
   parsePlacementOptions,
+  readDrillPayload,
   type DrillSliderPayload
 } from '~/utils/drillSlider'
 
@@ -317,5 +318,50 @@ describe('нагрузка слайдера детализации', () => {
   it.each([[-1], [3.5]])('негодное «всего» (%s) просто отбрасывается, нагрузка остаётся годной', (total) => {
     const raw = JSON.stringify({ ...PAYLOAD, total })
     expect(decode(stored(raw))).toEqual({ ...PAYLOAD, total: undefined })
+  })
+})
+
+describe('нагрузка отчёта «Активность пользователей»', () => {
+  function handoff(payload: Record<string, unknown>): string {
+    return JSON.stringify({ nonce: 'n1', payload })
+  }
+
+  const CALLS = {
+    entity: 'call',
+    title: 'Разговоры · Иванов',
+    filter: { 'PORTAL_USER_ID': 7, 'CALL_FAILED_CODE': '200', '>CALL_DURATION': 29 }
+  }
+
+  it('сущности дел и звонков разбираются', () => {
+    const call = readDrillPayload(handoff(CALLS), 'n1')
+    expect(call.ok && call.payload.entity).toBe('call')
+    const deed = readDrillPayload(handoff({
+      entity: 'activity', title: 'Письма', filter: { RESPONSIBLE_ID: 7, TYPE_ID: 4 }
+    }), 'n1')
+    expect(deed.ok && deed.payload.entity).toBe('activity')
+  })
+
+  /**
+   * ⛔ Позвать наш фрейм может ЛЮБОЕ приложение портала, а читать CRM оно будет НАШИМ токеном.
+   * Поля, которых отчёт не спрашивает никогда, обязаны отвергать нагрузку ЦЕЛИКОМ — иначе чужой
+   * фильтр спросил бы то, чего мы не спрашиваем.
+   */
+  it.each(['SUBJECT', 'PHONE_NUMBER', 'OWNER_ID', 'CALL_RECORD_URL', 'UF_CRM_SECRET'])(
+    'поле %s вне белого списка отвергает нагрузку целиком',
+    (field) => {
+      const bad = readDrillPayload(handoff({ ...CALLS, filter: { ...CALLS.filter, [field]: 1 } }), 'n1')
+      expect(bad.ok).toBe(false)
+      if (!bad.ok) expect(bad.reason).toContain(field)
+    }
+  )
+
+  /** ⚠ Охваты — из закрытого списка: мусорное значение становится `undefined`, а не ломает разбор. */
+  it('охваты дела и лида проверяются по значению', () => {
+    const good = readDrillPayload(handoff({ ...CALLS, entity: 'lead', filter: { ASSIGNED_BY_ID: 7 }, leadScope: 'closed' }), 'n1')
+    expect(good.ok && good.payload.leadScope).toBe('closed')
+    const junk = readDrillPayload(handoff({ ...CALLS, entity: 'lead', filter: { ASSIGNED_BY_ID: 7 }, leadScope: 'вчера' }), 'n1')
+    expect(junk.ok && junk.payload.leadScope).toBeUndefined()
+    const deed = readDrillPayload(handoff({ entity: 'activity', title: 'Просрочка', filter: { RESPONSIBLE_ID: 7 }, activityScope: 'overdue' }), 'n1')
+    expect(deed.ok && deed.payload.activityScope).toBe('overdue')
   })
 })

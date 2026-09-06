@@ -64,13 +64,30 @@ describe('ActivityTable', () => {
   })
 
   /**
-   * ⚠ Строке, которой дел не спрашивали (звонки чужого сотрудника), — тоже прочерк, и она это
-   * объясняет: иначе ноль читался бы как «не писал» вместо «не спрашивали».
+   * ⚠ Строке, которой дел не спрашивали, — тоже прочерк, и она это объясняет: иначе ноль читался
+   * бы как «не писал» вместо «не спрашивали».
+   *
+   * ⛔ Причину называем ВЕРНУЮ. Прежняя подпись говорила «он вне выбранного отдела» — случай,
+   * которого быть НЕ МОЖЕТ: под выбранным отделом такие звонки отсеивает `scopeCallsToUsers` ещё
+   * до сборки. Строка появляется, когда владельца звонка не отдал `user.get` (бот, внештатник).
    */
-  it('строка без спрошенных дел объясняет свои прочерки', async () => {
+  it('строка без спрошенных дел объясняет свои прочерки верной причиной', async () => {
     const wrapper = await mountSuspended(ActivityTable, { props: { report: report() } })
     expect(wrapper.text()).toContain('Сотрудник #7')
-    expect(wrapper.text()).toContain('вне выбранного отдела')
+    expect(wrapper.text()).toContain('нет в списке сотрудников портала')
+    expect(wrapper.text()).not.toContain('вне выбранного отдела')
+  })
+
+  /** ⚠ У ничьих звонков сотрудника нет вовсе — и объяснение у них своё, не «его нет в списке». */
+  it('строка ничьих звонков объясняется иначе, чем чужая', async () => {
+    const withNobody = buildActivityReport({
+      users: [{ id: 1, name: 'Иванов Иван' }],
+      totals: {},
+      calls: aggregateCalls([{ PORTAL_USER_ID: '', CALL_TYPE: '1', CALL_DURATION: '0', CALL_FAILED_CODE: '304' }])
+    })
+    const wrapper = await mountSuspended(ActivityTable, { props: { report: withNobody } })
+    expect(wrapper.text()).toContain('на общую линию')
+    expect(wrapper.text()).not.toContain('нет в списке сотрудников портала')
   })
 
   /** ⚠ На телефоне таблицы нет — там карточки: одиннадцать столбцов в 390 пикселей не влезают. */
@@ -114,6 +131,19 @@ describe('ActivitySummary', () => {
       props: { report: report({ withCalls: false }), callsPending: true }
     })
     expect(wrapper.text()).toContain('звонки ещё читаются')
+  })
+
+  /**
+   * ⚠ Порог 0 — это «считать все разговоры», и подпись обязана сказать именно так. «Разговор не
+   * дольше 0 с» описывал бы порог, которого нет.
+   */
+  it('при отключённом пороге плитка коротких объясняет это словами', async () => {
+    const base = report()
+    const wrapper = await mountSuspended(ActivitySummary, {
+      props: { report: { ...base, thresholdSeconds: 0 } }
+    })
+    expect(wrapper.text()).toContain('порог отключён')
+    expect(wrapper.text()).not.toContain('не дольше 0 с')
   })
 
   /** ⚠ Созданные и закрытые лиды считаются по разным датам — плитка обязана это сказать. */

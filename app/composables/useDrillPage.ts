@@ -67,9 +67,10 @@ export function useDrillPage() {
     // `END_TIME` — см. `activityScope`.
     const scope = payload.value?.dealScope ?? 'plain'
     const deedScope = payload.value?.activityScope ?? 'created'
+    const leadScope = payload.value?.leadScope ?? 'created'
     return raw.value.map((row) => {
       switch (entity) {
-        case 'lead': return leadDrillRow(row as B24DrillLeadRow, dictionaries.value)
+        case 'lead': return leadDrillRow(row as B24DrillLeadRow, dictionaries.value, leadScope)
         case 'activity': return activityDrillRow(row as B24DrillActivityRow, dictionaries.value, deedScope)
         case 'call': return callDrillRow(row as B24DrillCallRow, dictionaries.value)
         default: return dealDrillRow(row as B24DrillDealRow, dictionaries.value, {}, scope)
@@ -101,7 +102,12 @@ export function useDrillPage() {
   async function readBooks(current: DrillSliderPayload): Promise<void> {
     const isLead = current.entity === 'lead'
     const categoryId = current.categoryId ?? 0
-    const mark = isLead ? 'lead' : `deal:${categoryId}`
+    // ⚠ Сущность — ЧАСТЬ ключа, и это не перестраховка. Пока сущностей было две, формула
+    // «лид или сделка направления N» была исчерпывающей; с делами и звонками она перестала быть
+    // такой: у них `categoryId` не задаётся, `?? 0` даёт ноль, и все трое получали общий ключ
+    // `deal:0`. Открыв список звонков, а потом сделок направления 0, второй пропустил бы чтение
+    // справочников целиком — стадии и источники напечатались бы кодами при исправном портале.
+    const mark = current.entity === 'deal' ? `deal:${categoryId}` : current.entity
     if (booksFor === mark) return
     booksFor = mark
 

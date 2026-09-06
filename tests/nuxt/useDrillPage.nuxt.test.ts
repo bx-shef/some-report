@@ -387,6 +387,32 @@ describe('useDrillPage: дела CRM и звонки', () => {
     expect(portal.books).toBe(0)
   })
 
+  /**
+   * ⛔ Ключ кэша справочников обязан различать СУЩНОСТИ. Пока их было две, формула «лид или сделка
+   * направления N» была исчерпывающей; с делами и звонками все трое получали общий ключ `deal:0`
+   * (у них `categoryId` не задаётся), и список сделок, открытый после списка звонков, пропускал
+   * чтение справочников целиком — стадии и источники печатались кодами при исправном портале.
+   */
+  it('после звонков список сделок всё равно читает справочники', async () => {
+    portal.pages = [[], page(1)]
+    const state = useDrillPage()
+    await state.start(CALLS)
+    expect(portal.books).toBe(0)
+    await state.start({ ...PAYLOAD, categoryId: 0 })
+    expect(portal.books).toBe(1)
+    expect(state.rows.value[0]?.stage).toBe('Новая')
+  })
+
+  /** ⚠ И наоборот: список дел после сделок не должен спрашивать справочники повторно. */
+  it('дела после сделок лишнего пакета не заказывают', async () => {
+    portal.pages = [page(1), []]
+    const state = useDrillPage()
+    await state.start({ ...PAYLOAD, categoryId: 0 })
+    expect(portal.books).toBe(1)
+    await state.start(ACTIVITY)
+    expect(portal.books).toBe(1)
+  })
+
   /** ⚠ Просроченные дела показывают СРОК: число посчитано по нему, а не по дате создания. */
   it('просроченные дела показывают срок, а не дату создания', async () => {
     portal.pages = [[{ ID: '5', TYPE_ID: '3', CREATED: '2023-01-10T10:00:00+03:00', END_TIME: '2026-08-20T10:00:00+03:00' }]]

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ActivityReport, ActivityRow, CallDirection, DeedKind } from '~/types/activity'
-import type { ActivityCell } from '~/utils/activityDrill'
+import { type ActivityCell, hasActivityDrill, isUnassignedRow } from '~/utils/activityDrill'
 import { averageCallSeconds, totalCalls } from '~/utils/activityLoad'
 import { formatCount, formatSeconds } from '~/utils/format'
 
@@ -49,6 +49,16 @@ const talks = (row: ActivityRow, direction?: CallDirection): ActivityCell =>
   ({ kind: 'talks', ...(direction ? { direction } : {}) })
 const deed = (deedKind: DeedKind, direction?: CallDirection): ActivityCell =>
   ({ kind: 'deed', deed: deedKind, ...(direction ? { direction } : {}) })
+
+/**
+ * Есть ли за числом список — спрашиваем ЯДРО, а не решаем в разметке.
+ *
+ * ⚠ Правило «за чем список есть» живёт в `activityDrill.ts` рядом с тем, кто этот список
+ * собирает. Выписанное здесь по клетке (а их в двух раскладках под тридцать), оно разошлось бы с
+ * ядром на первом же новом столбце: число рисовалось бы кнопкой, а нагрузки под него не нашлось
+ * бы — и клик не делал бы ничего.
+ */
+const drillable = hasActivityDrill
 
 /** Наговорил всего — текстом: за длительностью списка нет. */
 function talkTime(row: ActivityRow): string {
@@ -112,7 +122,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="totalCalls(row).count"
                   :known="callsKnown"
-                  drillable
+                  :drillable="drillable(row, talks(row), totalCalls(row).count)"
                   :title="`Разговоры · ${row.userName}`"
                   @pick="pick(row, talks(row), totalCalls(row).count)"
                 />
@@ -134,7 +144,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.calls.in.count"
                   :known="callsKnown"
-                  drillable
+                  :drillable="drillable(row, talks(row, 'in'), row.calls.in.count)"
                   :title="`Входящие разговоры · ${row.userName}`"
                   @pick="pick(row, talks(row, 'in'), row.calls.in.count)"
                 />
@@ -148,7 +158,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.calls.out.count"
                   :known="callsKnown"
-                  drillable
+                  :drillable="drillable(row, talks(row, 'out'), row.calls.out.count)"
                   :title="`Исходящие разговоры · ${row.userName}`"
                   @pick="pick(row, talks(row, 'out'), row.calls.out.count)"
                 />
@@ -162,7 +172,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.failed"
                   :known="callsKnown"
-                  drillable
+                  :drillable="drillable(row, { kind: 'failed' }, row.failed)"
                   :title="`Не дозвонились · ${row.userName}`"
                   @pick="pick(row, { kind: 'failed' }, row.failed)"
                 />
@@ -176,7 +186,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.tooShort"
                   :known="callsKnown"
-                  drillable
+                  :drillable="drillable(row, { kind: 'tooShort' }, row.tooShort)"
                   :title="`Короткие разговоры · ${row.userName}`"
                   @pick="pick(row, { kind: 'tooShort' }, row.tooShort)"
                 />
@@ -190,13 +200,13 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.deeds.email.out"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, deed('email', 'out'), row.deeds.email.out)"
                   :title="`Исходящие письма · ${row.userName}`"
                   @pick="pick(row, deed('email', 'out'), row.deeds.email.out)"
                 /> / <ActivityCellNumber
                   :value="row.deeds.email.in"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, deed('email', 'in'), row.deeds.email.in)"
                   :title="`Входящие письма · ${row.userName}`"
                   @pick="pick(row, deed('email', 'in'), row.deeds.email.in)"
                 />
@@ -210,7 +220,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.deeds.meeting"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, deed('meeting'), row.deeds.meeting)"
                   :title="`Встречи · ${row.userName}`"
                   @pick="pick(row, deed('meeting'), row.deeds.meeting)"
                 />
@@ -224,7 +234,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.deeds.task"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, deed('task'), row.deeds.task)"
                   :title="`Задачи · ${row.userName}`"
                   @pick="pick(row, deed('task'), row.deeds.task)"
                 />
@@ -238,7 +248,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.deeds.overdue"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, { kind: 'overdue' }, row.deeds.overdue)"
                   :title="`Просроченные дела · ${row.userName}`"
                   @pick="pick(row, { kind: 'overdue' }, row.deeds.overdue)"
                 />
@@ -252,7 +262,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.leads.created"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, { kind: 'lead', outcome: 'created' }, row.leads.created)"
                   :title="`Созданные лиды · ${row.userName}`"
                   @pick="pick(row, { kind: 'lead', outcome: 'created' }, row.leads.created)"
                 />
@@ -266,13 +276,13 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.leads.won"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, { kind: 'lead', outcome: 'won' }, row.leads.won)"
                   :title="`Успешно закрытые лиды · ${row.userName}`"
                   @pick="pick(row, { kind: 'lead', outcome: 'won' }, row.leads.won)"
                 /> / <ActivityCellNumber
                   :value="row.leads.lost"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, { kind: 'lead', outcome: 'lost' }, row.leads.lost)"
                   :title="`Проваленные лиды · ${row.userName}`"
                   @pick="pick(row, { kind: 'lead', outcome: 'lost' }, row.leads.lost)"
                 />
@@ -283,8 +293,18 @@ function barWidth(row: ActivityRow): string {
             v-if="!row.deedsKnown"
             class="mt-2 text-xs opacity-60"
           >
-            Дела и лиды этого сотрудника отчёт не спрашивал: он вне выбранного отдела, а звонки его
-            попали в выборку.
+            <!-- ⚠ Две РАЗНЫЕ причины прочерков, и путать их нельзя: у ничьих звонков сотрудника
+                 нет вовсе, а у чужого он есть, но его не отдал `user.get`. Прежняя подпись
+                 называла третью причину — «вне выбранного отдела», — которой быть НЕ МОЖЕТ:
+                 под выбранным отделом такие звонки отсеивает `scopeCallsToUsers`. -->
+            <template v-if="isUnassignedRow(row)">
+              Это звонки без сотрудника — например, на общую линию, которые никто не поднял. Дел и
+              лидов у них быть не может.
+            </template>
+            <template v-else>
+              Дела и лиды этого сотрудника отчёт не спрашивал: его нет в списке сотрудников портала
+              (например, звонок принял бот или человек вне штата), а звонки его в выборку попали.
+            </template>
           </p>
         </li>
       </ul>
@@ -406,7 +426,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="totalCalls(row).count"
                   :known="callsKnown"
-                  drillable
+                  :drillable="drillable(row, talks(row), totalCalls(row).count)"
                   :title="`Разговоры · ${row.userName}`"
                   @pick="pick(row, talks(row), totalCalls(row).count)"
                 />
@@ -415,7 +435,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.calls.in.count"
                   :known="callsKnown"
-                  drillable
+                  :drillable="drillable(row, talks(row, 'in'), row.calls.in.count)"
                   :title="`Входящие разговоры · ${row.userName}`"
                   @pick="pick(row, talks(row, 'in'), row.calls.in.count)"
                 />
@@ -424,7 +444,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.calls.out.count"
                   :known="callsKnown"
-                  drillable
+                  :drillable="drillable(row, talks(row, 'out'), row.calls.out.count)"
                   :title="`Исходящие разговоры · ${row.userName}`"
                   @pick="pick(row, talks(row, 'out'), row.calls.out.count)"
                 />
@@ -439,7 +459,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.failed"
                   :known="callsKnown"
-                  drillable
+                  :drillable="drillable(row, { kind: 'failed' }, row.failed)"
                   :title="`Не дозвонились · ${row.userName}`"
                   @pick="pick(row, { kind: 'failed' }, row.failed)"
                 />
@@ -448,7 +468,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.tooShort"
                   :known="callsKnown"
-                  drillable
+                  :drillable="drillable(row, { kind: 'tooShort' }, row.tooShort)"
                   :title="`Короткие разговоры · ${row.userName}`"
                   @pick="pick(row, { kind: 'tooShort' }, row.tooShort)"
                 />
@@ -457,13 +477,13 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.deeds.email.out"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, deed('email', 'out'), row.deeds.email.out)"
                   :title="`Исходящие письма · ${row.userName}`"
                   @pick="pick(row, deed('email', 'out'), row.deeds.email.out)"
                 /> / <ActivityCellNumber
                   :value="row.deeds.email.in"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, deed('email', 'in'), row.deeds.email.in)"
                   :title="`Входящие письма · ${row.userName}`"
                   @pick="pick(row, deed('email', 'in'), row.deeds.email.in)"
                 />
@@ -472,7 +492,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.deeds.meeting"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, deed('meeting'), row.deeds.meeting)"
                   :title="`Встречи · ${row.userName}`"
                   @pick="pick(row, deed('meeting'), row.deeds.meeting)"
                 />
@@ -481,7 +501,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.deeds.task"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, deed('task'), row.deeds.task)"
                   :title="`Задачи · ${row.userName}`"
                   @pick="pick(row, deed('task'), row.deeds.task)"
                 />
@@ -490,7 +510,7 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.deeds.overdue"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, { kind: 'overdue' }, row.deeds.overdue)"
                   :title="`Просроченные дела · ${row.userName}`"
                   @pick="pick(row, { kind: 'overdue' }, row.deeds.overdue)"
                 />
@@ -499,19 +519,19 @@ function barWidth(row: ActivityRow): string {
                 <ActivityCellNumber
                   :value="row.leads.created"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, { kind: 'lead', outcome: 'created' }, row.leads.created)"
                   :title="`Созданные лиды · ${row.userName}`"
                   @pick="pick(row, { kind: 'lead', outcome: 'created' }, row.leads.created)"
                 /> / <ActivityCellNumber
                   :value="row.leads.won"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, { kind: 'lead', outcome: 'won' }, row.leads.won)"
                   :title="`Успешно закрытые лиды · ${row.userName}`"
                   @pick="pick(row, { kind: 'lead', outcome: 'won' }, row.leads.won)"
                 /> / <ActivityCellNumber
                   :value="row.leads.lost"
                   :known="row.deedsKnown"
-                  drillable
+                  :drillable="drillable(row, { kind: 'lead', outcome: 'lost' }, row.leads.lost)"
                   :title="`Проваленные лиды · ${row.userName}`"
                   @pick="pick(row, { kind: 'lead', outcome: 'lost' }, row.leads.lost)"
                 />

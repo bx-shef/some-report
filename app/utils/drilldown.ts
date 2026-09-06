@@ -69,7 +69,7 @@ export interface DrillRow {
 }
 
 /** Поля строк для списка. `TITLE` — то, по чему человек узнаёт запись; остальное — подписи. */
-export const DRILL_LEAD_SELECT = ['ID', 'TITLE', 'DATE_CREATE', 'STATUS_ID', 'SOURCE_ID', 'ASSIGNED_BY_ID'] as const
+export const DRILL_LEAD_SELECT = ['ID', 'TITLE', 'DATE_CREATE', 'DATE_CLOSED', 'STATUS_ID', 'SOURCE_ID', 'ASSIGNED_BY_ID'] as const
 export const DRILL_DEAL_SELECT = ['ID', 'TITLE', 'DATE_CREATE', 'CLOSEDATE', 'STAGE_ID', 'SOURCE_ID', 'ASSIGNED_BY_ID', 'OPPORTUNITY', 'CURRENCY_ID'] as const
 
 /** Строка `crm.lead.list` для списка. */
@@ -77,6 +77,8 @@ export interface B24DrillLeadRow {
   ID: string | number
   TITLE?: string | null
   DATE_CREATE?: string | null
+  /** Дата закрытия лида. ⚠ Это НЕ `CLOSEDATE` сделки: у портала имена полей разные. */
+  DATE_CLOSED?: string | null
   STATUS_ID?: string | null
   SOURCE_ID?: string | null
   ASSIGNED_BY_ID?: string | number | null
@@ -293,16 +295,37 @@ function managerLabel(dictionaries: ReportDictionaries, id: number): string | un
   return dictionaries.users?.[String(id)] ?? `Сотрудник #${id}`
 }
 
+/**
+ * По какой дате показывать строку лида: создания или ЗАКРЫТИЯ.
+ *
+ * ⚠ Ровно тот же приём, что `dealScope: 'unlinked'` у сделок: число, посчитанное по дате
+ * закрытия, обязано открывать список с датами закрытия.
+ */
+export type LeadDrillScope = 'created' | 'closed'
+
 /** Строка лида портала → строка списка. Без названия — «Лид #id»: пустая строка в списке неотличима от отступа. */
-export function leadDrillRow(row: B24DrillLeadRow, dictionaries: ReportDictionaries): DrillRow {
+export function leadDrillRow(
+  row: B24DrillLeadRow,
+  dictionaries: ReportDictionaries,
+  scope: LeadDrillScope = 'created'
+): DrillRow {
   const id = toId(row.ID)
   const status = toText(row.STATUS_ID)
   const source = toText(row.SOURCE_ID)
   const manager = managerLabel(dictionaries, toId(row.ASSIGNED_BY_ID))
+  // ⚠ Дата — по СМЫСЛУ числа, как у сделок (`dealScope`) и дел (`activityScope`). Числа
+  // «успешно» и «провалено» в отчёте 3 посчитаны по дате ЗАКРЫТИЯ; покажи список дату создания —
+  // под августовским числом встали бы майские даты, и сверить список с числом было бы нечем.
+  //
+  // ⚠ Закрытая дата может не прийти (лид ещё в работе, поле пусто) — тогда берём создание, а не
+  // печатаем прочерк: дата в списке нужна, чтобы узнать запись, а не только чтобы сверить период.
+  const when = scope === 'closed'
+    ? (toText(row.DATE_CLOSED) || toText(row.DATE_CREATE))
+    : toText(row.DATE_CREATE)
   return {
     id,
     title: toText(row.TITLE) || `Лид #${id}`,
-    ...(toText(row.DATE_CREATE) ? { when: toText(row.DATE_CREATE) } : {}),
+    ...(when ? { when } : {}),
     ...(status ? { stage: leadStageLabel(dictionaries, status) } : {}),
     ...(source ? { source: sourceLabel(dictionaries, source) } : {}),
     ...(manager ? { manager } : {}),
