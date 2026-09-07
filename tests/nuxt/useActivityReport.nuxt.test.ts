@@ -1,7 +1,8 @@
 // @vitest-environment nuxt
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { effectScope } from 'vue'
-import { mockNuxtImport } from '@nuxt/test-utils/runtime'
+import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
+import ActivityPage from '~/pages/app/activity.vue'
 import { CALL_MAX_PAGES, useActivityReport } from '~/composables/useActivityReport'
 import { NO_USER_LABEL, totalCalls } from '~/utils/activityLoad'
 
@@ -40,6 +41,10 @@ const portal = vi.hoisted(() => ({
    */
   callTotalAsks: 0,
   callsFail: false,
+  /** Настройки, запомненные порталом за человеком (`user.option`). */
+  options: {} as Record<string, unknown>,
+  /** Что отчёт записал в настройки — по нему видно, запомнил ли он смену отбора. */
+  optionWrites: [] as Array<Record<string, unknown>>,
   /** Портал отвечает ошибкой на пакет счётчиков. */
   batchFails: false,
   /** Отделы отвечают ошибкой — фильтр обязан сказать об этом, а не потерять людей молча. */
@@ -145,6 +150,11 @@ mockNuxtImport('useB24', () => () => ({
           make: async ({ method, params }: { method: string, params: Record<string, unknown> }) => {
             const ok = (result: unknown) => ({ isSuccess: true, getData: () => ({ result }), getErrorMessages: () => [] })
             if (method === 'user.get') throw new Error('user.get одиночным вызовом: сотрудников читает callList')
+            if (method === 'user.option.get') return ok(portal.options)
+            if (method === 'user.option.set') {
+              portal.optionWrites.push((params.options ?? {}) as Record<string, unknown>)
+              return ok(true)
+            }
             if (method === 'department.get') {
               // ⚠ Как живой портал: `filter` не понимает вовсе, страницы только по `start`.
               if ('filter' in params) throw new Error('department.get не принимает filter')
@@ -191,6 +201,8 @@ beforeEach(() => {
   portal.callPages = 0
   portal.callTotalAsks = 0
   portal.callsFail = false
+  portal.options = {}
+  portal.optionWrites = []
   portal.batchFails = false
   portal.departmentsFail = false
   portal.callsEndless = false
@@ -218,6 +230,11 @@ beforeEach(() => {
 })
 
 /** Дождаться конца фонового чтения звонков: `load()` его не ждёт намеренно. */
+/** Дать смонтированной странице доехать: `onMounted` асинхронный, выборка идёт промисами. */
+async function flush(times = 8): Promise<void> {
+  for (let i = 0; i < times; i++) await new Promise(resolve => setTimeout(resolve, 0))
+}
+
 async function waitForCalls(state: { callsPending: { value: boolean } }): Promise<void> {
   for (let i = 0; i < 50 && state.callsPending.value; i++) {
     await new Promise(resolve => setTimeout(resolve, 5))
@@ -508,5 +525,80 @@ describe('useActivityReport: гонка посреди фонового чтен
     // Под январём 2020 звонков в стенде нет: доехавшие августовские не должны их подменить.
     expect(state.report.value.rows.every(row => totalCalls(row).count === 0)).toBe(true)
     expect(state.report.value.totals.failed).toBe(0)
+  })
+})
+
+describe('отбор, запомненный порталом', () => {
+  /**
+   * ⚠ Читается ДО первой выборки: иначе портал считал бы всё дважды — сначала по умолчанию,
+   * потом по восстановленному отбору. Проверяем по ЭКРАНУ: подпись под панелью строится по
+   * ПРИМЕНЁННОМУ отбору, то есть по тому, с которым выборка действительно ушла.
+   */
+  it('открывается с отбором, запомненным в прошлый раз', async () => {
+    portal.options['report.activity.v1'] = JSON.stringify({
+      period: { from: MONTH_FROM, to: MONTH_FROM },
+      departmentId: 2,
+      thresholdSeconds: 119
+    })
+    const wrapper = await mountSuspended(ActivityPage)
+    await flush()
+    expect(wrapper.text()).toContain('дольше 119 с')
+  })
+
+  /**
+   * ⚠ Ноль — ЗНАЧЕНИЕ («считать все разговоры»), а не «не задано». Потеряв его, отчёт молча
+   * вернулся бы к порогу заказчика в 29 секунд и показал другие числа.
+   */
+  it('сохранённый ноль остаётся «все разговоры», а не порогом заказчика', async () => {
+    portal.options['report.activity.v1'] = JSON.stringify({
+      period: { from: MONTH_FROM, to: MONTH_FROM },
+      thresholdSeconds: 0
+    })
+    const wrapper = await mountSuspended(ActivityPage)
+    await flush()
+    expect(wrapper.text()).toContain('все состоявшиеся разговоры')
+  })
+
+  /**
+   * ⛔ Ровно то, ради чего отбор читается ДО выборки. Прочитай его после — и портал посчитает
+   * ВСЁ дважды: сначала по умолчанию, потом по восстановленному. На боевом это лишний месяц
+   * звонков и лишний пакет счётчиков на каждое открытие отчёта, у портала же предел
+   * интенсивности.
+   *
+   * ⚠ Считаем обращения к порталу, а не смотрим на экран: экран в обоих случаях покажет верное —
+   * разница только в том, сколько раз за этим сходили.
+   */
+  it('с запомненным отбором портал спрашивается ОДИН раз, а не дважды', async () => {
+    portal.options['report.activity.v1'] = JSON.stringify({
+      period: { from: MONTH_FROM, to: MONTH_FROM },
+      thresholdSeconds: 119
+    })
+    await mountSuspended(ActivityPage)
+    await flush()
+    expect(portal.callTotalAsks).toBe(1)
+  })
+
+  it('смена отбора запоминается в портале', async () => {
+    const wrapper = await mountSuspended(ActivityPage)
+    await flush()
+    const before = portal.optionWrites.length
+    const preset = wrapper.findAll('button').find(button => button.text() === 'Прошлый месяц')
+    expect(preset, 'кнопки периода на экране нет').toBeDefined()
+    await preset!.trigger('click')
+    await flush()
+    expect(portal.optionWrites.length).toBeGreaterThan(before)
+
+    /**
+     * ⚠ Проверяем СОДЕРЖИМОЕ, а не факт записи. Ломкой показано: тест, сверяющий только наличие
+     * ключа, остаётся зелёным, когда отчёт пишет ЧУЖОЕ значение — например, отбор по умолчанию
+     * вместо только что выбранного. А это и есть главный риск запоминания: не «не пишет», а
+     * «пишет не то», и человек назавтра открывает отчёт не с тем, что выбрал.
+     */
+    const written = portal.optionWrites.at(-1)?.['report.activity.v1']
+    expect(written, 'запись под ключом отчёта 3 не найдена').toBeDefined()
+    const saved = JSON.parse(String(written)) as { period?: { from?: string, to?: string } }
+    // Выбран ПРОШЛЫЙ месяц — значит и записан прошлый, а не тот, что стоял до нажатия.
+    expect(saved.period?.from).not.toBe(MONTH_FROM)
+    expect(saved.period?.from).toBeDefined()
   })
 })

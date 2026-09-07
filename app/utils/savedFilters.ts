@@ -1,3 +1,5 @@
+import type { ActivityFilters } from '~/types/activity'
+import { CALL_THRESHOLD_CHOICES } from '~/types/activity'
 import type { ManagerFilters } from '~/types/managers'
 import type { ReportFilters, ReportPeriod } from '~/types/report'
 import { SCOPE_LABELS } from '~/utils/managerLoad'
@@ -18,11 +20,19 @@ import { fromIsoDate, validatePeriod } from '~/utils/period'
 /** Ключи настроек. С версией: формат отбора менялся дважды за две недели и будет меняться ещё. */
 export const LEADS_OPTION_KEY = 'report.leads.v1'
 export const MANAGERS_OPTION_KEY = 'report.managers.v1'
+export const ACTIVITY_OPTION_KEY = 'report.activity.v1'
 
 /** Сохранённое состояние отчёта по лидам. */
 export interface SavedLeadsState {
   period?: ReportPeriod
   filters?: ReportFilters
+}
+
+/** Сохранённое состояние отчёта «Активность пользователей» — тот же отбор, что в панели. */
+export interface SavedActivityState {
+  period?: ReportPeriod
+  departmentId?: number
+  thresholdSeconds?: number
 }
 
 /** Сохранённое состояние отчёта по менеджерам — тот же отбор, что в панели. */
@@ -57,14 +67,14 @@ function parse(raw: unknown): Record<string, unknown> | undefined {
  * ⚠ Проверяем той же `validatePeriod`, что и панель: иначе через настройки в отчёт заезжал бы
  * период, который через интерфейс выбрать нельзя (перевёрнутый или длиной в пять лет).
  */
-function readPeriod(value: unknown): ReportPeriod | undefined {
+function readPeriod(value: unknown, maxDays?: number): ReportPeriod | undefined {
   const raw = parse(value)
   const from = raw?.from
   const to = raw?.to
   if (typeof from !== 'string' || typeof to !== 'string') return undefined
   if (!fromIsoDate(from) || !fromIsoDate(to)) return undefined
   const period = { from, to }
-  return validatePeriod(period) ? undefined : period
+  return validatePeriod(period, maxDays) ? undefined : period
 }
 
 /**
@@ -150,5 +160,43 @@ export function decodeManagersState(raw: unknown): SavedManagersState {
     ...(scope !== undefined && Object.hasOwn(SCOPE_LABELS, scope) ? { scope: scope as ManagerFilters['scope'] } : {}),
     ...(period ? { period } : {}),
     ...(companyId === undefined ? {} : { companyId })
+  }
+}
+
+/** Что сохранить для отчёта «Активность пользователей». */
+export function encodeActivityState(filters: ActivityFilters): string {
+  return JSON.stringify({
+    period: filters.period,
+    thresholdSeconds: filters.thresholdSeconds,
+    ...(filters.departmentId === undefined ? {} : { departmentId: filters.departmentId })
+  })
+}
+
+/**
+ * Что восстановить для отчёта «Активность пользователей».
+ *
+ * ⚠ Период проверяется ПРЕДЕЛОМ ЭТОГО отчёта (`maxDays`), а не общим. У отчёта 3 он свой —
+ * месяц, потому что звонки лежат строками в памяти фрейма. Без предела сюда заехал бы квартал,
+ * сохранённый прошлой версией приложения: панель такой выбрать не даёт, а отчёт бы его посчитал.
+ *
+ * ⚠ Порог сверяется со СПИСКОМ выбора. Он не «любое неотрицательное число»: панель предлагает
+ * шесть значений, и восстановленное 47 показало бы пустой выбор в панели, пока числа на экране
+ * считаются по 47. Ноль при этом ЗНАЧЕНИЕ («считать все разговоры»), а не «не задано».
+ *
+ * ⚠ Отдел со справочником НЕ сверяется, и это то же решение, что у отчёта 1: справочник отделов
+ * к этому моменту ещё не прочитан, а ждать его значит задержать первую выборку. Удалённый отдел
+ * даёт пустую таблицу, но НЕ молча: и подпись под панелью, и объяснение пустоты называют его
+ * «отдел #N», а фильтр видно на экране и снимается одним нажатием.
+ */
+export function decodeActivityState(raw: unknown, maxDays?: number): SavedActivityState {
+  const data = parse(raw)
+  if (!data) return {}
+  const period = readPeriod(data.period, maxDays)
+  const departmentId = readNumber(data.departmentId)
+  const threshold = readNumber(data.thresholdSeconds, true)
+  return {
+    ...(period ? { period } : {}),
+    ...(departmentId === undefined ? {} : { departmentId }),
+    ...(threshold !== undefined && CALL_THRESHOLD_CHOICES.includes(threshold) ? { thresholdSeconds: threshold } : {})
   }
 }
