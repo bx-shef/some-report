@@ -248,7 +248,12 @@ export function callPageCommands(
 
 /** Номер страницы из ключа команды — ответы пакета приходят объектом, порядок не гарантирован. */
 export function callPageOfKey(key: string): number {
-  const page = Number(key.slice(1))
+  const digits = key.startsWith('c') ? key.slice(1) : ''
+  // ⚠ Пустой хвост — отдельно: `Number('')` это НОЛЬ, и ключ `'c'` без номера прочитался бы
+  // страницей 0. Сегодня такой ключ не строится, но чинится это одной строкой, а ловится —
+  // только чужими звонками под верным заголовком.
+  if (digits === '') return -1
+  const page = Number(digits)
   return Number.isInteger(page) && page >= 0 ? page : -1
 }
 
