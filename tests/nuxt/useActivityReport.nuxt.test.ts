@@ -1,5 +1,6 @@
 // @vitest-environment nuxt
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { effectScope } from 'vue'
 import { mockNuxtImport } from '@nuxt/test-utils/runtime'
 import { CALL_MAX_PAGES, useActivityReport } from '~/composables/useActivityReport'
 import { NO_USER_LABEL, totalCalls } from '~/utils/activityLoad'
@@ -104,7 +105,7 @@ mockNuxtImport('useB24', () => () => ({
         batch: {
           make: async ({ calls }: { calls: Record<string, { method: string, params: Record<string, unknown> }> }) => {
             portal.batches++
-            if (portal.batchFails) return { isSuccess: false, getData: () => undefined, getErrorMessages: () => ['портал недоступен'] }
+            if (portal.batchFails) return { isSuccess: false, getData: (): undefined => undefined, getErrorsByKey: () => ({}), getErrorMessages: () => ['портал недоступен'] }
             const data: Record<string, { getTotal: () => number, getData: () => { result: unknown[] } }> = {}
             for (const [key, command] of Object.entries(calls)) {
               // ⛔ Звонки ходят пакетом ТЕМ ЖЕ методом, что и одиночно, — со своей конвенцией:
@@ -235,6 +236,32 @@ describe('useActivityReport', () => {
     expect(ivanov?.deeds.email.in).toBe(0)
     expect(ivanov?.deeds.meeting).toBe(1)
     expect(ivanov?.leads.created).toBe(1)
+  })
+
+  /**
+   * ⚠ Уход со страницы обязан остановить чтение звонков. Месяц — 381 страница, и без отмены они
+   * дочитывались бы в портал уже после того, как отчёт закрыт: предел интенсивности у портала
+   * общий с той страницей, что открыта сейчас.
+   *
+   * ⚠ До этого теста отмена в отчёте 3 не проверялась ничем: тело `onScopeDispose` можно было
+   * выкинуть целиком, и ни один тест не краснел. Найдено ревью.
+   */
+  it('уход со страницы останавливает чтение звонков', async () => {
+    const scope = effectScope()
+    let state!: ReturnType<typeof useActivityReport>
+    scope.run(() => {
+      state = useActivityReport({ today: TODAY })
+    })
+    await state.load()
+
+    scope.stop()
+    const read = portal.callPages
+    // Даём циклу обороты событий: стенд отвечает мгновенно, и без паузы тест судил бы раньше,
+    // чем чтение успело бы сходить за следующей страницей.
+    for (let turn = 0; turn < 30; turn++) await Promise.resolve()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(portal.callPages).toBe(read)
   })
 
   it('звонки доезжают фоном и встают в те же строки', async () => {

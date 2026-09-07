@@ -117,7 +117,7 @@ mockNuxtImport('useB24', () => () => ({
         batch: {
           make: async ({ calls }: { calls: Record<string, { method: string, params: Record<string, unknown> }> }) => {
             portal.batches++
-            if (portal.batchFails) return { isSuccess: false, getData: () => undefined, getErrorMessages: () => ['портал недоступен'] }
+            if (portal.batchFails) return { isSuccess: false, getData: (): undefined => undefined, getErrorsByKey: () => ({}), getErrorMessages: () => ['портал недоступен'] }
             // Медленное направление отвечает позже быстрого — так проверяется гонка отборов.
             const anyFilter = Object.values(calls)[0]?.params as { filter?: Record<string, unknown> } | undefined
             if (portal.slowCategory !== undefined && Number(anyFilter?.filter?.CATEGORY_ID) === portal.slowCategory) {

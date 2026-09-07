@@ -214,7 +214,8 @@ export function useManagerReport(options: { today?: Date } = {}) {
       const found = readDistinctChain(rows, field, size, prefix)
       ids.push(...found)
       // ⚠ Неполный ответ пакета — это НЕ «значения кончились». Пакет уходит с
-      // `isHaltOnError: false`, и команда, упёршаяся в лимит запросов, возвращает пустоту:
+      // `isHaltOnError: false`, и команда может вернуть пустоту (отказ — другое: он валит весь
+      // пакет, и `runChunk` его бросает, повторив при лимите интенсивности):
       // цепочка обрывается на ней, и без этой проверки отчёт считал бы, что перечислил всех, —
       // сделки остальных молча ушли бы в строку «ответственный не найден».
       if (!complete) return { ids, truncated: true }

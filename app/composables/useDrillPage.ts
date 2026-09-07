@@ -137,6 +137,10 @@ export function useDrillPage() {
         // (`DEAL_STAGE_<id>`). Список лидов их не касается вовсе, и лишняя команда в пакете —
         // ответ, который некуда деть.
         ...(isLead ? {} : { dealStages: { method: 'crm.status.list', params: stageListParams(categoryId) } })
+      }, {
+        // ⚠ Подписи — украшение: без них список откроется с кодами стадий и источников. Повтор
+        // при лимите стоил бы человеку до четырёх секунд крутилки ради ровно того же самого.
+        retryOnRateLimit: false
       })
       dictionaries.value = {
         ...dictionaries.value,

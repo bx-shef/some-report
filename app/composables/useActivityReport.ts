@@ -1,3 +1,4 @@
+import { getCurrentScope, onScopeDispose } from 'vue'
 import type {
   ActivityFilters,
   ActivityReport,
@@ -156,6 +157,27 @@ export function useActivityReport(options: { today?: Date } = {}) {
    * смены отбора. Без сторожа звонки августа доехали бы в сентябрьскую таблицу.
    */
   let seq = 0
+  /**
+   * Уход со страницы останавливает фоновые проходы.
+   *
+   * ⚠ Отменяем ТЕМ ЖЕ счётчиком поколений, что и смену отбора: каждый цикл спрашивает
+   * «моё поколение ещё текущее?», и один инкремент делает устаревшими сразу все идущие проходы.
+   * Заводить рядом второй флаг «страница закрыта» значило бы иметь два способа остановиться и
+   * шанс, что новый цикл научат проверять только один из них.
+   *
+   * ⚠ Зачем вообще: фоновая выборка живёт секундами и продолжала бы слать запросы в портал уже
+   * после того, как её результат стал никому не нужен. У портала есть предел интенсивности — и
+   * тратить его на закрытую страницу значит отнимать у той, что открыта сейчас.
+   *
+   * ⚠ `getCurrentScope()` — не перестраховка: композабл зовут и вне компонента (тесты, разбор
+   * условия детализации), а `onScopeDispose` без активной области печатает предупреждение и
+   * ничего не делает.
+   */
+  if (getCurrentScope()) {
+    onScopeDispose(() => {
+      seq++
+    })
+  }
 
   /** Сотрудники и их отделы, под которыми собрана таблица, — нужны фону, чтобы пересобрать её. */
   let assembled: { users: ActivityUser[], totals: Record<string, number>, departmentPicked: boolean } | undefined
@@ -198,7 +220,12 @@ export function useActivityReport(options: { today?: Date } = {}) {
   async function fetchDepartments(): Promise<DepartmentRef[]> {
     const rows: B24DepartmentRow[] = []
     try {
+      const mine = seq
       for (let page = 0; page < DEPARTMENT_MAX_PAGES; page++) {
+        // ⚠ Проверка поколения нужна и здесь: у заказчика 43 отдела, а на портале холдинга их
+        // хватит на все десять страниц. Уход со страницы посреди чтения не должен дочитывать
+        // справочник, который уже некуда положить.
+        if (mine !== seq) break
         const result = await b24.getOrThrow().actions.v2.call.make<B24DepartmentRow[]>({
           method: 'department.get',
           params: { start: page * DEPARTMENT_PAGE_SIZE }
