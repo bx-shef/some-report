@@ -281,13 +281,29 @@ async function fit() {
           :description="emptyPeriodNote"
         />
 
-        <!-- Оговорки к данным САМОГО портала: не ошибки отчёта, а то, что стоит поправить в CRM. -->
+        <!--
+          Оговорки к данным САМОГО портала: не ошибки отчёта, а то, что стоит поправить в CRM.
+
+          ⚠ Списком, а не одним абзацем. Оговорок бывает десять, каждая про своё, и склеенные
+          через пробел они читаются как сплошная стена — с двумя «Проверьте их в CRM» подряд
+          посередине. `leadsDataNotes` не зря возвращает массив.
+        -->
         <B24Alert
           v-if="dataNotes.length"
           color="air-primary-warning"
           title="Что нужно знать про эти числа"
-          :description="dataNotes.join(' ')"
-        />
+        >
+          <template #description>
+            <ul class="list-disc space-y-1 pl-4">
+              <li
+                v-for="note in dataNotes"
+                :key="note"
+              >
+                {{ note }}
+              </li>
+            </ul>
+          </template>
+        </B24Alert>
 
         <ReportSummary
           :report="report"

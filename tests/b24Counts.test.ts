@@ -216,6 +216,63 @@ describe('adaptDeals', () => {
     expect(deals[0]?.amount).toBe(100)
     expect(unconvertedDeals).toBe(1)
   })
+
+  /**
+   * ⚠ Дальше — БОЕВОЙ путь счётчиков валюты, и это главное в этих тестах.
+   *
+   * `useReportData` зовёт именно `adaptDeals`; цельный разбор `adaptPortalData` живая выборка не
+   * трогает. Пока `foreignCurrencyDeals` был проверен только там, строку `if (foreign)` в
+   * `adaptDeals` можно было удалить при полностью зелёном прогоне — оговорка в отчёте молча
+   * исчезла бы. Нашло это ревью PR #60, а не тест, — поэтому тесты и стоят здесь.
+   */
+  const WITH_RUB = [
+    { CURRENCY: 'BYN', BASE: 'Y', AMOUNT: '1', AMOUNT_CNT: '1' },
+    { CURRENCY: 'RUB', BASE: 'N', AMOUNT: '0.037', AMOUNT_CNT: '1' }
+  ]
+
+  it('сделку в известной чужой валюте приводит курсом и считает ОТДЕЛЬНО от беcкурсовых', () => {
+    const { deals, foreignCurrencyDeals, unconvertedDeals } = adaptDeals([row({ CURRENCY_ID: 'RUB' })], WITH_RUB)
+    expect(deals[0]?.amount).toBeCloseTo(3.7, 6)
+    expect(foreignCurrencyDeals).toBe(1)
+    expect(unconvertedDeals).toBe(0)
+  })
+
+  it('сделка в базовой валюте не попадает ни в один счётчик', () => {
+    const { foreignCurrencyDeals, unconvertedDeals } = adaptDeals([row({})], WITH_RUB)
+    expect(foreignCurrencyDeals).toBe(0)
+    expect(unconvertedDeals).toBe(0)
+  })
+
+  /**
+   * ⛔ Тот самый дефект, ради которого счётчиков два. Пустой `AMOUNT` когда-то давал курс 1:
+   * сделка на 456 000 RUB превращалась в 456 000 BYN — завышение в 28 раз при нулевых оговорках.
+   * Записать её в «привели курсом» значит снова успокоить там, где сумма не приведена вовсе.
+   */
+  it('битый курс уводит сделку в «без курса», а НЕ в «не в базовой валюте»', () => {
+    const broken = [
+      { CURRENCY: 'BYN', BASE: 'Y', AMOUNT: '1', AMOUNT_CNT: '1' },
+      { CURRENCY: 'RUB', BASE: 'N', AMOUNT: '', AMOUNT_CNT: '1' }
+    ]
+    const { deals, foreignCurrencyDeals, unconvertedDeals } = adaptDeals([row({ CURRENCY_ID: 'RUB', OPPORTUNITY: '456000' })], broken)
+    expect(deals[0]?.amount).toBe(456000)
+    expect(unconvertedDeals).toBe(1)
+    expect(foreignCurrencyDeals).toBe(0)
+  })
+
+  /**
+   * ⚠ Три сделки в одной выборке, а не по одной за прогон: счётчики накапливаются в одном цикле,
+   * и перепутанный инкремент виден только тогда, когда в выборке есть обе беды сразу.
+   */
+  it('в смешанной выборке каждый счётчик считает СВОЁ', () => {
+    const { deals, foreignCurrencyDeals, unconvertedDeals } = adaptDeals([
+      row({ ID: '1' }),
+      row({ ID: '2', CURRENCY_ID: 'RUB' }),
+      row({ ID: '3', CURRENCY_ID: 'XYZ' })
+    ], WITH_RUB)
+    expect(deals).toHaveLength(3)
+    expect(foreignCurrencyDeals).toBe(1)
+    expect(unconvertedDeals).toBe(1)
+  })
 })
 
 describe('lossStages', () => {

@@ -131,15 +131,39 @@ describe('reportSheets', () => {
     expect(note).toHaveLength(by['Источники']![0]!.length)
   })
 
-  it('сделки без лида — отдельный лист только когда справка пришла; валюта без курса — оговорка', () => {
-    const unlinked = { total: 5, revenue: 1000, unconverted: 2, foreign: 3, totalShareOfRevenue: 1, rows: [{ sourceId: 'CALL', count: 5, share: 1, revenue: 1000, shareOfRevenue: 1 }] }
-    const sheet = reportSheets(report, { ...dataset, unlinkedDeals: unlinked }, {}, false).find(s => s.name === 'Сделки без лида')!
+  const unlinkedOf = (patch: Record<string, number>) => ({
+    total: 5, revenue: 1000, unconverted: 0, foreign: 0, totalShareOfRevenue: 1,
+    rows: [{ sourceId: 'CALL', count: 5, share: 1, revenue: 1000, shareOfRevenue: 1 }],
+    ...patch
+  })
+  const unlinkedSheet = (patch: Record<string, number>) =>
+    reportSheets(report, { ...dataset, unlinkedDeals: unlinkedOf(patch) }, {}, false).find(s => s.name === 'Сделки без лида')!
+
+  it('сделки без лида — отдельный лист; обе оговорки про валюту стоят отдельными строками', () => {
+    const sheet = unlinkedSheet({ unconverted: 2, foreign: 3 })
     expect(sheet.rows[1]).toEqual(['Всего', 5, '', 1000, ''])
-    expect(sheet.rows[2]).toEqual(['Сделок в валюте без курса — суммы взяты как есть', 2, '', '', ''])
+    expect(sheet.rows[2]).toEqual(['Сделок в валюте, которой нет в справочнике портала — суммы сложены как есть', 2, '', '', ''])
     // ⚠ Лист обязан сходиться с экраном построчно: там эта оговорка стоит отдельно от предыдущей.
     expect(sheet.rows[3]).toEqual(['Сделок не в базовой валюте — суммы приведены курсом', 3, '', '', ''])
     expect(sheet.rows.at(-1)).toEqual(['Входящий звонок', 5, 100, 1000, 100])
     for (const row of sheet.rows) if (row.length) expect(row).toHaveLength(5)
+  })
+
+  /**
+   * ⚠ Каждая оговорка проверяется и в ОТСУТСТВИИ тоже. Строка, которая печатается всегда,
+   * превращает предупреждение в шум: на листе с ней ничего не искажено, а выглядит одинаково.
+   */
+  it('нулевой счётчик своей строки на листе НЕ печатает', () => {
+    const onlyBroken = unlinkedSheet({ unconverted: 2 }).rows.map(r => String(r[0]))
+    expect(onlyBroken.some(t => t.includes('которой нет в справочнике'))).toBe(true)
+    expect(onlyBroken.some(t => t.includes('не в базовой валюте'))).toBe(false)
+
+    const onlyForeign = unlinkedSheet({ foreign: 3 }).rows.map(r => String(r[0]))
+    expect(onlyForeign.some(t => t.includes('не в базовой валюте'))).toBe(true)
+    expect(onlyForeign.some(t => t.includes('которой нет в справочнике'))).toBe(false)
+
+    const clean = unlinkedSheet({}).rows.map(r => String(r[0]))
+    expect(clean.some(t => t.includes('валют'))).toBe(false)
   })
 })
 

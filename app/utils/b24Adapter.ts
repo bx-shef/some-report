@@ -146,6 +146,40 @@ export function toBaseAmount(
   return { value: amount * rate, converted: true }
 }
 
+/**
+ * Сумма сделки в базовой валюте ПЛЮС ответ на вопрос «что с валютой было не так».
+ *
+ * ⚠ Одна функция на оба места агрегации (`dealFromRow` для сделок из лидов и
+ * `adaptUnlinkedWonDeals` для блока 7) НАМЕРЕННО. Раньше каждое считало эти два условия само, и
+ * любая правка одного — скажем, приведение кода валюты к верхнему регистру — молча расходилась бы
+ * со вторым: число «не в базовой валюте» в оговорках отчёта разошлось бы с числом в блоке 7 на
+ * одном и том же портале, и объяснить это было бы нечем.
+ *
+ * @returns `converted: false` — валюты нет в справочнике, сумма осталась КАК ЕСТЬ (сломано);
+ *   `foreign: true` — валюта известна и не базовая, сумму привели курсом (посчитано верно, но
+ *   заводить такую сделку не следовало).
+ *
+ * ⚠ У известной чужой валюты истинны ОБА флага: она и приведена, и чужая. Инвариант тут не
+ * «флаги исключают друг друга», а «`foreign` влечёт `converted`» — то есть в ДВА СЧЁТЧИКА одна
+ * сделка попасть не может, потому что первый растёт по `!converted`. Формулировка «оба флага
+ * одновременно не бывают» стояла здесь и была неверна; поймал её тест на инвариант, а не чтение.
+ */
+export function classifyCurrency(
+  amount: number,
+  dealCurrencyId: string,
+  baseCurrencyId: string,
+  rates: Record<string, number>
+): { value: number, converted: boolean, foreign: boolean } {
+  const { value, converted } = toBaseAmount(amount, dealCurrencyId, rates)
+  const isBase = dealCurrencyId === baseCurrencyId
+  return {
+    value,
+    // Своя валюта портала конвертации не требует — это не «не удалось привести».
+    converted: converted || isBase,
+    foreign: !isBase && converted
+  }
+}
+
 /** Справочник `crm.status.list` → код: имя. */
 export function statusNames(rows: B24StatusRow[]): Record<string, string> {
   // Без прототипа: ключи приходят из портала (см. `currencyRates`).
@@ -278,21 +312,18 @@ function dealFromRow(
   const id = toNumber(row.ID)
   const leadId = toNumber(row.LEAD_ID)
   const dealCurrency = toText(row.CURRENCY_ID) || currencyId
-  const { value, converted } = toBaseAmount(toNumber(row.OPPORTUNITY), dealCurrency, rates)
+  /**
+   * ⚠ `foreign` — валюта ЗНАЕТСЯ, но она не базовая: сумму привели курсом и сложили с остальными.
+   * Считаем отдельно от `converted` потому, что у заказчика это не «сделка в другой валюте», а
+   * ОШИБКА ВВОДА: «Все сделки в BYN. Судя по всему сделки в рублях это неправильные сделки»
+   * (ответ от 2026-09-03). Привести её курсом и молча сложить значит растворить ошибку в
+   * выручке — никто её больше не найдёт и не исправит.
+   */
+  const { value, converted, foreign } = classifyCurrency(toNumber(row.OPPORTUNITY), dealCurrency, currencyId, rates)
   const semantic = toSemantic(row.STAGE_SEMANTIC_ID)
-  const isBase = dealCurrency === currencyId
   return {
-    // Своя валюта портала конвертации не требует — это не «не удалось привести».
-    converted: converted || isBase,
-    /**
-     * Валюта ЗНАЕТСЯ, но она не базовая: сумму привели курсом и сложили с остальными.
-     *
-     * ⚠ Считаем отдельно от `converted` потому, что у заказчика это не «сделка в другой валюте»,
-     * а ОШИБКА ВВОДА: «Все сделки в BYN. Судя по всему сделки в рублях это неправильные сделки»
-     * (ответ от 2026-09-03). Привести её курсом и молча сложить значит растворить ошибку в
-     * выручке — никто её больше не найдёт и не исправит.
-     */
-    foreign: !isBase && converted,
+    converted,
+    foreign,
     deal: {
       id,
       ...(leadId > 0 ? { leadId } : {}),
@@ -366,6 +397,13 @@ export function adaptDeals(
 
 /**
  * Сырые ответы портала → то, что понимает ядро отчёта.
+ *
+ * ⛔ **Живая выборка сюда НЕ ходит.** Отчёт 1 читает лиды счётчиками, а сделки — `adaptDeals`
+ * (`useReportData`), потому что строками месяц на боевом портале не выбирается. Эта функция
+ * осталась цельным разбором «лиды + сделки строками»: она разбирает демо-набор и служит стендом
+ * для тестов адаптера. Помечено явно потому, что ревью PR #60 приняло её за боевой путь —
+ * счётчик, проверенный ТОЛЬКО здесь, на живых данных не проверен вовсе (см. issue про сведе́ние
+ * двух путей разбора).
  *
  * ⚠ Связь «лид → сделки» строится ИЗ СДЕЛОК (`LEAD_ID`), а не из лидов: у лида поля со списком
  * сделок нет вовсе. На тестовом портале `LEAD_ID` пуст у всех сделок — тогда квалифицированных
@@ -636,8 +674,10 @@ export const dealCountKey = { won: 'dealsWon', lost: 'dealsLost', inWork: 'deals
 /**
  * Успешные сделки без лида (строки `crm.deal.list` по `unlinkedWonDealsParams`) → блок 7.
  *
- * Суммы приводятся к базовой валюте тем же `toBaseAmount`, что и сделки из лидов: неизвестная
- * валюта остаётся как есть и считается в `unconverted`, а не обнуляется и не выдумывается.
+ * Суммы приводятся к базовой валюте тем же `classifyCurrency`, что и сделки из лидов, и теми же
+ * ДВУМЯ счётчиками: неизвестная валюта остаётся как есть и считается в `unconverted` (сломано,
+ * выручку сверять не с чем), известная неба́зовая приводится курсом и считается в `foreign`
+ * (посчитано верно, но заводить такую сделку не следовало).
  * Пустой источник — своя строка `UNSPECIFIED_SOURCE`: на боевом портале это главная строка
  * блока (95 % таких сделок без источника), и прятать её в «прочее» значило бы спрятать сам факт.
  *
@@ -671,9 +711,10 @@ export function adaptUnlinkedWonDeals(
       seen.add(id)
     }
     const dealCurrency = toText(row.CURRENCY_ID) || currencyId
-    const { value, converted } = toBaseAmount(toNumber(row.OPPORTUNITY), dealCurrency, rates)
-    if (!converted && dealCurrency !== currencyId) unconverted++
-    if (converted && dealCurrency !== currencyId) foreign++
+    const classified = classifyCurrency(toNumber(row.OPPORTUNITY), dealCurrency, currencyId, rates)
+    const value = classified.value
+    if (!classified.converted) unconverted++
+    if (classified.foreign) foreign++
     const rawSource = toText(row.SOURCE_ID)
     const sourceId = rawSource && known.has(rawSource) ? rawSource : UNSPECIFIED_SOURCE
     const acc = bySource.get(sourceId) ?? { count: 0, revenue: 0 }

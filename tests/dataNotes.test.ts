@@ -41,8 +41,29 @@ describe('оговорки к данным отчёта по лидам', () => 
     expect(foreign).toContain('7')
     expect(foreign).toContain('приведены курсом')
     // И ни одна не молчит о том, что делать: число без действия читается как техническая помеха.
-    expect(broken).toContain('проверить в CRM')
-    expect(foreign).toContain('проверить в CRM')
+    expect(broken).toContain('Проверьте их в CRM')
+    expect(foreign).toContain('Проверьте их в CRM')
+  })
+
+  /**
+   * ⛔ Счётчик считает сделки ЛЮБОГО исхода, а выручку делают только успешные: на боевом портале
+   * это 403 против 162. Обещание «их суммы вошли в выручку» отправило бы человека искать в CRM
+   * расхождение в два с половиной раза больше настоящего — и он бы его не нашёл.
+   */
+  it('оговорка НЕ обещает, что все посчитанные сделки вошли в выручку', () => {
+    const [broken, foreign] = leadsDataNotes({ ...quiet, unconvertedDeals: 403, foreignCurrencyDeals: 7 }) as [string, string]
+    expect(broken).not.toContain('вошли в выручку')
+    expect(foreign).not.toContain('вошли в выручку')
+  })
+
+  /**
+   * ⚠ Число печатается ru-RU, как и всюду в отчёте. «4997» рядом с «4 997» из блока 7 под одной
+   * и той же цифрой читается как два разных числа.
+   */
+  it('большие числа печатает с разрядами, а не сырой интерполяцией', () => {
+    const [note] = leadsDataNotes({ ...quiet, unconvertedDeals: 4997 }) as [string]
+    expect(note).toContain('4\u00a0997')
+    expect(note).not.toContain('4997')
   })
 
   it('валюта без курса без чужих валют — одна строка со СВОИМ числом', () => {
@@ -59,7 +80,13 @@ describe('оговорки к данным отчёта по лидам', () => 
     expect(notes[0]).not.toContain('справочнике портала')
   })
 
-  it('каждая оговорка называет своё число', () => {
+  /**
+   * ⚠ Проверяем ПОСТРОЧНО, а не склейкой через `join`. Склейка ловит только «число где-то есть»:
+   * «3» находится внутри «340» из чужой строки, и перестановка двух счётчиков местами оставила
+   * бы тест зелёным, а отчёт назвал бы число не своей причиной. Ровно этот класс дефекта проект
+   * ловит поячеечно и в таблицах.
+   */
+  it('каждая оговорка называет СВОЁ число, а не чужое', () => {
     const notes = leadsDataNotes({
       ...quiet,
       dealsWithoutLead: 340,
@@ -70,12 +97,12 @@ describe('оговорки к данным отчёта по лидам', () => 
       mergedLossReasons: 6
     })
     expect(notes).toHaveLength(6)
-    expect(notes.join(' ')).toContain('340')
-    expect(notes.join(' ')).toContain('12')
-    expect(notes.join(' ')).toContain('5')
-    expect(notes.join(' ')).toContain('3')
-    expect(notes.join(' ')).toContain('88')
-    expect(notes.join(' ')).toContain('6')
+    expect(notes[0]).toContain('Сделок без связи с лидом среди выбранных строками: 340')
+    expect(notes[1]).toContain('Сделок со ссылкой на лид вне периода: 12')
+    expect(notes[2]).toContain('Лидов на стадии «успех», у которых нет сделки: 5')
+    expect(notes[3]).toContain('Повторов по идентификатору отброшено: 3')
+    expect(notes[4]).toContain('Успешных сделок из лидов с нулевой суммой: 88')
+    expect(notes[5]).toContain('стадий свёрнуто 6')
   })
 
   /**

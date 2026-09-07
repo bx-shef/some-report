@@ -4,6 +4,7 @@ import type { AdapterInput, B24CurrencyRow } from '~/utils/b24Adapter'
 import {
   adaptPortalData,
   baseCurrency,
+  classifyCurrency,
   currencyRates,
   leadOutcome,
   statusNames,
@@ -495,5 +496,47 @@ describe('адаптер + ядро отчёта', () => {
   it('переданное первое действие доезжает до блока обработки', () => {
     expect(report.processing!.processed).toBe(1)
     expect(report.processing!.avgFirstResponseMinutes).toBe(20)
+  })
+})
+
+describe('classifyCurrency', () => {
+  const RATES = { BYN: 1, RUB: 0.037 }
+
+  /**
+   * ⛔ Инвариант, на котором держатся ОБА счётчика: одна сделка не может попасть в оба сразу.
+   * Первый растёт по `!converted`, второй по `foreign` — значит запретное сочетание ровно одно:
+   * `foreign` без `converted`. ⚠ Это НЕ «флаги исключают друг друга»: у известной чужой валюты
+   * истинны оба, она и приведена, и чужая. Ровно так и было написано в JSDoc — неверно, и
+   * поймал это вот этот тест, а не чтение.
+   */
+  it('в ДВА счётчика одна сделка не попадает ни на одной комбинации', () => {
+    const cases: [string, Record<string, number>][] = [
+      ['BYN', RATES], ['RUB', RATES], ['XYZ', RATES],
+      ['BYN', {}], ['RUB', {}], ['', RATES]
+    ]
+    for (const [code, rates] of cases) {
+      const got = classifyCurrency(100, code, 'BYN', rates)
+      expect(!got.converted && got.foreign, `${code || '(пусто)'} при ${JSON.stringify(rates)}`).toBe(false)
+    }
+  })
+
+  it('базовая валюта: приведена, но не чужая — ни в один счётчик не идёт', () => {
+    expect(classifyCurrency(100, 'BYN', 'BYN', RATES)).toEqual({ value: 100, converted: true, foreign: false })
+  })
+
+  // Базовая валюта считается приведённой, даже когда её строки в справочнике нет вовсе.
+  it('базовая валюта без своей строки курса — всё равно не «без курса»', () => {
+    expect(classifyCurrency(100, 'BYN', 'BYN', {})).toEqual({ value: 100, converted: true, foreign: false })
+  })
+
+  it('известная чужая валюта: приведена курсом и помечена чужой', () => {
+    const got = classifyCurrency(100, 'RUB', 'BYN', RATES)
+    expect(got.foreign).toBe(true)
+    expect(got.converted).toBe(true)
+    expect(got.value).toBeCloseTo(3.7, 6)
+  })
+
+  it('валюта без курса: сумма КАК ЕСТЬ и не помечена чужой — её нечем приводить', () => {
+    expect(classifyCurrency(100, 'XYZ', 'BYN', RATES)).toEqual({ value: 100, converted: false, foreign: false })
   })
 })
