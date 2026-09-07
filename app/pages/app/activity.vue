@@ -3,6 +3,7 @@ import type { ActivityFilters, ActivityRow } from '~/types/activity'
 import { defaultActivityFilters } from '~/composables/useActivityReport'
 import { type ActivityCell, activityDrillPayload } from '~/utils/activityDrill'
 import { formatCount } from '~/utils/format'
+import { reportTitle } from '~/utils/pageTitle'
 
 /**
  * Отчёт «Активность пользователей»: сколько каждый сотрудник за период звонил, сколько наговорил и
@@ -80,7 +81,7 @@ async function openDrill(pick: { row: ActivityRow, cell: ActivityCell, total: nu
   }
 }
 
-useHead({ title: 'Активность пользователей' })
+useHead({ title: reportTitle('/app/activity') })
 
 /**
  * До первой выборки на экране НИЧЕГО, кроме «Загрузка».

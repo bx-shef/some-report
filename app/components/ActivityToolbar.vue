@@ -4,6 +4,7 @@ import { DEFAULT_CALL_THRESHOLD_SECONDS } from '~/types/activity'
 import { sortDepartments } from '~/utils/activityAdapter'
 import { ACTIVITY_MAX_DAYS } from '~/composables/useActivityReport'
 import { formatDate } from '~/utils/format'
+import { reportTitle } from '~/utils/pageTitle'
 
 /**
  * Панель отчёта «Активность пользователей»: отдел, период и порог разговора.
@@ -97,7 +98,7 @@ const appliedText = computed(() => {
   <div class="space-y-3">
     <div class="flex flex-wrap items-center gap-3">
       <h1 class="mr-auto text-xl font-bold">
-        Активность пользователей
+        {{ reportTitle('/app/activity') }}
       </h1>
 
       <slot name="actions" />

@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { pageTitle } from '~/utils/pageTitle'
+
 useHead({
   htmlAttrs: { lang: 'ru' },
-  titleTemplate: title => (title ? `${title} — Аналитика по лидам` : 'Аналитика по лидам')
+  titleTemplate: title => pageTitle(title)
 })
 </script>
 

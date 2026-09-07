@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { APP_REPORTS } from '~/config/routes'
+import { APP_NAME, APP_REPORTS } from '~/config/routes'
 import type { DrillRow } from '~/utils/drilldown'
 import type { DrillSliderPayload } from '~/utils/drillSlider'
 
@@ -58,7 +58,7 @@ const drillReason = ref<string | undefined>(undefined)
 /** Портал не открыл карточку: клик без последствий читается как поломка отчёта. */
 const openError = ref<string | undefined>(undefined)
 
-useHead({ title: 'Отчёты' })
+useHead({ title: 'Выбор отчёта' })
 
 /** Ссылка на отчёт с сохранением запроса: `?preview=1` вне портала и есть признак предпросмотра. */
 function target(path: string) {
@@ -158,7 +158,7 @@ async function openRow(row: DrillRow): Promise<void> {
     class="mx-auto max-w-4xl space-y-4 p-3 sm:p-4 lg:p-6"
   >
     <h1 class="text-xl font-bold">
-      Отчёты по CRM
+      {{ APP_NAME }}
     </h1>
 
     <p class="text-sm opacity-70">

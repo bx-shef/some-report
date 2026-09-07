@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
 import ManagersPage from '~/pages/app/managers.vue'
 import HomePage from '~/pages/app/index.vue'
+import { APP_REPORTS } from '~/config/routes'
 
 /**
  * Страницы приложения вне портала: главная (выбор отчёта) и отчёт «Сделки по менеджерам».
@@ -91,15 +92,23 @@ describe('страница «Сделки по менеджерам» вне п�
 })
 
 describe('главная страница приложения', () => {
-  it('перечисляет оба отчёта и ведёт на них', async () => {
+  /**
+   * ⚠ Перечисляем отчёты ИЗ `APP_REPORTS`, а не поимённо. Прежняя редакция называла два отчёта
+   * буквально и осталась зелёной, когда отчётов стало три: четвёртый забыли бы на плитке ровно
+   * так же — тихо, при исправной сборке. Главная приложения — единственный вход туда, куда не
+   * ведёт пункт меню.
+   */
+  it('перечисляет ВСЕ отчёты и ведёт на каждый', async () => {
     const wrapper = await mountSuspended(HomePage)
     await flush()
     const text = wrapper.text()
-    expect(text).toContain('Аналитика по лидам')
-    expect(text).toContain('Сделки по менеджерам')
     const links = wrapper.findAll('a').map(a => a.attributes('href') ?? '')
-    expect(links.some(href => href.startsWith('/app/leads'))).toBe(true)
-    expect(links.some(href => href.startsWith('/app/managers'))).toBe(true)
+    for (const report of APP_REPORTS) {
+      expect(text).toContain(report.title)
+      expect(links.some(href => href.startsWith(report.path))).toBe(true)
+    }
+    // Сторож самой проверки: пустой список отчётов сделал бы цикл выше пустым и зелёным.
+    expect(APP_REPORTS.length).toBeGreaterThanOrEqual(3)
   })
 
   it('вне портала честно говорит, где живут живые данные', async () => {
