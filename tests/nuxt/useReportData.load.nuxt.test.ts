@@ -17,6 +17,19 @@ const portal = vi.hoisted(() => ({
   leadTotal: 7,
   /** Отложенные ответы постраничной выборки по периоду: тест сам решает, кто ответит первым. */
   pending: {} as Record<string, (rows: unknown[] | Error) => void>,
+  /**
+   * Полные наборы строк выборок, читаемых СМЕЩЕНИЕМ: тест отдаёт их разом, стенд сам режет на
+   * страницы. Иначе тесту пришлось бы отвечать на каждую страницу отдельно, а проверяет он не это.
+   */
+  paged: {} as Record<string, unknown[]>,
+  /** Ключи страниц, спрошенных пакетом, — чтобы видеть, что читалось смещением, а не курсором. */
+  pagedCalls: [] as string[],
+  /** Ключи команд, на которые портал «не ответит»: так выглядит упёршаяся в лимит команда. */
+  dropPages: [] as string[],
+  /** Отдать страницу в конверте `{ items }` — как это делает `crm.stagehistory.list`. */
+  itemsEnvelope: false,
+  /** Подменить `total` портала: так выглядит испорченный или неожиданно огромный счётчик. */
+  fakeTotal: undefined as number | undefined,
   calls: [] as string[],
   /** Фильтр каждого построчного запроса по его ключу — чтобы видеть, что именно спросили. */
   filters: {} as Record<string, Record<string, unknown>>,
@@ -42,12 +55,40 @@ const portal = vi.hoisted(() => ({
   ]
 }))
 
+/**
+ * Ключ выборки, которую отчёт читает СМЕЩЕНИЕМ: успешные сделки без лида и строки лидов.
+ *
+ * ⚠ Обе узнаются по фильтру, а не по методу: `crm.deal.list` под фильтром лида читается
+ * курсором кусками по `LEAD_ID`, и спутать их нельзя.
+ */
+function pagedKey(method: string, filter: Record<string, unknown>): string | undefined {
+  if (method === 'crm.deal.list' && !Array.isArray(filter.LEAD_ID) && filter['>=CLOSEDATE']) {
+    return `closed:${String(filter['>=CLOSEDATE'])}`
+  }
+  if (method === 'crm.lead.list' && filter['>=DATE_CREATE']) return `leads:${String(filter['>=DATE_CREATE'])}`
+  return undefined
+}
+
 /** Пустой, но исправный ответ пакета: у каждой команды `getTotal()` и `getData()`. */
 function batchAnswer(commands: Record<string, unknown>) {
   const data: Record<string, { getTotal: () => number, getData: () => { result: unknown[] } }> = {}
   for (const [key, command] of Object.entries(commands)) {
     const filter = (command as { params?: { filter?: Record<string, unknown> } }).params?.filter
     if (filter && ('>=DATE_CREATE' in filter)) portal.batchFilters[key] = filter
+    // Страницы выборки смещением: `p<номер>` с параметром `start`. Режем из полного набора —
+    // ⚠ ровно как портал: страница за пределами набора это ПУСТОТА, а не ошибка.
+    const params = (command as { method?: string, params?: { start?: number } }).params
+    const pageKey = pagedKey((command as { method?: string }).method ?? '', filter ?? {})
+    if (key.startsWith('p') && pageKey && typeof params?.start === 'number') {
+      const all = portal.paged[pageKey] ?? []
+      portal.pagedCalls.push(`${pageKey}#${params.start}`)
+      // ⚠ Как портал с `isHaltOnError: false`: команда, упёршаяся в лимит, просто ОТСУТСТВУЕТ в
+      // ответе. Не пустой массив, не ошибка — её ключа нет вовсе.
+      if (portal.dropPages.includes(key)) continue
+      const slice = all.slice(params.start, params.start + 50)
+      data[key] = { getTotal: () => all.length, getData: () => ({ result: slice }) }
+      continue
+    }
     const rows = key === 'sources' ? portal.sources : key === 'leadStatuses' ? portal.leadStatuses : []
     data[key] = { getTotal: () => (key === 'total' ? portal.leadTotal : key === 'unprocessed' ? Math.min(2, portal.leadTotal) : 0), getData: () => ({ result: rows }) }
   }
@@ -79,6 +120,38 @@ mockNuxtImport('useB24', () => () => ({
               : history
                 ? `${(params.filter as { TYPE_ID?: unknown })?.TYPE_ID === 1 ? 'created' : 'history'}:${params.filter?.['>=CREATED_TIME'] ?? '?'}`
                 : cursor && method === 'crm.lead.list' ? `${onlyId ? 'ids' : 'leads'}:${params.filter?.['>=DATE_CREATE'] ?? '?'}` : undefined
+
+            /**
+             * ПЕРВАЯ страница выборки, читаемой смещением: тест отдаёт весь набор разом, стенд
+             * режет сам и сообщает `total`.
+             *
+             * ⚠ Стенд обязан быть НЕ ЩЕДРЕЕ SDK: `getData()` отдаёт КОНВЕРТ `{ result }` со
+             * страницей, а не весь набор, а общее число доступно ТОЛЬКО через `getTotal()`.
+             * Отдай он здесь всё разом — тест остался бы зелёным при выборке, читающей одну
+             * страницу из ста, то есть при ровно том дефекте, который уже был с сотрудниками.
+             */
+            const pageStart = (params as { start?: number }).start
+            const headKey = pageStart === 0 ? pagedKey(method, (params.filter ?? {}) as Record<string, unknown>) : undefined
+            if (headKey) {
+              portal.calls.push(headKey)
+              portal.filters[headKey] = params.filter ?? {}
+              return new Promise((resolve) => {
+                portal.pending[headKey] = (rows) => {
+                  if (rows instanceof Error) {
+                    resolve({ isSuccess: false, getData: () => undefined, getTotal: () => 0, getErrorMessages: () => [rows.message] })
+                    return
+                  }
+                  portal.paged[headKey] = rows
+                  const page = rows.slice(0, 50)
+                  resolve({
+                    isSuccess: true,
+                    getData: () => ({ result: portal.itemsEnvelope ? { items: page } : page }),
+                    getTotal: () => portal.fakeTotal ?? rows.length,
+                    getErrorMessages: () => []
+                  })
+                }
+              })
+            }
             if (method === 'user.get') {
               // ⛔ ЛОВУШКА, а не рабочий путь. Сотрудников читает `callList` (ниже), а здесь
               // одиночный вызов отвечает ТОЧНО как настоящий SDK: `getData()` отдаёт
@@ -153,6 +226,11 @@ beforeEach(() => {
   portal.initialized = true
   portal.leadTotal = 7
   portal.pending = {}
+  portal.paged = {}
+  portal.pagedCalls = []
+  portal.dropPages = []
+  portal.itemsEnvelope = false
+  portal.fakeTotal = undefined
   portal.calls = []
   portal.filters = {}
   portal.batchFilters = {}
@@ -213,6 +291,35 @@ describe('load', () => {
     expect(live.dataset.value.unlinkedDeals?.revenue).toBe(500)
   })
 
+  /**
+   * ⛔ Сторож ЦЕЛОСТНОСТИ выборки смещением. Ровно этот дефект уже стоил отчёту 2 двухсот
+   * фамилий: чтение заканчивалось после ПЕРВОЙ страницы, а числа при этом выглядели
+   * правдоподобно — просто меньше. Здесь он был бы не виден тем более: справка блока 7 идёт
+   * фоном, и «выручка за месяц 500 вместо 60 000» ничем себя не выдаёт.
+   *
+   * 120 сделок — это три страницы: первая одиночным запросом, ещё две пакетом.
+   */
+  it('справка блока 7 читается ЦЕЛИКОМ, а не первой страницей', async () => {
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await loading
+
+    const deals = Array.from({ length: 120 }, (_, index) => ({
+      ID: String(index + 1), SOURCE_ID: '', OPPORTUNITY: '100', CURRENCY_ID: 'BYN'
+    }))
+    await vi.waitFor(() => expect(portal.pending[`closed:${AUGUST.from}`]).toBeDefined())
+    portal.pending[`closed:${AUGUST.from}`]!(deals)
+    await vi.waitFor(() => expect(data.unlinkedPending.value).toBe(false))
+
+    expect(data.dataset.value.unlinkedDeals?.total).toBe(120)
+    expect(data.dataset.value.unlinkedDeals?.revenue).toBe(12_000)
+    // Страницы спрошены СМЕЩЕНИЕМ, а не курсором: 50 и 100 — вторая и третья.
+    expect(portal.pagedCalls).toContain(`closed:${AUGUST.from}#50`)
+    expect(portal.pagedCalls).toContain(`closed:${AUGUST.from}#100`)
+  })
+
   // ⚠ Смена периода, пока справка за прошлый период ещё идёт: её ответ обязан пропасть, иначе
   // под сентябрьской воронкой окажется августовский блок 7.
   it('ответ справки за прошлый период после смены периода выбрасывается', async () => {
@@ -235,6 +342,110 @@ describe('load', () => {
     portal.pending[`closed:${SEPTEMBER.from}`]!([])
     await vi.waitFor(() => expect(data.unlinkedPending.value).toBe(false))
     expect(data.dataset.value.unlinkedDeals?.total).toBe(0)
+  })
+
+  /**
+   * ⛔ Пакет уходит с `isHaltOnError: false`: команда, упёршаяся в лимит интенсивности, просто
+   * ОТСУТСТВУЕТ в ответе. Полсотни пропавших сделок — это недостача в ВЫРУЧКЕ, и выглядит она
+   * совершенно правдоподобно: просто число меньше. Отчёт обязан сказать «не удалось», а не
+   * показать часть денег как целое.
+   */
+  it('страница, на которую портал не ответил, роняет справку, а не занижает выручку', async () => {
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await loading
+
+    portal.dropPages = ['p1']
+    const deals = Array.from({ length: 120 }, (_, index) => ({
+      ID: String(index + 1), SOURCE_ID: '', OPPORTUNITY: '100', CURRENCY_ID: 'BYN'
+    }))
+    await vi.waitFor(() => expect(portal.pending[`closed:${AUGUST.from}`]).toBeDefined())
+    portal.pending[`closed:${AUGUST.from}`]!(deals)
+
+    await vi.waitFor(() => expect(data.unlinkedError.value).toBeTruthy())
+    // Именно НЕТ чисел, а не «есть, но меньше»: 70 из 120 выглядели бы как настоящая выручка.
+    expect(data.dataset.value.unlinkedDeals).toBeUndefined()
+  })
+
+  /**
+   * ⚠ Отмена проверяется МЕЖДУ пакетами, и до этого теста её не проверял никто: прежний тест
+   * отдавал ровно 50 строк, а это ранний выход ещё до цикла пакетов. 120 строк дают три
+   * страницы, то есть цикл действительно исполняется.
+   */
+  it('смена периода останавливает выборку между пакетами', async () => {
+    const data = useReportData()
+    const first = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await first
+    await vi.waitFor(() => expect(portal.pending[`closed:${AUGUST.from}`]).toBeDefined())
+
+    // Период сменился ДО того, как августовская справка отдала свою первую страницу.
+    const second = data.load(SEPTEMBER)
+    await vi.waitFor(() => expect(portal.pending[SEPTEMBER.from]).toBeDefined())
+    portal.pending[SEPTEMBER.from]!([])
+    await second
+
+    const many = () => Array.from({ length: 120 }, (_, index) => ({
+      ID: String(index + 1), SOURCE_ID: '', OPPORTUNITY: '100', CURRENCY_ID: 'BYN'
+    }))
+    portal.pagedCalls = []
+    portal.pending[`closed:${AUGUST.from}`]!(many())
+
+    // ⚠ Ждём, пока пакетный цикл СЕНТЯБРЯ действительно пойдёт: без этого тест судил бы об
+    // августе раньше, чем тот успел бы спросить хоть страницу, и оставался бы зелёным со снятой
+    // проверкой `stale()`. Проверено ломкой.
+    await vi.waitFor(() => expect(portal.pending[`closed:${SEPTEMBER.from}`]).toBeDefined())
+    portal.pending[`closed:${SEPTEMBER.from}`]!(many())
+    await vi.waitFor(() => expect(portal.pagedCalls.some(c => c.startsWith(`closed:${SEPTEMBER.from}`))).toBe(true))
+
+    // Ни одной страницы устаревшего периода пакетом не спрошено.
+    expect(portal.pagedCalls.filter(c => c.startsWith(`closed:${AUGUST.from}`))).toEqual([])
+  })
+
+  /**
+   * ⚠ Списки CRM отдают `result: [...]`, а `crm.stagehistory.list` — `result: { items: [...] }`.
+   * Сюда ходят только первые. «Непонятный конверт → пустой массив» означало бы справку, тихо
+   * показавшую нулевую выручку при совершенно исправном портале.
+   */
+  it('чужой конверт ответа роняет справку, а не даёт нулевую выручку', async () => {
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await loading
+
+    portal.itemsEnvelope = true
+    await vi.waitFor(() => expect(portal.pending[`closed:${AUGUST.from}`]).toBeDefined())
+    portal.pending[`closed:${AUGUST.from}`]!([{ ID: '1', SOURCE_ID: '', OPPORTUNITY: '500', CURRENCY_ID: 'BYN' }])
+
+    await vi.waitFor(() => expect(data.unlinkedError.value).toBeTruthy())
+    expect(data.dataset.value.unlinkedDeals).toBeUndefined()
+  })
+
+  /**
+   * ⚠ Число страниц берёт из `total`, который отдаёт ПОРТАЛ. Испорченный счётчик увёл бы отчёт в
+   * тысячи запросов и исчерпал лимит интенсивности для всех, кто в эту минуту работает в CRM.
+   *
+   * ⚠ И упереться в предел значит УПАСТЬ, а не показать что успели: строки идут в выручку.
+   */
+  it('неправдоподобно большой total роняет справку, а не уходит в тысячи запросов', async () => {
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await loading
+
+    portal.fakeTotal = 10_000_000
+    await vi.waitFor(() => expect(portal.pending[`closed:${AUGUST.from}`]).toBeDefined())
+    portal.pending[`closed:${AUGUST.from}`]!([{ ID: '1', SOURCE_ID: '', OPPORTUNITY: '500', CURRENCY_ID: 'BYN' }])
+
+    await vi.waitFor(() => expect(data.unlinkedError.value).toBeTruthy())
+    expect(data.dataset.value.unlinkedDeals).toBeUndefined()
+    // Ни одной страницы спрошено не было: предел проверяется ДО первого пакета.
+    expect(portal.pagedCalls).toEqual([])
   })
 
   // ⚠ Устаревшая выборка обязана ОСТАНОВИТЬСЯ, а не только выбросить результат: год — это

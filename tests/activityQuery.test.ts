@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ActivityFilters, ActivityUser } from '~/types/activity'
 import { DEFAULT_CALL_THRESHOLD_SECONDS } from '~/types/activity'
 import {
+  callPageOfKey,
   CALL_TYPE_CODE,
   DEED_DIRECTION,
   DEED_TYPE_ID,
@@ -273,5 +274,23 @@ describe('callDrillFilter', () => {
 
   it('порог берётся из отбора, а не из умолчания', () => {
     expect(callDrillFilter(period, 'talks', 120)['>CALL_DURATION']).toBe(120)
+  })
+})
+
+describe('ключ страницы звонков', () => {
+  // ⚠ Функция жила без единого теста с самого отчёта 3, и в ней был тот же дефект, что нашёлся
+  // у страниц отчёта 1: `Number('')` — это НОЛЬ, поэтому ключ `'c'` без номера читался страницей
+  // 0. Ответы пакета раскладываются по этому номеру: страница легла бы дважды, а её звонки —
+  // в счёт дважды, при совершенно исправном чтении.
+  it('ключ без номера страницей не считается', () => {
+    for (const key of ['c', '', 'cx', 'c-1', 'p3', 'total']) {
+      expect(callPageOfKey(key)).toBe(-1)
+    }
+  })
+
+  it('номер читается числом, а не строкой', () => {
+    expect(callPageOfKey('c0')).toBe(0)
+    // Сортировка строкой поставила бы `c12` перед `c2` — потому и разбираем число.
+    expect(callPageOfKey('c12')).toBeGreaterThan(callPageOfKey('c2'))
   })
 })
