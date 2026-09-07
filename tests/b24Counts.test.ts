@@ -321,6 +321,38 @@ describe('успешные сделки без связи с лидом', () => 
   it('повторы по ID отбрасываются, пустой список — нули без строк', () => {
     const rows = [{ ID: '7', SOURCE_ID: 'CALL', OPPORTUNITY: '10' }, { ID: 7, SOURCE_ID: 'CALL', OPPORTUNITY: '10' }]
     expect(adaptUnlinkedWonDeals(rows, currencies, ['CALL']).total).toBe(1)
-    expect(adaptUnlinkedWonDeals([], currencies)).toEqual({ total: 0, revenue: 0, unconverted: 0, totalShareOfRevenue: 0, rows: [] })
+    expect(adaptUnlinkedWonDeals([], currencies)).toEqual({ total: 0, revenue: 0, unconverted: 0, foreign: 0, totalShareOfRevenue: 0, rows: [] })
+  })
+})
+
+describe('валюта успешных сделок без лида', () => {
+  const CURRENCIES = [
+    { CURRENCY: 'BYN', BASE: 'Y', AMOUNT: '1.0000', AMOUNT_CNT: '1' },
+    { CURRENCY: 'RUB', BASE: 'N', AMOUNT: '3.5300', AMOUNT_CNT: '100' }
+  ]
+
+  /**
+   * ⚠ Блок 7 — это 90 % сделок портала заказчика, то есть основная выручка отчёта. Сделка не в
+   * базовой валюте здесь не «другая валюта», а ошибка ВВОДА («Все сделки в BYN», 2026-09-03), и
+   * приведённая курсом она неотличима от правильной.
+   */
+  it('считает сделки не в базовой валюте отдельно от сделок без курса', () => {
+    const result = adaptUnlinkedWonDeals([
+      { ID: '1', SOURCE_ID: 'CALL', OPPORTUNITY: '100', CURRENCY_ID: 'BYN' },
+      { ID: '2', SOURCE_ID: 'CALL', OPPORTUNITY: '100', CURRENCY_ID: 'RUB' },
+      { ID: '3', SOURCE_ID: 'CALL', OPPORTUNITY: '100', CURRENCY_ID: 'XYZ' }
+    ], CURRENCIES, ['CALL'])
+    expect(result.foreign).toBe(1)
+    expect(result.unconverted).toBe(1)
+    expect(result.total).toBe(3)
+  })
+
+  // ⚠ Сделка без указанной валюты считается базовой: это не ошибка ввода, а обычная пустота поля.
+  it('пустая валюта — базовая, а не «не в базовой»', () => {
+    const result = adaptUnlinkedWonDeals([
+      { ID: '1', SOURCE_ID: 'CALL', OPPORTUNITY: '100' }
+    ], CURRENCIES, ['CALL'])
+    expect(result.foreign).toBe(0)
+    expect(result.unconverted).toBe(0)
   })
 })

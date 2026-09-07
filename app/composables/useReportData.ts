@@ -590,6 +590,7 @@ export function useReportData() {
       warnings.value = {
         mergedLossReasons: reasons.foldedCodes,
         unconvertedDeals: adaptedDeals.unconvertedDeals,
+        foreignCurrencyDeals: adaptedDeals.foreignCurrencyDeals,
         dealsWithoutLead: adaptedDeals.dealsWithoutLead,
         duplicateIds: adaptedDeals.duplicateIds,
         wonWithoutAmount: adaptedDeals.wonWithoutAmount,

@@ -180,6 +180,17 @@ export interface AdapterWarnings {
   /** Сделки в валюте, курса которой в портале нет: суммы взяты как есть, без конвертации. */
   unconvertedDeals: number
   /**
+   * Сделки в валюте, ОТЛИЧНОЙ от базовой: сумма приведена курсом и сложена с остальными.
+   *
+   * ⚠ Это не то же, что `unconvertedDeals`, и путать их нельзя. Там валюта НЕИЗВЕСТНА — это
+   * сломано, сумма взята как есть. Здесь всё сработало правильно: курс нашёлся, привели.
+   *
+   * ⚠ Показываем всё равно, потому что у заказчика это ошибка ВВОДА: «Все сделки в BYN. Судя по
+   * всему сделки в рублях это неправильные сделки» (ответ от 2026-09-03). Приведённая курсом
+   * сделка неотличима в выручке от правильной — ошибка растворяется, и найти её потом нельзя.
+   */
+  foreignCurrencyDeals: number
+  /**
    * Лиды со стадией «успех», но без найденной сделки.
    *
    * ⚠ Имя про СТАДИЮ, а не про исход: сам лид получает `outcome: 'lost'` и попадает в «Потери до
@@ -263,15 +274,25 @@ function dealFromRow(
   rates: Record<string, number>,
   currencyId: string,
   reasonKeyByCode: Record<string, string>
-): { deal: ReportDeal, converted: boolean } {
+): { deal: ReportDeal, converted: boolean, foreign: boolean } {
   const id = toNumber(row.ID)
   const leadId = toNumber(row.LEAD_ID)
   const dealCurrency = toText(row.CURRENCY_ID) || currencyId
   const { value, converted } = toBaseAmount(toNumber(row.OPPORTUNITY), dealCurrency, rates)
   const semantic = toSemantic(row.STAGE_SEMANTIC_ID)
+  const isBase = dealCurrency === currencyId
   return {
     // Своя валюта портала конвертации не требует — это не «не удалось привести».
-    converted: converted || dealCurrency === currencyId,
+    converted: converted || isBase,
+    /**
+     * Валюта ЗНАЕТСЯ, но она не базовая: сумму привели курсом и сложили с остальными.
+     *
+     * ⚠ Считаем отдельно от `converted` потому, что у заказчика это не «сделка в другой валюте»,
+     * а ОШИБКА ВВОДА: «Все сделки в BYN. Судя по всему сделки в рублях это неправильные сделки»
+     * (ответ от 2026-09-03). Привести её курсом и молча сложить значит растворить ошибку в
+     * выручке — никто её больше не найдёт и не исправит.
+     */
+    foreign: !isBase && converted,
     deal: {
       id,
       ...(leadId > 0 ? { leadId } : {}),
@@ -310,12 +331,13 @@ export function adaptDeals(
    * места, которым надо совпасть.
    */
   reasonKeyByCode: Record<string, string> = {}
-): { deals: ReportDeal[], unconvertedDeals: number, dealsWithoutLead: number, duplicateIds: number, wonWithoutAmount: number } {
+): { deals: ReportDeal[], unconvertedDeals: number, foreignCurrencyDeals: number, dealsWithoutLead: number, duplicateIds: number, wonWithoutAmount: number } {
   const rates = currencyRates(currencies)
   const currencyId = baseCurrency(currencies)
   const seen = new Set<number>()
   let duplicateIds = 0
   let unconvertedDeals = 0
+  let foreignCurrencyDeals = 0
   let dealsWithoutLead = 0
   let wonWithoutAmount = 0
   const deals: ReportDeal[] = []
@@ -326,8 +348,9 @@ export function adaptDeals(
       continue
     }
     seen.add(id)
-    const { deal, converted } = dealFromRow(row, rates, currencyId, reasonKeyByCode)
+    const { deal, converted, foreign } = dealFromRow(row, rates, currencyId, reasonKeyByCode)
     if (!converted) unconvertedDeals++
+    if (foreign) foreignCurrencyDeals++
     if (deal.leadId === undefined) dealsWithoutLead++
     /**
      * ⚠ Успешная сделка с нулевой суммой — не мелочь, а свойство процесса. На боевом портале
@@ -338,7 +361,7 @@ export function adaptDeals(
     if (deal.outcome === 'won' && deal.amount === 0) wonWithoutAmount++
     deals.push(deal)
   }
-  return { deals, unconvertedDeals, dealsWithoutLead, duplicateIds, wonWithoutAmount }
+  return { deals, unconvertedDeals, foreignCurrencyDeals, dealsWithoutLead, duplicateIds, wonWithoutAmount }
 }
 
 /**
@@ -384,11 +407,13 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
   let dealsWithoutLead = 0
   let dealsWithMissingLead = 0
   let unconvertedDeals = 0
+  let foreignCurrencyDeals = 0
 
   const deals: ReportDeal[] = dealRows.map((row) => {
-    const { deal, converted } = dealFromRow(row, rates, currencyId, reasonKeyByCode)
+    const { deal, converted, foreign } = dealFromRow(row, rates, currencyId, reasonKeyByCode)
     const { id, leadId = 0 } = deal
     if (!converted) unconvertedDeals++
+    if (foreign) foreignCurrencyDeals++
 
     if (leadId <= 0) {
       dealsWithoutLead++
@@ -443,6 +468,7 @@ export function adaptPortalData(input: AdapterInput): AdaptedData {
     warnings: {
       mergedLossReasons: reasons.foldedCodes,
       unconvertedDeals,
+      foreignCurrencyDeals,
       wonStageWithoutDeal,
       dealsWithoutLead,
       dealsWithMissingLead,
@@ -634,6 +660,7 @@ export function adaptUnlinkedWonDeals(
   let total = 0
   let revenue = 0
   let unconverted = 0
+  let foreign = 0
   for (const row of rows) {
     const id = toNumber(row.ID)
     // ⚠ Отсеиваем ПОВТОРЫ, а не записи без идентификатора: `toNumber` отдаёт 0 и для пустого, и
@@ -646,6 +673,7 @@ export function adaptUnlinkedWonDeals(
     const dealCurrency = toText(row.CURRENCY_ID) || currencyId
     const { value, converted } = toBaseAmount(toNumber(row.OPPORTUNITY), dealCurrency, rates)
     if (!converted && dealCurrency !== currencyId) unconverted++
+    if (converted && dealCurrency !== currencyId) foreign++
     const rawSource = toText(row.SOURCE_ID)
     const sourceId = rawSource && known.has(rawSource) ? rawSource : UNSPECIFIED_SOURCE
     const acc = bySource.get(sourceId) ?? { count: 0, revenue: 0 }
@@ -664,7 +692,7 @@ export function adaptUnlinkedWonDeals(
       shareOfRevenue: share(acc.revenue, revenue)
     }))
     .sort((a, b) => b.revenue - a.revenue || b.count - a.count || a.sourceId.localeCompare(b.sourceId))
-  return { total, revenue, unconverted, totalShareOfRevenue: share(revenue, revenue), rows: result }
+  return { total, revenue, unconverted, foreign, totalShareOfRevenue: share(revenue, revenue), rows: result }
 }
 
 /** Счётчики сделок всего портала → контекст для сводки. */

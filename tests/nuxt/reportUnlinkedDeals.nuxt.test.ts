@@ -17,6 +17,7 @@ const august: UnlinkedDeals = {
   total: 5536,
   revenue: 1_234_500,
   unconverted: 0,
+  foreign: 0,
   totalShareOfRevenue: 1,
   rows: [
     { sourceId: UNSPECIFIED_SOURCE, count: 5531, share: 0.999, revenue: 1_230_000, shareOfRevenue: 0.996 },
@@ -99,11 +100,14 @@ describe('ReportUnlinkedDeals', () => {
     expect(foot[3]).toContain('1 234 500')
   })
 
-  it('сделки без курса — оговорка с числом', async () => {
+  // Оговорка обязана называть ПОСЛЕДСТВИЕ, а не факт: «валюты нет в справочнике» само по себе
+  // читается как техническая мелочь, а выручка при этом сложена из разных валют как из одной.
+  it('сделки в валюте вне справочника — оговорка с числом и с последствием', async () => {
     const text = (await render({ unlinked: { ...august, unconverted: 42 } })).text()
-    expect(text).toContain('без курса')
+    expect(text).toContain('которой нет в справочнике портала')
     expect(text).toContain('42')
-    expect((await render()).text()).not.toContain('без курса')
+    expect(text).toContain('Выручка искажена')
+    expect((await render()).text()).not.toContain('которой нет в справочнике портала')
   })
 
   it('подвал доли суммы берёт из данных: при нулевой сумме — 0 %', async () => {
@@ -113,7 +117,7 @@ describe('ReportUnlinkedDeals', () => {
   })
 
   it('без сделок без лида говорит об этом словами, а не пустой таблицей', async () => {
-    const wrapper = await render({ unlinked: { total: 0, revenue: 0, unconverted: 0, totalShareOfRevenue: 0, rows: [] } })
+    const wrapper = await render({ unlinked: { total: 0, revenue: 0, unconverted: 0, foreign: 0, totalShareOfRevenue: 0, rows: [] } })
     expect(wrapper.text()).toContain('успешных сделок без лида нет')
     expect(wrapper.find('table').exists()).toBe(false)
   })
@@ -129,5 +133,29 @@ describe('ReportUnlinkedDeals', () => {
     const total = wrapper.findAll('button').find((b: { attributes: (name: string) => string | undefined }) => b.attributes('title') === 'Открыть список: Успешные сделки без связи с лидом')!
     await total.trigger('click')
     expect(wrapper.emitted('drill')?.[1]?.[0]).toMatchObject({ dealScope: 'unlinked', extra: {} })
+  })
+})
+
+describe('оговорка про валюту', () => {
+  /**
+   * ⚠ Две оговорки про валюту читаются ПО-РАЗНОМУ, и это главное здесь. «Валюты нет в
+   * справочнике» — сломано, сумма взята как есть, и выручку под ней читать нельзя. «Не в
+   * базовой» — сработало верно, но у заказчика все сделки должны быть в одной валюте, значит
+   * это ошибка ВВОДА, которую надо пойти и поправить в CRM.
+   */
+  it('сделки не в базовой валюте названы отдельно от сделок вне справочника', async () => {
+    const text = (await render({ unlinked: { ...august, unconverted: 2, foreign: 7 } })).text()
+    expect(text).toContain('которой нет в справочнике портала')
+    expect(text).toContain('Сделок не в')
+    expect(text).toContain('7')
+    // И каждая зовёт своё: сломанную сумму — чинить, верную, но чужую валюту — проверить ввод.
+    expect(text).toContain('Выручка искажена')
+    expect(text).toContain('Проверьте в CRM')
+  })
+
+  it('когда все сделки в базовой валюте — про валюту молчим', async () => {
+    const text = (await render({ unlinked: { ...august, unconverted: 0, foreign: 0 } })).text()
+    expect(text).not.toContain('Проверьте в CRM')
+    expect(text).not.toContain('Выручка искажена')
   })
 })

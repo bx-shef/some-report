@@ -229,6 +229,8 @@ describe('adaptPortalData', () => {
     expect(result.warnings).toEqual({
       mergedLossReasons: 0,
       unconvertedDeals: 0,
+      // В наборе есть сделка в валюте, отличной от базовой: курс нашёлся, сумму привели.
+      foreignCurrencyDeals: 1,
       wonStageWithoutDeal: 1,
       dealsWithoutLead: 1,
       dealsWithMissingLead: 0,
@@ -245,6 +247,62 @@ describe('adaptPortalData', () => {
     })
     expect(odd.warnings.unconvertedDeals).toBe(1)
     expect(odd.deals[0]!.amount).toBe(500)
+    /**
+     * ⚠ И НЕ считает её же валютной: это РАЗНЫЕ утверждения. «Валюта неизвестна» — сломано,
+     * сумма взята как есть. «Не в базовой валюте» — сработало верно, курс нашёлся. Смешать их
+     * значит сказать про сломанную сделку «мы её привели», то есть соврать в сторону спокойствия.
+     */
+    expect(odd.warnings.foreignCurrencyDeals).toBe(0)
+  })
+
+  /**
+   * ⚠ Сделка в валюте, отличной от базовой, — у ЗАКАЗЧИКА это ошибка ВВОДА, а не «другая
+   * валюта»: «Все сделки в BYN. Судя по всему сделки в рублях это неправильные сделки»
+   * (2026-09-03). Привести её курсом и молча сложить значит растворить ошибку в выручке —
+   * никто её больше не найдёт.
+   */
+  it('считает сделки не в базовой валюте отдельно от сделок без курса', () => {
+    const foreign = adaptPortalData({
+      ...input,
+      deals: [{ ID: '13', LEAD_ID: '1', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '100', CURRENCY_ID: 'RUB' }]
+    })
+    expect(foreign.warnings.foreignCurrencyDeals).toBe(1)
+    // Она НЕ «без курса»: курс нашёлся, и сумма приведена.
+    expect(foreign.warnings.unconvertedDeals).toBe(0)
+    expect(foreign.deals[0]!.amount).not.toBe(100)
+  })
+
+  /**
+   * ⛔ Сторож против ВОЗВРАТА самого дорогого дефекта адаптера. Битая строка курса (пустой
+   * `AMOUNT`) когда-то давала курс 1: сделка на 456 000 RUB превращалась в 456 000 BYN —
+   * завышение в 28 раз, — а счётчик оговорок оставался нулём, то есть отчёт об этом МОЛЧАЛ.
+   *
+   * ⚠ Теперь у «валютных» и «без курса» два разных счётчика, и легко ошибиться в другую сторону:
+   * записать битую строку в «привели курсом». Тогда отчёт снова успокоил бы — «всё сработало»,
+   * — хотя сумма не приведена вовсе.
+   */
+  it('битый курс уводит сделку в «без курса», а НЕ в «не в базовой валюте»', () => {
+    const broken = adaptPortalData({
+      ...input,
+      currencies: [
+        { CURRENCY: 'BYN', BASE: 'Y', AMOUNT: '1.0000', AMOUNT_CNT: '1' },
+        { CURRENCY: 'RUB', BASE: 'N', AMOUNT: '', AMOUNT_CNT: '100' }
+      ],
+      deals: [{ ID: '15', LEAD_ID: '1', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '456000', CURRENCY_ID: 'RUB' }]
+    })
+    expect(broken.warnings.unconvertedDeals).toBe(1)
+    expect(broken.warnings.foreignCurrencyDeals).toBe(0)
+    // И сумма осталась как есть — не приведена и не обнулена.
+    expect(broken.deals[0]!.amount).toBe(456_000)
+  })
+
+  it('сделка в базовой валюте валютной не считается', () => {
+    const base = adaptPortalData({
+      ...input,
+      deals: [{ ID: '14', LEAD_ID: '1', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '100', CURRENCY_ID: 'BYN' }]
+    })
+    expect(base.warnings.foreignCurrencyDeals).toBe(0)
+    expect(base.warnings.unconvertedDeals).toBe(0)
   })
 
   it('строит справочники для печати имён', () => {

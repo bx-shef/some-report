@@ -132,10 +132,12 @@ describe('reportSheets', () => {
   })
 
   it('сделки без лида — отдельный лист только когда справка пришла; валюта без курса — оговорка', () => {
-    const unlinked = { total: 5, revenue: 1000, unconverted: 2, totalShareOfRevenue: 1, rows: [{ sourceId: 'CALL', count: 5, share: 1, revenue: 1000, shareOfRevenue: 1 }] }
+    const unlinked = { total: 5, revenue: 1000, unconverted: 2, foreign: 3, totalShareOfRevenue: 1, rows: [{ sourceId: 'CALL', count: 5, share: 1, revenue: 1000, shareOfRevenue: 1 }] }
     const sheet = reportSheets(report, { ...dataset, unlinkedDeals: unlinked }, {}, false).find(s => s.name === 'Сделки без лида')!
     expect(sheet.rows[1]).toEqual(['Всего', 5, '', 1000, ''])
     expect(sheet.rows[2]).toEqual(['Сделок в валюте без курса — суммы взяты как есть', 2, '', '', ''])
+    // ⚠ Лист обязан сходиться с экраном построчно: там эта оговорка стоит отдельно от предыдущей.
+    expect(sheet.rows[3]).toEqual(['Сделок не в базовой валюте — суммы приведены курсом', 3, '', '', ''])
     expect(sheet.rows.at(-1)).toEqual(['Входящий звонок', 5, 100, 1000, 100])
     for (const row of sheet.rows) if (row.length) expect(row).toHaveLength(5)
   })

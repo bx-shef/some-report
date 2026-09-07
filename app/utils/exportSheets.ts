@@ -188,6 +188,9 @@ export function reportSheets(report: ReportMetrics, dataset: ReportDataset, filt
       ['Всего', unlinked.total, '', unlinked.revenue, '']
     ]
     if (unlinked.unconverted > 0) rows.push(['Сделок в валюте без курса — суммы взяты как есть', unlinked.unconverted, '', '', ''])
+    // ⚠ Та же оговорка, что на экране: лист Excel обязан сходиться с ним построчно, иначе
+    // распечатанная выручка перестаёт объяснять сама себя ровно там, где её сверяют с CRM.
+    if (unlinked.foreign > 0) rows.push(['Сделок не в базовой валюте — суммы приведены курсом', unlinked.foreign, '', '', ''])
     rows.push(
       [],
       ['Источник сделки', 'Сделок', '%', money, '% суммы'],
