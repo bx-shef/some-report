@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type { ActivityFilters, ActivityRow } from '~/types/activity'
-import { defaultActivityFilters } from '~/composables/useActivityReport'
+import { ACTIVITY_MAX_DAYS, defaultActivityFilters } from '~/composables/useActivityReport'
 import { type ActivityCell, activityDrillPayload } from '~/utils/activityDrill'
 import { formatCount } from '~/utils/format'
+import { ACTIVITY_OPTION_KEY, decodeActivityState, encodeActivityState } from '~/utils/savedFilters'
 import { reportTitle } from '~/utils/pageTitle'
 
 /**
@@ -30,6 +31,8 @@ const {
 
 /** Выбранный отбор. Применённый живёт в композабле — подпись строится по нему. */
 const filters = ref<ActivityFilters>(defaultActivityFilters(today))
+
+const savedOptions = useUserOptions()
 
 const slider = usePortalSlider()
 
@@ -94,6 +97,11 @@ const booting = ref(true)
 
 onMounted(async () => {
   await b24.init()
+  // ⚠ Сохранённый отбор читаем ДО первой выборки: иначе портал считал бы всё дважды — сначала по
+  // умолчанию, потом по восстановленному. Разбор проверяющий (`savedFilters.ts`).
+  if (b24.isInit()) {
+    filters.value = { ...filters.value, ...decodeActivityState(await savedOptions.read(ACTIVITY_OPTION_KEY), ACTIVITY_MAX_DAYS) }
+  }
   await load(filters.value)
   booting.value = false
   await fit()
@@ -103,6 +111,7 @@ onMounted(async () => {
 // панель всегда присваивает отбор ЦЕЛИКОМ, новым объектом.
 watch(filters, async () => {
   if (booting.value) return
+  savedOptions.write(ACTIVITY_OPTION_KEY, encodeActivityState(filters.value))
   await load(filters.value)
   await fit()
 })

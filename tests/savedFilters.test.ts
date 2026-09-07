@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import { CALL_THRESHOLD_CHOICES, DEFAULT_CALL_THRESHOLD_SECONDS, thresholdLabel } from '~/types/activity'
 import {
+  ACTIVITY_OPTION_KEY,
+  decodeActivityState,
   decodeLeadsState,
   decodeManagersState,
+  encodeActivityState,
   encodeLeadsState,
   encodeManagersState,
   LEADS_OPTION_KEY,
@@ -151,5 +155,131 @@ describe('отчёт по менеджерам', () => {
     expect(state.companyId).toBeUndefined()
     // Остальной отбор при этом уцелел: негодным было одно поле, а не вся настройка.
     expect(state.scope).toBe('in-work')
+  })
+})
+
+describe('отбор отчёта «Активность пользователей»', () => {
+  const FILTERS = { period: PERIOD, departmentId: 62, thresholdSeconds: 29 }
+
+  it('ключ версионирован, как у соседей', () => {
+    expect(ACTIVITY_OPTION_KEY).toBe('report.activity.v1')
+  })
+
+  it('сохранённое возвращается тем же', () => {
+    expect(decodeActivityState(encodeActivityState(FILTERS), 31)).toEqual(FILTERS)
+  })
+
+  it('без отдела — значит все отделы, а не отдел с номером ноль', () => {
+    const saved = encodeActivityState({ period: PERIOD, thresholdSeconds: 29 })
+    expect(decodeActivityState(saved, 31).departmentId).toBeUndefined()
+    // ⚠ Ноль отделом не бывает: `readNumber` без `allowZero` его и не пропустит.
+    expect(decodeActivityState('{"departmentId":0}', 31).departmentId).toBeUndefined()
+  })
+
+  /**
+   * ⚠ У отчёта 3 СВОЙ предел периода — месяц: звонки лежат строками в памяти фрейма. Квартал,
+   * сохранённый прошлой версией приложения, панель выбрать не даст, а отчёт посчитал бы.
+   */
+  it('период длиннее предела ЭТОГО отчёта отвергается', () => {
+    const quarter = JSON.stringify({ period: { from: '2026-07-01', to: '2026-09-30' }, thresholdSeconds: 29 })
+    expect(decodeActivityState(quarter, 31).period).toBeUndefined()
+    // Без предела тот же период годен — значит отвергает именно предел, а не разбор вообще.
+    expect(decodeActivityState(quarter).period).toEqual({ from: '2026-07-01', to: '2026-09-30' })
+  })
+
+  it('перевёрнутый период отвергается', () => {
+    expect(decodeActivityState('{"period":{"from":"2026-09-30","to":"2026-09-01"}}', 31).period).toBeUndefined()
+  })
+
+  /**
+   * ⚠ Порог — не «любое неотрицательное число»: панель предлагает шесть значений. Восстановленное
+   * 47 показало бы в панели пустой выбор, пока числа на экране считаются по 47.
+   */
+  it('порог не из списка выбора отвергается', () => {
+    for (const seconds of [47, 1, 30, 3600, -5, 1.5]) {
+      expect(decodeActivityState(`{"thresholdSeconds":${seconds}}`, 31).thresholdSeconds).toBeUndefined()
+    }
+  })
+
+  it('порог из списка восстанавливается, включая ноль', () => {
+    expect(decodeActivityState('{"thresholdSeconds":0}', 31).thresholdSeconds).toBe(0)
+    expect(decodeActivityState('{"thresholdSeconds":119}', 31).thresholdSeconds).toBe(119)
+  })
+
+  // ⚠ Ноль здесь ЗНАЧЕНИЕ («считать все разговоры»), а не «не задано»: потеряв его, отчёт молча
+  // вернулся бы к порогу заказчика и показал другие числа.
+  it('ноль как порог сохраняется, а не теряется', () => {
+    const saved = encodeActivityState({ period: PERIOD, thresholdSeconds: 0 })
+    expect(decodeActivityState(saved, 31).thresholdSeconds).toBe(0)
+  })
+
+  it('мусор в настройке открывает отчёт с умолчанием, а не падает', () => {
+    for (const raw of [undefined, null, '', '   ', 'не json', '[]', '42', '{"period":true,"thresholdSeconds":"много"}']) {
+      expect(() => decodeActivityState(raw, 31)).not.toThrow()
+      expect(decodeActivityState(raw, 31)).toEqual({})
+    }
+  })
+
+  /**
+   * ⚠ Имена из прототипа — обычный мусор, а не особый класс атаки: у отчёта 3 нет поиска
+   * `ключ in объект` (он есть у отчёта 2 для `scope`, и вот там это уязвимость). Проверяем
+   * потому, что «constructor» выглядит правдоподобнее «abc» и через `Number()` даёт `NaN` тем же
+   * путём — и если кто-то заменит `readNumber` на менее придирчивый разбор, тест покраснеет.
+   */
+  it('имена служебных свойств за настройку не принимаются', () => {
+    for (const value of ['constructor', 'valueOf', 'toString', '__proto__', 'abc']) {
+      expect(decodeActivityState(`{"thresholdSeconds":"${value}"}`, 31).thresholdSeconds).toBeUndefined()
+      expect(decodeActivityState(`{"departmentId":"${value}"}`, 31).departmentId).toBeUndefined()
+    }
+  })
+
+  /**
+   * ⚠ Портал документирует значение `user.option.get` как `object | string | null` и отдаёт его
+   * КАК ЕСТЬ. У отчёта 1 такой тест есть, у отчёта 3 не было: приём только строки воспроизвёл бы
+   * ровно тот симптом, ради которого разбор и написан терпимым.
+   */
+  it('читает и строку, и уже разобранный объект', () => {
+    const asObject = { period: PERIOD, departmentId: 62, thresholdSeconds: 0 }
+    expect(decodeActivityState(asObject, 31)).toEqual(asObject)
+    expect(decodeActivityState(JSON.stringify(asObject), 31)).toEqual(asObject)
+  })
+})
+
+describe('подписи порогов', () => {
+  /**
+   * ⚠ Подписи видит человек, а теста на них не было: перенос списка из панели в типы уже был
+   * поводом их сломать, и все шесть пришлось сверять посимвольно вручную.
+   */
+  it('все шесть подписей — ровно те, что были', () => {
+    expect(CALL_THRESHOLD_CHOICES.map(thresholdLabel)).toEqual([
+      'Считать все разговоры',
+      'Дольше 9 с',
+      'Дольше 19 с',
+      'Дольше 29 с (как было)',
+      'Дольше 59 с',
+      'Дольше 119 с'
+    ])
+  })
+
+  // ⚠ «как было» — только у порога заказчика: это правило из прежнего отчёта, и человек должен
+  // узнавать его в списке с первого взгляда.
+  it('«как было» стоит ровно у порога заказчика', () => {
+    const marked = CALL_THRESHOLD_CHOICES.filter(seconds => thresholdLabel(seconds).includes('как было'))
+    expect(marked).toEqual([DEFAULT_CALL_THRESHOLD_SECONDS])
+  })
+
+  it('ноль — не «дольше 0 с», а словами', () => {
+    expect(thresholdLabel(0)).toBe('Считать все разговоры')
+  })
+})
+
+describe('граница периода отчёта 3', () => {
+  // ⚠ Ровно предел проходит, предел плюс день — нет. Строгое сравнение легко превратить в
+  // нестрогое, и тогда в отчёт заедет период на день длиннее разрешённого панелью.
+  it('ровно 31 день проходит, 32 — нет', () => {
+    const month = JSON.stringify({ period: { from: '2026-09-01', to: '2026-10-01' } })
+    const longer = JSON.stringify({ period: { from: '2026-09-01', to: '2026-10-02' } })
+    expect(decodeActivityState(month, 31).period).toEqual({ from: '2026-09-01', to: '2026-10-01' })
+    expect(decodeActivityState(longer, 31).period).toBeUndefined()
   })
 })

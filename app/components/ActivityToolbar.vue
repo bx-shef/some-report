@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ActivityFilters, DepartmentRef } from '~/types/activity'
-import { DEFAULT_CALL_THRESHOLD_SECONDS } from '~/types/activity'
+import { CALL_THRESHOLD_CHOICES, DEFAULT_CALL_THRESHOLD_SECONDS, thresholdLabel } from '~/types/activity'
 import { sortDepartments } from '~/utils/activityAdapter'
 import { ACTIVITY_MAX_DAYS } from '~/composables/useActivityReport'
 import { formatDate } from '~/utils/format'
@@ -40,10 +40,22 @@ const ALL_DEPARTMENTS = 0
  * ширину, а искать человек всё равно будет по названию. Иерархия при этом НЕ теряется — она в
  * самом отборе: выбранный отдел берётся вместе с подотделами (`departmentSubtree`).
  */
-const departmentItems = computed(() => [
-  { id: ALL_DEPARTMENTS, label: 'Все отделы' },
-  ...sortDepartments(props.departments).map(department => ({ id: department.id, label: department.name }))
-])
+const departmentItems = computed(() => {
+  const items = [
+    { id: ALL_DEPARTMENTS, label: 'Все отделы' },
+    ...sortDepartments(props.departments).map(department => ({ id: department.id, label: department.name }))
+  ]
+  /**
+   * ⚠ Выбранный отдел, которого в справочнике НЕТ, всё равно должен быть в списке. Такое бывает
+   * с запомненным отбором: отдел удалили, а настройка человека его помнит. Без этой строки
+   * `B24SelectMenu` печатает в поле голое число («999»), пока подпись под панелью и объяснение
+   * пустоты говорят «отдел #999» — три места экрана называют одно и то же тремя способами.
+   */
+  const picked = model.value.departmentId
+  return picked !== undefined && !items.some(item => item.id === picked)
+    ? [...items, { id: picked, label: `отдел #${picked}` }]
+    : items
+})
 
 function pickDepartment(value: unknown): void {
   const id = Number(value)
@@ -62,14 +74,7 @@ function pickDepartment(value: unknown): void {
  * ПРАВИЛО ЗАКАЗЧИКА из прежнего отчёта. Свободный ввод приглашал бы поставить 30 «для красоты» и
  * молча разойтись со всеми прежними отчётами; готовые значения делают выбор осознанным.
  */
-const thresholdItems = [
-  { id: 0, label: 'Считать все разговоры' },
-  { id: 9, label: 'Дольше 9 с' },
-  { id: 19, label: 'Дольше 19 с' },
-  { id: DEFAULT_CALL_THRESHOLD_SECONDS, label: `Дольше ${DEFAULT_CALL_THRESHOLD_SECONDS} с (как было)` },
-  { id: 59, label: 'Дольше 59 с' },
-  { id: 119, label: 'Дольше 119 с' }
-]
+const thresholdItems = CALL_THRESHOLD_CHOICES.map(seconds => ({ id: seconds, label: thresholdLabel(seconds) }))
 
 function pickThreshold(value: unknown): void {
   const seconds = Number(value)
@@ -84,9 +89,17 @@ const appliedText = computed(() => {
   const department = applied.departmentId === undefined
     ? 'все отделы'
     : (props.departments.find(item => item.id === applied.departmentId)?.name ?? `отдел #${applied.departmentId}`)
-  const threshold = applied.thresholdSeconds > 0
+  /**
+   * ⚠ Отличие от порога ЗАКАЗЧИКА называется прямо. Раньше порог сбрасывался при каждом
+   * открытии, и это была естественная точка схождения: двое, открывшие отчёт независимо, видели
+   * одни числа. Теперь порог запоминается — и человек может неделями смотреть на цифры,
+   * посчитанные не по стандарту, а потом не понять, почему они расходятся с цифрами коллеги.
+   */
+  const threshold = applied.thresholdSeconds === DEFAULT_CALL_THRESHOLD_SECONDS
     ? `разговоры дольше ${applied.thresholdSeconds} с`
-    : 'все состоявшиеся разговоры'
+    : applied.thresholdSeconds > 0
+      ? `разговоры дольше ${applied.thresholdSeconds} с (не ${DEFAULT_CALL_THRESHOLD_SECONDS} с, как обычно)`
+      : `все состоявшиеся разговоры (без порога в ${DEFAULT_CALL_THRESHOLD_SECONDS} с, как обычно)`
   // ⚠ «Дела и звонки за» здесь обязательно: период считается по дате СОЗДАНИЯ записи, и без этого
   // слова числа читались бы как «сколько сейчас в работе», а это другой вопрос. Просрочка —
   // единственное исключение, и о нём говорит подпись столбца.
