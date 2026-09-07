@@ -1,5 +1,6 @@
 // @vitest-environment nuxt
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { effectScope } from 'vue'
 import { mockNuxtImport } from '@nuxt/test-utils/runtime'
 import { useReportData } from '~/composables/useReportData'
 import { leadCountKey } from '~/utils/b24Adapter'
@@ -174,7 +175,7 @@ mockNuxtImport('useB24', () => () => ({
               portal.filters[key] = params.filter ?? {}
               return new Promise((resolve) => {
                 portal.pending[key] = rows => resolve(rows instanceof Error
-                  ? { isSuccess: false, getData: () => undefined, getErrorMessages: () => [rows.message] }
+                  ? { isSuccess: false, getData: () => undefined, getErrorsByKey: () => ({}), getErrorMessages: () => [rows.message] }
                   // ⚠ Как живой портал: история отдаёт `result.items`, списки CRM — `result: [...]`.
                   : { isSuccess: true, getData: () => ({ result: history ? { items: rows } : rows }), getErrorMessages: () => [] })
               })
@@ -212,7 +213,7 @@ mockNuxtImport('useB24', () => () => ({
             portal.filters[key] = params.filter
             return new Promise((resolve) => {
               portal.pending[key] = rows => resolve(rows instanceof Error
-                ? { isSuccess: false, getData: () => undefined, getErrorMessages: () => [rows.message] }
+                ? { isSuccess: false, getData: () => undefined, getErrorsByKey: () => ({}), getErrorMessages: () => [rows.message] }
                 : { isSuccess: true, getData: () => rows, getErrorMessages: () => [] })
             })
           }
@@ -445,6 +446,42 @@ describe('load', () => {
     await vi.waitFor(() => expect(data.unlinkedError.value).toBeTruthy())
     expect(data.dataset.value.unlinkedDeals).toBeUndefined()
     // Ни одной страницы спрошено не было: предел проверяется ДО первого пакета.
+    expect(portal.pagedCalls).toEqual([])
+  })
+
+  /**
+   * ⚠ Уход со страницы обязан остановить фоновый проход, а не только выбросить его результат.
+   * Справка живёт секундами и продолжала бы слать запросы в портал уже после того, как её никто
+   * не ждёт. У портала предел интенсивности: тратить его на закрытую страницу значит отнимать у
+   * той, что открыта сейчас.
+   */
+  it('уход со страницы останавливает фоновую справку', async () => {
+    const scope = effectScope()
+    let data!: ReturnType<typeof useReportData>
+    scope.run(() => {
+      data = useReportData()
+    })
+
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([])
+    await loading
+    await vi.waitFor(() => expect(portal.pending[`closed:${AUGUST.from}`]).toBeDefined())
+
+    // Страницу закрыли ровно в тот момент, когда справка получила первую страницу.
+    scope.stop()
+    portal.pagedCalls = []
+    portal.pending[`closed:${AUGUST.from}`]!(Array.from({ length: 120 }, (_, index) => ({
+      ID: String(index + 1), SOURCE_ID: '', OPPORTUNITY: '100', CURRENCY_ID: 'BYN'
+    })))
+    /**
+     * ⚠ Даём циклу несколько оборотов событий: стенд отвечает мгновенно, и без этой паузы тест
+     * судил бы о пакете раньше, чем тот успел бы уйти, — то есть оставался бы зелёным со снятой
+     * отменой. Проверено ломкой.
+     */
+    for (let turn = 0; turn < 20; turn++) await Promise.resolve()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
     expect(portal.pagedCalls).toEqual([])
   })
 
