@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { adaptDeals, adaptDealsContext, adaptLeadCounts, adaptUnlinkedWonDeals, dealCountKey, leadCountKey, lossStages, statusIdsBySemantic } from '~/utils/b24Adapter'
-import { UNSPECIFIED_SOURCE, UNSPECIFIED_REASON } from '~/utils/metrics'
+import { buildReportFromAggregate, UNSPECIFIED_SOURCE, UNSPECIFIED_REASON } from '~/utils/metrics'
 import { dealContextBatch, dealStageBatch, dealsFromLeadsParams, leadCountBatch, unlinkedWonDealsParams } from '~/utils/b24Query'
 import { mergeReasons } from '~/utils/reasonMerge'
 
@@ -216,6 +216,63 @@ describe('adaptDeals', () => {
     expect(deals[0]?.amount).toBe(100)
     expect(unconvertedDeals).toBe(1)
   })
+
+  /**
+   * ⚠ Дальше — БОЕВОЙ путь счётчиков валюты, и это главное в этих тестах.
+   *
+   * `useReportData` зовёт именно `adaptDeals`; цельный разбор `adaptPortalData` живая выборка не
+   * трогает. Пока `foreignCurrencyDeals` был проверен только там, строку `if (foreign)` в
+   * `adaptDeals` можно было удалить при полностью зелёном прогоне — оговорка в отчёте молча
+   * исчезла бы. Нашло это ревью PR #60, а не тест, — поэтому тесты и стоят здесь.
+   */
+  const WITH_RUB = [
+    { CURRENCY: 'BYN', BASE: 'Y', AMOUNT: '1', AMOUNT_CNT: '1' },
+    { CURRENCY: 'RUB', BASE: 'N', AMOUNT: '0.037', AMOUNT_CNT: '1' }
+  ]
+
+  it('сделку в известной чужой валюте приводит курсом и считает ОТДЕЛЬНО от беcкурсовых', () => {
+    const { deals, foreignCurrencyDeals, unconvertedDeals } = adaptDeals([row({ CURRENCY_ID: 'RUB' })], WITH_RUB)
+    expect(deals[0]?.amount).toBeCloseTo(3.7, 6)
+    expect(foreignCurrencyDeals).toBe(1)
+    expect(unconvertedDeals).toBe(0)
+  })
+
+  it('сделка в базовой валюте не попадает ни в один счётчик', () => {
+    const { foreignCurrencyDeals, unconvertedDeals } = adaptDeals([row({})], WITH_RUB)
+    expect(foreignCurrencyDeals).toBe(0)
+    expect(unconvertedDeals).toBe(0)
+  })
+
+  /**
+   * ⛔ Тот самый дефект, ради которого счётчиков два. Пустой `AMOUNT` когда-то давал курс 1:
+   * сделка на 456 000 RUB превращалась в 456 000 BYN — завышение в 28 раз при нулевых оговорках.
+   * Записать её в «привели курсом» значит снова успокоить там, где сумма не приведена вовсе.
+   */
+  it('битый курс уводит сделку в «без курса», а НЕ в «не в базовой валюте»', () => {
+    const broken = [
+      { CURRENCY: 'BYN', BASE: 'Y', AMOUNT: '1', AMOUNT_CNT: '1' },
+      { CURRENCY: 'RUB', BASE: 'N', AMOUNT: '', AMOUNT_CNT: '1' }
+    ]
+    const { deals, foreignCurrencyDeals, unconvertedDeals } = adaptDeals([row({ CURRENCY_ID: 'RUB', OPPORTUNITY: '456000' })], broken)
+    expect(deals[0]?.amount).toBe(456000)
+    expect(unconvertedDeals).toBe(1)
+    expect(foreignCurrencyDeals).toBe(0)
+  })
+
+  /**
+   * ⚠ Три сделки в одной выборке, а не по одной за прогон: счётчики накапливаются в одном цикле,
+   * и перепутанный инкремент виден только тогда, когда в выборке есть обе беды сразу.
+   */
+  it('в смешанной выборке каждый счётчик считает СВОЁ', () => {
+    const { deals, foreignCurrencyDeals, unconvertedDeals } = adaptDeals([
+      row({ ID: '1' }),
+      row({ ID: '2', CURRENCY_ID: 'RUB' }),
+      row({ ID: '3', CURRENCY_ID: 'XYZ' })
+    ], WITH_RUB)
+    expect(deals).toHaveLength(3)
+    expect(foreignCurrencyDeals).toBe(1)
+    expect(unconvertedDeals).toBe(1)
+  })
 })
 
 describe('lossStages', () => {
@@ -321,6 +378,115 @@ describe('успешные сделки без связи с лидом', () => 
   it('повторы по ID отбрасываются, пустой список — нули без строк', () => {
     const rows = [{ ID: '7', SOURCE_ID: 'CALL', OPPORTUNITY: '10' }, { ID: 7, SOURCE_ID: 'CALL', OPPORTUNITY: '10' }]
     expect(adaptUnlinkedWonDeals(rows, currencies, ['CALL']).total).toBe(1)
-    expect(adaptUnlinkedWonDeals([], currencies)).toEqual({ total: 0, revenue: 0, unconverted: 0, totalShareOfRevenue: 0, rows: [] })
+    expect(adaptUnlinkedWonDeals([], currencies)).toEqual({ total: 0, revenue: 0, unconverted: 0, foreign: 0, totalShareOfRevenue: 0, rows: [] })
+  })
+})
+
+describe('валюта успешных сделок без лида', () => {
+  const CURRENCIES = [
+    { CURRENCY: 'BYN', BASE: 'Y', AMOUNT: '1.0000', AMOUNT_CNT: '1' },
+    { CURRENCY: 'RUB', BASE: 'N', AMOUNT: '3.5300', AMOUNT_CNT: '100' }
+  ]
+
+  /**
+   * ⚠ Блок 7 — это 90 % сделок портала заказчика, то есть основная выручка отчёта. Сделка не в
+   * базовой валюте здесь не «другая валюта», а ошибка ВВОДА («Все сделки в BYN», 2026-09-03), и
+   * приведённая курсом она неотличима от правильной.
+   */
+  it('считает сделки не в базовой валюте отдельно от сделок без курса', () => {
+    const result = adaptUnlinkedWonDeals([
+      { ID: '1', SOURCE_ID: 'CALL', OPPORTUNITY: '100', CURRENCY_ID: 'BYN' },
+      { ID: '2', SOURCE_ID: 'CALL', OPPORTUNITY: '100', CURRENCY_ID: 'RUB' },
+      { ID: '3', SOURCE_ID: 'CALL', OPPORTUNITY: '100', CURRENCY_ID: 'XYZ' }
+    ], CURRENCIES, ['CALL'])
+    expect(result.foreign).toBe(1)
+    expect(result.unconverted).toBe(1)
+    expect(result.total).toBe(3)
+  })
+
+  // ⚠ Сделка без указанной валюты считается базовой: это не ошибка ввода, а обычная пустота поля.
+  it('пустая валюта — базовая, а не «не в базовой»', () => {
+    const result = adaptUnlinkedWonDeals([
+      { ID: '1', SOURCE_ID: 'CALL', OPPORTUNITY: '100' }
+    ], CURRENCIES, ['CALL'])
+    expect(result.foreign).toBe(0)
+    expect(result.unconverted).toBe(0)
+  })
+})
+
+/**
+ * Стык трёх слоёв ЖИВОГО пути: счётчики лидов + строки сделок → отчёт.
+ *
+ * ⚠ Здесь стоит именно `buildReportFromAggregate`, а не `buildReport`: живая выборка зовёт
+ * первую (лиды приходят счётчиками, строками их за месяц не выбрать), вторая осталась для
+ * демо-набора. Прежний тест стыка гонял через цельный разбор строками, которого в живом пути нет
+ * вовсе, — то есть проверял сходимость слоёв, которые вместе никогда не работают.
+ *
+ * Юнит-тесты проверяют каждый слой отдельно, и ровно между ними уже пряталась дыра: адаптер не
+ * заполнял поле, а поймать это можно было только прогнав одно через другое.
+ */
+describe('счётчики + сделки + ядро отчёта', () => {
+  const CURRENCIES = [
+    { CURRENCY: 'BYN', BASE: 'Y', AMOUNT: '1', AMOUNT_CNT: '1' },
+    { CURRENCY: 'RUB', BASE: 'N', AMOUNT: '3.53', AMOUNT_CNT: '100' }
+  ]
+  const stages = [
+    { STATUS_ID: 'WON', NAME: 'Сделка успешна', SEMANTICS: 'S' },
+    { STATUS_ID: 'LOSE', NAME: 'Сделка провалена', SEMANTICS: 'F' }
+  ]
+  const reasons = mergeReasons(lossStages(stages))
+  const aggregate = adaptLeadCounts({
+    totals: {
+      [leadCountKey.total]: 100,
+      [leadCountKey.junk]: 30,
+      [leadCountKey.converted]: 20,
+      [leadCountKey.inWork]: 40,
+      [leadCountKey.source('CALL')]: 100,
+      [leadCountKey.sourceJunk('CALL')]: 30,
+      [leadCountKey.sourceConverted('CALL')]: 20
+    },
+    sourceIds: ['CALL'],
+    junkStatusIds: ['JUNK']
+  })
+  const adapted = adaptDeals([
+    { ID: '10', LEAD_ID: '3', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '456000', CURRENCY_ID: 'RUB', SOURCE_ID: 'CALL' },
+    { ID: '11', LEAD_ID: '4', STAGE_ID: 'LOSE', STAGE_SEMANTIC_ID: 'F', OPPORTUNITY: '10300', CURRENCY_ID: 'BYN', SOURCE_ID: 'CALL' }
+  ], CURRENCIES, reasons.keyByCode)
+  const report = buildReportFromAggregate(aggregate, adapted.deals, {
+    conversionBase: 'quality-leads',
+    firstResponseSlaMinutes: 60,
+    now: '2026-08-31T23:59:59Z'
+  })
+
+  it('ни одно число отчёта не превращается в NaN', () => {
+    const numbers = [
+      report.summary.junkShare, report.summary.qualifiedShare, report.summary.wonShare,
+      report.summary.revenue, report.lostDeals.lostRevenue, report.lostDeals.shareOfQualified,
+      report.preDealLoss.share
+    ]
+    expect(numbers.every(Number.isFinite)).toBe(true)
+  })
+
+  it('счётчики лидов доезжают до сводки как есть', () => {
+    expect(report.summary).toMatchObject({ totalLeads: 100, junk: 30, qualified: 20, wonDeals: 1 })
+  })
+
+  // 456 000 RUB × 3,53 / 100 — приведение курсом доехало через оба слоя, а не потерялось между ними.
+  it('сумма сделки приведена курсом и доехала до выручки', () => {
+    expect(report.summary.revenue).toBeCloseTo(16_096.8, 6)
+  })
+
+  // ⚠ Причина провала — каноничный ключ из mergeReasons, а не код стадии: словарь и сделки
+  // помечены одним и тем же, иначе строка причин печаталась бы сырым кодом.
+  it('причина проигрыша доезжает ключом, который знает словарь', () => {
+    const [row] = report.lostDeals.byReason
+    expect(row).toBeDefined()
+    expect(reasons.names[row!.reasonId]).toBe('Сделка провалена')
+  })
+
+  // ⚠ Оговорка про чужую валюту обязана доехать вместе с числом: сумма верна, а ввод — нет.
+  it('оговорка про чужую валюту доезжает вместе с суммой', () => {
+    expect(adapted.foreignCurrencyDeals).toBe(1)
+    expect(adapted.unconvertedDeals).toBe(0)
   })
 })

@@ -1,5 +1,4 @@
 import { UNSPECIFIED_SOURCE, share, UNSPECIFIED_REASON, processingFromCounts } from '~/utils/metrics'
-import { mergeReasons } from '~/utils/reasonMerge'
 import { INITIAL_LEAD_STATUS } from '~/utils/leadHistory'
 import { lockedFilterValue } from '~/utils/filters'
 import type {
@@ -7,10 +6,7 @@ import type {
   UnlinkedDeals,
   UnlinkedDealsRow,
   LeadAggregate,
-  LeadOutcome,
-  ReportDeal,
-  ReportDictionaries,
-  ReportLead
+  ReportDeal
 } from '~/types/report'
 
 /**
@@ -146,6 +142,40 @@ export function toBaseAmount(
   return { value: amount * rate, converted: true }
 }
 
+/**
+ * Сумма сделки в базовой валюте ПЛЮС ответ на вопрос «что с валютой было не так».
+ *
+ * ⚠ Одна функция на оба места агрегации (`dealFromRow` для сделок из лидов и
+ * `adaptUnlinkedWonDeals` для блока 7) НАМЕРЕННО. Раньше каждое считало эти два условия само, и
+ * любая правка одного — скажем, приведение кода валюты к верхнему регистру — молча расходилась бы
+ * со вторым: число «не в базовой валюте» в оговорках отчёта разошлось бы с числом в блоке 7 на
+ * одном и том же портале, и объяснить это было бы нечем.
+ *
+ * @returns `converted: false` — валюты нет в справочнике, сумма осталась КАК ЕСТЬ (сломано);
+ *   `foreign: true` — валюта известна и не базовая, сумму привели курсом (посчитано верно, но
+ *   заводить такую сделку не следовало).
+ *
+ * ⚠ У известной чужой валюты истинны ОБА флага: она и приведена, и чужая. Инвариант тут не
+ * «флаги исключают друг друга», а «`foreign` влечёт `converted`» — то есть в ДВА СЧЁТЧИКА одна
+ * сделка попасть не может, потому что первый растёт по `!converted`. Формулировка «оба флага
+ * одновременно не бывают» стояла здесь и была неверна; поймал её тест на инвариант, а не чтение.
+ */
+export function classifyCurrency(
+  amount: number,
+  dealCurrencyId: string,
+  baseCurrencyId: string,
+  rates: Record<string, number>
+): { value: number, converted: boolean, foreign: boolean } {
+  const { value, converted } = toBaseAmount(amount, dealCurrencyId, rates)
+  const isBase = dealCurrencyId === baseCurrencyId
+  return {
+    value,
+    // Своя валюта портала конвертации не требует — это не «не удалось привести».
+    converted: converted || isBase,
+    foreign: !isBase && converted
+  }
+}
+
 /** Справочник `crm.status.list` → код: имя. */
 export function statusNames(rows: B24StatusRow[]): Record<string, string> {
   // Без прототипа: ключи приходят из портала (см. `currencyRates`).
@@ -157,36 +187,21 @@ export function statusNames(rows: B24StatusRow[]): Record<string, string> {
   return names
 }
 
-/**
- * Итог лида по семантике его стадии и наличию сделок.
- *
- * ⚠ «Брак» определяется СЕМАНТИКОЙ (`F`), а не кодом `JUNK`. На тестовом портале стадия брака
- * сейчас одна, но заказчику предстоит завести свои («Дубль», «Спам», …) — и захардкоженный код
- * молча перестал бы их считать браком ровно в тот день, когда блок наконец наполнится данными.
- *
- * ⚠ Лид со стадией «успех», но без найденной сделки — отдельный случай, а не ошибка. Так бывает,
- * когда лид сконвертировали только в контакт или компанию, либо когда сделка вышла за границы
- * периода. Считать его квалифицированным нельзя (сделки нет), поэтому он попадает в «закрыт без
- * сделки», а сам факт считается отдельно и показывается как оговорка к данным.
- */
-export function leadOutcome(semantic: B24Semantic, hasDeal: boolean): LeadOutcome {
-  if (semantic === 'F') return 'junk'
-  if (hasDeal) return 'converted'
-  return semantic === 'S' ? 'lost' : 'in-work'
-}
-
 /** Что адаптер хочет сказать о качестве данных — чтобы отчёт не молчал о своих оговорках. */
 export interface AdapterWarnings {
   /** Сделки в валюте, курса которой в портале нет: суммы взяты как есть, без конвертации. */
   unconvertedDeals: number
   /**
-   * Лиды со стадией «успех», но без найденной сделки.
+   * Сделки в валюте, ОТЛИЧНОЙ от базовой: сумма приведена курсом и сложена с остальными.
    *
-   * ⚠ Имя про СТАДИЮ, а не про исход: сам лид получает `outcome: 'lost'` и попадает в «Потери до
-   * сделки». Назвать поле `convertedWithoutDeal` значило бы спорить с типом `LeadOutcome`, где
-   * `converted` означает «квалифицирован», то есть ровно обратное.
+   * ⚠ Это не то же, что `unconvertedDeals`, и путать их нельзя. Там валюта НЕИЗВЕСТНА — это
+   * сломано, сумма взята как есть. Здесь всё сработало правильно: курс нашёлся, привели.
+   *
+   * ⚠ Показываем всё равно, потому что у заказчика это ошибка ВВОДА: «Все сделки в BYN. Судя по
+   * всему сделки в рублях это неправильные сделки» (ответ от 2026-09-03). Приведённая курсом
+   * сделка неотличима в выручке от правильной — ошибка растворяется, и найти её потом нельзя.
    */
-  wonStageWithoutDeal: number
+  foreignCurrencyDeals: number
   /** Сделки без лида-родителя (`LEAD_ID` пуст): в разрез источников они не попадают. */
   dealsWithoutLead: number
   /**
@@ -198,14 +213,6 @@ export interface AdapterWarnings {
    */
   mergedLossReasons: number
   /**
-   * Сделки, чей `LEAD_ID` указывает на лид ВНЕ выборки: он создан до начала периода либо удалён.
-   *
-   * ⚠ Считается отдельно от `dealsWithoutLead`, хотя для пользователя следствие то же — выручка
-   * выпадает из разреза источников. Раньше такие сделки не считались вовсе: `LEAD_ID` непустой,
-   * значит «с лидом», — и отчёт уверял, что осиротевших сделок ноль, пока они молча выпадали.
-   */
-  dealsWithMissingLead: number
-  /**
    * Записи с уже встречавшимся `ID`, выброшенные как повтор.
    *
    * ⚠ Признак сбоя ПАГИНАЦИИ: постраничный опрос вернул одну и ту же страницу дважды. Без
@@ -215,46 +222,10 @@ export interface AdapterWarnings {
    */
   duplicateIds: number
   /**
-   * Первое действие по лидам не выбиралось вовсе (`input.firstResponse` не передан).
-   *
-   * ⚠ Без этого признака блок «Обработка лидов» показал бы «обработано 0 %, просрочено 100 %» —
-   * как факт о работе отдела, хотя это факт о том, что данных не запрашивали. Разные утверждения,
-   * и первое клевещет на живых людей.
-   */
-  firstResponseNotFetched: boolean
-  /**
    * Успешные сделки с нулевой суммой. Не ошибка отчёта — свойство процесса в CRM: на портале
    * заказчика деньги оформляются на сделках без лида, а сделка из лида закрывается с нулём.
    */
   wonWithoutAmount: number
-}
-
-export interface AdaptedData {
-  leads: ReportLead[]
-  deals: ReportDeal[]
-  dictionaries: ReportDictionaries
-  currencyId: string
-  warnings: AdapterWarnings
-}
-
-export interface AdapterInput {
-  leads: B24LeadRow[]
-  deals: B24DealRow[]
-  currencies: B24CurrencyRow[]
-  /** `crm.status.list` с `ENTITY_ID = SOURCE`. */
-  sources: B24StatusRow[]
-  /** `crm.status.list` с `ENTITY_ID = STATUS` — стадии лида; они же причины брака. */
-  leadStatuses: B24StatusRow[]
-  /** `crm.status.list` с `ENTITY_ID = DEAL_STAGE` — стадии сделки; они же причины проигрыша. */
-  dealStages: B24StatusRow[]
-  /**
-   * Первое действие по лиду: идентификатор лида → ISO-дата. Собирается отдельно
-   * (`crm.activity.list`), потому что в самих лидах этого поля нет.
-   *
-   * Не передан — блок «Обработка лидов» честно скажет, что данных не выбирали, вместо того чтобы
-   * показать ноль обработанных.
-   */
-  firstResponse?: Record<number, string>
 }
 
 /** Одна строка `crm.deal.list` → сделка отчёта. `converted: false` — валюта без курса. */
@@ -263,15 +234,22 @@ function dealFromRow(
   rates: Record<string, number>,
   currencyId: string,
   reasonKeyByCode: Record<string, string>
-): { deal: ReportDeal, converted: boolean } {
+): { deal: ReportDeal, converted: boolean, foreign: boolean } {
   const id = toNumber(row.ID)
   const leadId = toNumber(row.LEAD_ID)
   const dealCurrency = toText(row.CURRENCY_ID) || currencyId
-  const { value, converted } = toBaseAmount(toNumber(row.OPPORTUNITY), dealCurrency, rates)
+  /**
+   * ⚠ `foreign` — валюта ЗНАЕТСЯ, но она не базовая: сумму привели курсом и сложили с остальными.
+   * Считаем отдельно от `converted` потому, что у заказчика это не «сделка в другой валюте», а
+   * ОШИБКА ВВОДА: «Все сделки в BYN. Судя по всему сделки в рублях это неправильные сделки»
+   * (ответ от 2026-09-03). Привести её курсом и молча сложить значит растворить ошибку в
+   * выручке — никто её больше не найдёт и не исправит.
+   */
+  const { value, converted, foreign } = classifyCurrency(toNumber(row.OPPORTUNITY), dealCurrency, currencyId, rates)
   const semantic = toSemantic(row.STAGE_SEMANTIC_ID)
   return {
-    // Своя валюта портала конвертации не требует — это не «не удалось привести».
-    converted: converted || dealCurrency === currencyId,
+    converted,
+    foreign,
     deal: {
       id,
       ...(leadId > 0 ? { leadId } : {}),
@@ -310,12 +288,13 @@ export function adaptDeals(
    * места, которым надо совпасть.
    */
   reasonKeyByCode: Record<string, string> = {}
-): { deals: ReportDeal[], unconvertedDeals: number, dealsWithoutLead: number, duplicateIds: number, wonWithoutAmount: number } {
+): { deals: ReportDeal[], unconvertedDeals: number, foreignCurrencyDeals: number, dealsWithoutLead: number, duplicateIds: number, wonWithoutAmount: number } {
   const rates = currencyRates(currencies)
   const currencyId = baseCurrency(currencies)
   const seen = new Set<number>()
   let duplicateIds = 0
   let unconvertedDeals = 0
+  let foreignCurrencyDeals = 0
   let dealsWithoutLead = 0
   let wonWithoutAmount = 0
   const deals: ReportDeal[] = []
@@ -326,8 +305,9 @@ export function adaptDeals(
       continue
     }
     seen.add(id)
-    const { deal, converted } = dealFromRow(row, rates, currencyId, reasonKeyByCode)
+    const { deal, converted, foreign } = dealFromRow(row, rates, currencyId, reasonKeyByCode)
     if (!converted) unconvertedDeals++
+    if (foreign) foreignCurrencyDeals++
     if (deal.leadId === undefined) dealsWithoutLead++
     /**
      * ⚠ Успешная сделка с нулевой суммой — не мелочь, а свойство процесса. На боевом портале
@@ -338,122 +318,9 @@ export function adaptDeals(
     if (deal.outcome === 'won' && deal.amount === 0) wonWithoutAmount++
     deals.push(deal)
   }
-  return { deals, unconvertedDeals, dealsWithoutLead, duplicateIds, wonWithoutAmount }
+  return { deals, unconvertedDeals, foreignCurrencyDeals, dealsWithoutLead, duplicateIds, wonWithoutAmount }
 }
 
-/**
- * Сырые ответы портала → то, что понимает ядро отчёта.
- *
- * ⚠ Связь «лид → сделки» строится ИЗ СДЕЛОК (`LEAD_ID`), а не из лидов: у лида поля со списком
- * сделок нет вовсе. На тестовом портале `LEAD_ID` пуст у всех сделок — тогда квалифицированных
- * не окажется ни одного, и это не дефект отчёта, а свойство портала (`docs/PORTAL.md` §3).
- */
-export function adaptPortalData(input: AdapterInput): AdaptedData {
-  const rates = currencyRates(input.currencies)
-  const currencyId = baseCurrency(input.currencies)
-  const reasons = mergeReasons(lossStages(input.dealStages))
-  const reasonKeyByCode = reasons.keyByCode
-
-  /**
-   * Повторы по `ID` выбрасываем, оставляя ПЕРВОЕ вхождение.
-   *
-   * Первое, а не последнее, — потому что при сбое пагинации повтор приходит позже оригинала, и
-   * «первое» означает «то, что портал отдал раньше». Выбор всё равно произвольный: одинаковые
-   * `ID` — это сбой выборки, а не данные, и правильного ответа тут нет. Важно, что повтор не
-   * проходит дальше молча, а попадает в счётчик оговорок.
-   */
-  let duplicateIds = 0
-  const dedupe = <T>(rows: T[], id: (row: T) => number): T[] => {
-    const seen = new Set<number>()
-    return rows.filter((row) => {
-      const key = id(row)
-      if (seen.has(key)) {
-        duplicateIds++
-        return false
-      }
-      seen.add(key)
-      return true
-    })
-  }
-
-  const leadRows = dedupe(input.leads, row => toNumber(row.ID))
-  const dealRows = dedupe(input.deals, row => toNumber(row.ID))
-
-  const dealsByLead = new Map<number, number[]>()
-  const knownLeadIds = new Set(leadRows.map(row => toNumber(row.ID)))
-  let dealsWithoutLead = 0
-  let dealsWithMissingLead = 0
-  let unconvertedDeals = 0
-
-  const deals: ReportDeal[] = dealRows.map((row) => {
-    const { deal, converted } = dealFromRow(row, rates, currencyId, reasonKeyByCode)
-    const { id, leadId = 0 } = deal
-    if (!converted) unconvertedDeals++
-
-    if (leadId <= 0) {
-      dealsWithoutLead++
-    } else if (!knownLeadIds.has(leadId)) {
-      // Лид вне выборки: создан до начала периода либо удалён. Для пользователя следствие то же,
-      // что и у сделки без лида, — выручка выпадает из разреза источников, — поэтому молчать
-      // нельзя. Раньше такая сделка не считалась нигде: `LEAD_ID` непустой, значит «с лидом».
-      dealsWithMissingLead++
-    } else {
-      // `push` в существующий массив, а не пересборка через spread: у лида с N сделками
-      // пересборка давала бы O(N²) на ровном месте.
-      const existing = dealsByLead.get(leadId)
-      if (existing) existing.push(id)
-      else dealsByLead.set(leadId, [id])
-    }
-    return deal
-  })
-
-  let wonStageWithoutDeal = 0
-
-  const leads: ReportLead[] = leadRows.map((row) => {
-    const id = toNumber(row.ID)
-    const semantic = toSemantic(row.STATUS_SEMANTIC_ID)
-    const dealIds = dealsByLead.get(id) ?? []
-    const outcome = leadOutcome(semantic, dealIds.length > 0)
-    if (semantic === 'S' && dealIds.length === 0) wonStageWithoutDeal++
-
-    return {
-      id,
-      createdAt: toText(row.DATE_CREATE),
-      sourceId: toText(row.SOURCE_ID),
-      assignedById: toNumber(row.ASSIGNED_BY_ID),
-      outcome,
-      dealIds,
-      ...(input.firstResponse?.[id] ? { firstResponseAt: input.firstResponse[id] } : {}),
-      // Причина брака — сама стадия. Отдельного поля причины отказа у лида в Битрикс24 нет
-      // (docs/PORTAL.md §1).
-      ...(outcome === 'junk' ? { junkReasonId: toText(row.STATUS_ID) } : {})
-    }
-  })
-
-  return {
-    leads,
-    deals,
-    currencyId,
-    dictionaries: {
-      sources: statusNames(input.sources),
-      junkReasons: statusNames(input.leadStatuses),
-      // Словарь по каноничным ключам, а не по кодам: ключами помечены сделки.
-      lossReasons: reasons.names
-    },
-    warnings: {
-      mergedLossReasons: reasons.foldedCodes,
-      unconvertedDeals,
-      wonStageWithoutDeal,
-      dealsWithoutLead,
-      dealsWithMissingLead,
-      duplicateIds,
-      firstResponseNotFetched: input.firstResponse === undefined,
-      wonWithoutAmount: deals.filter(d => d.outcome === 'won' && d.amount === 0).length
-    }
-  }
-}
-
-/** Коды стадий с заданной семантикой — например, все стадии брака лида (`F`). */
 /**
  * Только стадии провала — то, из чего складываются причины проигрыша.
  *
@@ -610,8 +477,10 @@ export const dealCountKey = { won: 'dealsWon', lost: 'dealsLost', inWork: 'deals
 /**
  * Успешные сделки без лида (строки `crm.deal.list` по `unlinkedWonDealsParams`) → блок 7.
  *
- * Суммы приводятся к базовой валюте тем же `toBaseAmount`, что и сделки из лидов: неизвестная
- * валюта остаётся как есть и считается в `unconverted`, а не обнуляется и не выдумывается.
+ * Суммы приводятся к базовой валюте тем же `classifyCurrency`, что и сделки из лидов, и теми же
+ * ДВУМЯ счётчиками: неизвестная валюта остаётся как есть и считается в `unconverted` (сломано,
+ * выручку сверять не с чем), известная неба́зовая приводится курсом и считается в `foreign`
+ * (посчитано верно, но заводить такую сделку не следовало).
  * Пустой источник — своя строка `UNSPECIFIED_SOURCE`: на боевом портале это главная строка
  * блока (95 % таких сделок без источника), и прятать её в «прочее» значило бы спрятать сам факт.
  *
@@ -634,6 +503,7 @@ export function adaptUnlinkedWonDeals(
   let total = 0
   let revenue = 0
   let unconverted = 0
+  let foreign = 0
   for (const row of rows) {
     const id = toNumber(row.ID)
     // ⚠ Отсеиваем ПОВТОРЫ, а не записи без идентификатора: `toNumber` отдаёт 0 и для пустого, и
@@ -644,8 +514,10 @@ export function adaptUnlinkedWonDeals(
       seen.add(id)
     }
     const dealCurrency = toText(row.CURRENCY_ID) || currencyId
-    const { value, converted } = toBaseAmount(toNumber(row.OPPORTUNITY), dealCurrency, rates)
-    if (!converted && dealCurrency !== currencyId) unconverted++
+    const classified = classifyCurrency(toNumber(row.OPPORTUNITY), dealCurrency, currencyId, rates)
+    const value = classified.value
+    if (!classified.converted) unconverted++
+    if (classified.foreign) foreign++
     const rawSource = toText(row.SOURCE_ID)
     const sourceId = rawSource && known.has(rawSource) ? rawSource : UNSPECIFIED_SOURCE
     const acc = bySource.get(sourceId) ?? { count: 0, revenue: 0 }
@@ -664,7 +536,7 @@ export function adaptUnlinkedWonDeals(
       shareOfRevenue: share(acc.revenue, revenue)
     }))
     .sort((a, b) => b.revenue - a.revenue || b.count - a.count || a.sourceId.localeCompare(b.sourceId))
-  return { total, revenue, unconverted, totalShareOfRevenue: share(revenue, revenue), rows: result }
+  return { total, revenue, unconverted, foreign, totalShareOfRevenue: share(revenue, revenue), rows: result }
 }
 
 /** Счётчики сделок всего портала → контекст для сводки. */

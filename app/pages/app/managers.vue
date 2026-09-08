@@ -4,7 +4,7 @@ import { defaultManagerFilters } from '~/composables/useManagerReport'
 import { managerDealFilter } from '~/utils/managerQuery'
 import { SCOPE_LABELS } from '~/utils/managerLoad'
 import { decodeManagersState, encodeManagersState, MANAGERS_OPTION_KEY } from '~/utils/savedFilters'
-import { formatCount } from '~/utils/format'
+import { managerDataNotes } from '~/utils/dataNotes'
 import { reportTitle } from '~/utils/pageTitle'
 
 /**
@@ -86,29 +86,7 @@ function openCell(cell: ManagerCellRef): void {
 }
 
 /** Сколько сделок не попало ни в одну строку таблицы — про это нельзя молчать. */
-const outsideNote = computed(() => {
-  const notes: string[] = []
-  if (report.value.unlisted > 0) {
-    // ⚠ Причина здесь ОДНА: ответственный у сделки обязателен (замер — ни одной без него из
-    // 689 523). Значит, сделка выпала из строк только потому, что её сотрудник не попал в
-    // перечисление; называть иную причину — уводить от настоящей.
-    notes.push(`Сделок вне строк таблицы: ${formatCount(report.value.unlisted)} — их ответственный не попал в перечисление: сделки появились уже после того, как отчёт перечислил менеджеров, или сотрудников больше, чем он перечисляет за проход.`)
-  }
-  if (report.value.otherStages > 0) {
-    notes.push(`Сделок на стадиях, которых нет в справочнике направления: ${formatCount(report.value.otherStages)} — стадию удалили из воронки, а сделки на ней остались.`)
-  }
-  // Причины усечения разные, и подсказка человеку тоже разная: общий флаг назвал бы неверную.
-  if (truncatedManagers.value) {
-    notes.push('Сотрудников в этом направлении больше, чем отчёт перечисляет за один проход: часть сделок ушла в строку «вне таблицы». Сузьте отбор — направлением, охватом или периодом.')
-  }
-  if (truncatedCompanies.value) {
-    notes.push('«Моих компаний» у сделок больше, чем отчёт перечисляет за один проход: часть из них не попала даже в фильтр, и открыть их нечем. Сузьте отбор — направлением, охватом или периодом.')
-  }
-  if (report.value.hiddenStages > 0) {
-    notes.push(`Пустых стадий скрыто: ${report.value.hiddenStages} — в них нет ни одной сделки под этим отбором.`)
-  }
-  return notes
-})
+const outsideNote = computed(() => managerDataNotes(report.value, { managers: truncatedManagers.value, companies: truncatedCompanies.value }))
 
 /** Сколько ждать стадии, если считать их по кнопке. */
 const stagesEstimateText = computed(() => {
@@ -201,12 +179,23 @@ async function fit() {
           @drill="openCell"
         />
 
+        <!-- Списком, а не одним абзацем: оговорки про разное, и склейка читается стеной. -->
         <B24Alert
           v-if="outsideNote.length"
           color="air-primary-warning"
           title="Что нужно знать про эти числа"
-          :description="outsideNote.join(' ')"
-        />
+        >
+          <template #description>
+            <ul class="list-disc space-y-1 pl-4">
+              <li
+                v-for="note in outsideNote"
+                :key="note"
+              >
+                {{ note }}
+              </li>
+            </ul>
+          </template>
+        </B24Alert>
 
         <!-- Стадий слишком много для одного прохода: считаем по кнопке, а не молча заставляем ждать. -->
         <B24Card v-if="stagesDeferred">

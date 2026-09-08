@@ -3,6 +3,7 @@ import type { ReportFilters, ReportPeriod } from '~/types/report'
 import { hasFilters, needsLeadIds } from '~/utils/filters'
 import { formatDate } from '~/utils/format'
 import { periodLengthDays, resolvePreset, samePeriod } from '~/utils/period'
+import { leadsDataNotes } from '~/utils/dataNotes'
 import { decodeLeadsState, encodeLeadsState, LEADS_OPTION_KEY } from '~/utils/savedFilters'
 import { PROCESSING_MINUTES_PER_MONTH, UNLINKED_MINUTES_PER_MONTH } from '~/composables/useReportData'
 import { reportTitle } from '~/utils/pageTitle'
@@ -124,43 +125,7 @@ watch([period, filters], async () => {
   await fit()
 })
 
-/**
- * Оговорки к качеству данных портала.
- *
- * ⚠ Молчать о них нельзя. «Сделок, не связанных с лидом: 340» — это объяснение, почему воронка
- * показывает ноль квалифицированных; без него руководитель читает ноль как факт о работе отдела
- * продаж. Каждая строка здесь — не про наш код, а про то, что нужно поправить в CRM.
- */
-const dataNotes = computed(() => {
-  const w = warnings.value
-  if (!w) return []
-  const notes: string[] = []
-  if (w.dealsWithoutLead > 0) {
-    notes.push(`Сделок без связи с лидом среди выбранных строками: ${w.dealsWithoutLead} — в разрез источников лидов они не попадают.`)
-  }
-  if (w.dealsWithMissingLead > 0) {
-    notes.push(`Сделок со ссылкой на лид вне периода: ${w.dealsWithMissingLead}.`)
-  }
-  if (w.wonStageWithoutDeal > 0) {
-    notes.push(`Лидов на стадии «успех», у которых нет сделки: ${w.wonStageWithoutDeal}.`)
-  }
-  if (w.unconvertedDeals > 0) {
-    notes.push(`Сделок в валюте без курса — суммы взяты как есть: ${w.unconvertedDeals}.`)
-  }
-  if (w.duplicateIds > 0) {
-    notes.push(`Повторов по идентификатору отброшено: ${w.duplicateIds}.`)
-  }
-  if (w.wonWithoutAmount > 0) {
-    notes.push(`Успешных сделок из лидов с нулевой суммой: ${w.wonWithoutAmount}. Выручка по лидам считается по сумме сделки, а она в CRM не заполнена — деньги, судя по всему, оформляются на других сделках.`)
-  }
-  if (w.mergedLossReasons > 0) {
-    notes.push(`Одинаковые причины проигрыша из разных направлений сведены в одну строку: стадий свёрнуто ${w.mergedLossReasons}. В CRM они по-прежнему разные.`)
-  }
-  if (w.firstResponseNotFetched) {
-    notes.push('Время первого ответа не выбиралось — блок «Обработка лидов» считать не по чему.')
-  }
-  return notes
-})
+const dataNotes = computed(() => leadsDataNotes(warnings.value))
 
 /**
  * Пустой период — не поломка, но и не «просто нули».
@@ -316,13 +281,29 @@ async function fit() {
           :description="emptyPeriodNote"
         />
 
-        <!-- Оговорки к данным САМОГО портала: не ошибки отчёта, а то, что стоит поправить в CRM. -->
+        <!--
+          Оговорки к данным САМОГО портала: не ошибки отчёта, а то, что стоит поправить в CRM.
+
+          ⚠ Списком, а не одним абзацем. Оговорок бывает десять, каждая про своё, и склеенные
+          через пробел они читаются как сплошная стена — с двумя «Проверьте их в CRM» подряд
+          посередине. `leadsDataNotes` не зря возвращает массив.
+        -->
         <B24Alert
           v-if="dataNotes.length"
           color="air-primary-warning"
           title="Что нужно знать про эти числа"
-          :description="dataNotes.join(' ')"
-        />
+        >
+          <template #description>
+            <ul class="list-disc space-y-1 pl-4">
+              <li
+                v-for="note in dataNotes"
+                :key="note"
+              >
+                {{ note }}
+              </li>
+            </ul>
+          </template>
+        </B24Alert>
 
         <ReportSummary
           :report="report"
