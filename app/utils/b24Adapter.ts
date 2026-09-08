@@ -1,5 +1,4 @@
 import { UNSPECIFIED_SOURCE, share, UNSPECIFIED_REASON, processingFromCounts } from '~/utils/metrics'
-import { mergeReasons } from '~/utils/reasonMerge'
 import { INITIAL_LEAD_STATUS } from '~/utils/leadHistory'
 import { lockedFilterValue } from '~/utils/filters'
 import type {
@@ -7,10 +6,7 @@ import type {
   UnlinkedDeals,
   UnlinkedDealsRow,
   LeadAggregate,
-  LeadOutcome,
-  ReportDeal,
-  ReportDictionaries,
-  ReportLead
+  ReportDeal
 } from '~/types/report'
 
 /**
@@ -191,24 +187,6 @@ export function statusNames(rows: B24StatusRow[]): Record<string, string> {
   return names
 }
 
-/**
- * Итог лида по семантике его стадии и наличию сделок.
- *
- * ⚠ «Брак» определяется СЕМАНТИКОЙ (`F`), а не кодом `JUNK`. На тестовом портале стадия брака
- * сейчас одна, но заказчику предстоит завести свои («Дубль», «Спам», …) — и захардкоженный код
- * молча перестал бы их считать браком ровно в тот день, когда блок наконец наполнится данными.
- *
- * ⚠ Лид со стадией «успех», но без найденной сделки — отдельный случай, а не ошибка. Так бывает,
- * когда лид сконвертировали только в контакт или компанию, либо когда сделка вышла за границы
- * периода. Считать его квалифицированным нельзя (сделки нет), поэтому он попадает в «закрыт без
- * сделки», а сам факт считается отдельно и показывается как оговорка к данным.
- */
-export function leadOutcome(semantic: B24Semantic, hasDeal: boolean): LeadOutcome {
-  if (semantic === 'F') return 'junk'
-  if (hasDeal) return 'converted'
-  return semantic === 'S' ? 'lost' : 'in-work'
-}
-
 /** Что адаптер хочет сказать о качестве данных — чтобы отчёт не молчал о своих оговорках. */
 export interface AdapterWarnings {
   /** Сделки в валюте, курса которой в портале нет: суммы взяты как есть, без конвертации. */
@@ -224,14 +202,6 @@ export interface AdapterWarnings {
    * сделка неотличима в выручке от правильной — ошибка растворяется, и найти её потом нельзя.
    */
   foreignCurrencyDeals: number
-  /**
-   * Лиды со стадией «успех», но без найденной сделки.
-   *
-   * ⚠ Имя про СТАДИЮ, а не про исход: сам лид получает `outcome: 'lost'` и попадает в «Потери до
-   * сделки». Назвать поле `convertedWithoutDeal` значило бы спорить с типом `LeadOutcome`, где
-   * `converted` означает «квалифицирован», то есть ровно обратное.
-   */
-  wonStageWithoutDeal: number
   /** Сделки без лида-родителя (`LEAD_ID` пуст): в разрез источников они не попадают. */
   dealsWithoutLead: number
   /**
@@ -243,14 +213,6 @@ export interface AdapterWarnings {
    */
   mergedLossReasons: number
   /**
-   * Сделки, чей `LEAD_ID` указывает на лид ВНЕ выборки: он создан до начала периода либо удалён.
-   *
-   * ⚠ Считается отдельно от `dealsWithoutLead`, хотя для пользователя следствие то же — выручка
-   * выпадает из разреза источников. Раньше такие сделки не считались вовсе: `LEAD_ID` непустой,
-   * значит «с лидом», — и отчёт уверял, что осиротевших сделок ноль, пока они молча выпадали.
-   */
-  dealsWithMissingLead: number
-  /**
    * Записи с уже встречавшимся `ID`, выброшенные как повтор.
    *
    * ⚠ Признак сбоя ПАГИНАЦИИ: постраничный опрос вернул одну и ту же страницу дважды. Без
@@ -260,46 +222,10 @@ export interface AdapterWarnings {
    */
   duplicateIds: number
   /**
-   * Первое действие по лидам не выбиралось вовсе (`input.firstResponse` не передан).
-   *
-   * ⚠ Без этого признака блок «Обработка лидов» показал бы «обработано 0 %, просрочено 100 %» —
-   * как факт о работе отдела, хотя это факт о том, что данных не запрашивали. Разные утверждения,
-   * и первое клевещет на живых людей.
-   */
-  firstResponseNotFetched: boolean
-  /**
    * Успешные сделки с нулевой суммой. Не ошибка отчёта — свойство процесса в CRM: на портале
    * заказчика деньги оформляются на сделках без лида, а сделка из лида закрывается с нулём.
    */
   wonWithoutAmount: number
-}
-
-export interface AdaptedData {
-  leads: ReportLead[]
-  deals: ReportDeal[]
-  dictionaries: ReportDictionaries
-  currencyId: string
-  warnings: AdapterWarnings
-}
-
-export interface AdapterInput {
-  leads: B24LeadRow[]
-  deals: B24DealRow[]
-  currencies: B24CurrencyRow[]
-  /** `crm.status.list` с `ENTITY_ID = SOURCE`. */
-  sources: B24StatusRow[]
-  /** `crm.status.list` с `ENTITY_ID = STATUS` — стадии лида; они же причины брака. */
-  leadStatuses: B24StatusRow[]
-  /** `crm.status.list` с `ENTITY_ID = DEAL_STAGE` — стадии сделки; они же причины проигрыша. */
-  dealStages: B24StatusRow[]
-  /**
-   * Первое действие по лиду: идентификатор лида → ISO-дата. Собирается отдельно
-   * (`crm.activity.list`), потому что в самих лидах этого поля нет.
-   *
-   * Не передан — блок «Обработка лидов» честно скажет, что данных не выбирали, вместо того чтобы
-   * показать ноль обработанных.
-   */
-  firstResponse?: Record<number, string>
 }
 
 /** Одна строка `crm.deal.list` → сделка отчёта. `converted: false` — валюта без курса. */
@@ -395,129 +321,6 @@ export function adaptDeals(
   return { deals, unconvertedDeals, foreignCurrencyDeals, dealsWithoutLead, duplicateIds, wonWithoutAmount }
 }
 
-/**
- * Сырые ответы портала → то, что понимает ядро отчёта.
- *
- * ⛔ **Живая выборка сюда НЕ ходит.** Отчёт 1 читает лиды счётчиками, а сделки — `adaptDeals`
- * (`useReportData`), потому что строками месяц на боевом портале не выбирается. Эта функция
- * осталась цельным разбором «лиды + сделки строками»: она разбирает демо-набор и служит стендом
- * для тестов адаптера. Помечено явно потому, что ревью PR #60 приняло её за боевой путь —
- * счётчик, проверенный ТОЛЬКО здесь, на живых данных не проверен вовсе (см. issue про сведе́ние
- * двух путей разбора).
- *
- * ⚠ Связь «лид → сделки» строится ИЗ СДЕЛОК (`LEAD_ID`), а не из лидов: у лида поля со списком
- * сделок нет вовсе. На тестовом портале `LEAD_ID` пуст у всех сделок — тогда квалифицированных
- * не окажется ни одного, и это не дефект отчёта, а свойство портала (`docs/PORTAL.md` §3).
- */
-export function adaptPortalData(input: AdapterInput): AdaptedData {
-  const rates = currencyRates(input.currencies)
-  const currencyId = baseCurrency(input.currencies)
-  const reasons = mergeReasons(lossStages(input.dealStages))
-  const reasonKeyByCode = reasons.keyByCode
-
-  /**
-   * Повторы по `ID` выбрасываем, оставляя ПЕРВОЕ вхождение.
-   *
-   * Первое, а не последнее, — потому что при сбое пагинации повтор приходит позже оригинала, и
-   * «первое» означает «то, что портал отдал раньше». Выбор всё равно произвольный: одинаковые
-   * `ID` — это сбой выборки, а не данные, и правильного ответа тут нет. Важно, что повтор не
-   * проходит дальше молча, а попадает в счётчик оговорок.
-   */
-  let duplicateIds = 0
-  const dedupe = <T>(rows: T[], id: (row: T) => number): T[] => {
-    const seen = new Set<number>()
-    return rows.filter((row) => {
-      const key = id(row)
-      if (seen.has(key)) {
-        duplicateIds++
-        return false
-      }
-      seen.add(key)
-      return true
-    })
-  }
-
-  const leadRows = dedupe(input.leads, row => toNumber(row.ID))
-  const dealRows = dedupe(input.deals, row => toNumber(row.ID))
-
-  const dealsByLead = new Map<number, number[]>()
-  const knownLeadIds = new Set(leadRows.map(row => toNumber(row.ID)))
-  let dealsWithoutLead = 0
-  let dealsWithMissingLead = 0
-  let unconvertedDeals = 0
-  let foreignCurrencyDeals = 0
-
-  const deals: ReportDeal[] = dealRows.map((row) => {
-    const { deal, converted, foreign } = dealFromRow(row, rates, currencyId, reasonKeyByCode)
-    const { id, leadId = 0 } = deal
-    if (!converted) unconvertedDeals++
-    if (foreign) foreignCurrencyDeals++
-
-    if (leadId <= 0) {
-      dealsWithoutLead++
-    } else if (!knownLeadIds.has(leadId)) {
-      // Лид вне выборки: создан до начала периода либо удалён. Для пользователя следствие то же,
-      // что и у сделки без лида, — выручка выпадает из разреза источников, — поэтому молчать
-      // нельзя. Раньше такая сделка не считалась нигде: `LEAD_ID` непустой, значит «с лидом».
-      dealsWithMissingLead++
-    } else {
-      // `push` в существующий массив, а не пересборка через spread: у лида с N сделками
-      // пересборка давала бы O(N²) на ровном месте.
-      const existing = dealsByLead.get(leadId)
-      if (existing) existing.push(id)
-      else dealsByLead.set(leadId, [id])
-    }
-    return deal
-  })
-
-  let wonStageWithoutDeal = 0
-
-  const leads: ReportLead[] = leadRows.map((row) => {
-    const id = toNumber(row.ID)
-    const semantic = toSemantic(row.STATUS_SEMANTIC_ID)
-    const dealIds = dealsByLead.get(id) ?? []
-    const outcome = leadOutcome(semantic, dealIds.length > 0)
-    if (semantic === 'S' && dealIds.length === 0) wonStageWithoutDeal++
-
-    return {
-      id,
-      createdAt: toText(row.DATE_CREATE),
-      sourceId: toText(row.SOURCE_ID),
-      assignedById: toNumber(row.ASSIGNED_BY_ID),
-      outcome,
-      dealIds,
-      ...(input.firstResponse?.[id] ? { firstResponseAt: input.firstResponse[id] } : {}),
-      // Причина брака — сама стадия. Отдельного поля причины отказа у лида в Битрикс24 нет
-      // (docs/PORTAL.md §1).
-      ...(outcome === 'junk' ? { junkReasonId: toText(row.STATUS_ID) } : {})
-    }
-  })
-
-  return {
-    leads,
-    deals,
-    currencyId,
-    dictionaries: {
-      sources: statusNames(input.sources),
-      junkReasons: statusNames(input.leadStatuses),
-      // Словарь по каноничным ключам, а не по кодам: ключами помечены сделки.
-      lossReasons: reasons.names
-    },
-    warnings: {
-      mergedLossReasons: reasons.foldedCodes,
-      unconvertedDeals,
-      foreignCurrencyDeals,
-      wonStageWithoutDeal,
-      dealsWithoutLead,
-      dealsWithMissingLead,
-      duplicateIds,
-      firstResponseNotFetched: input.firstResponse === undefined,
-      wonWithoutAmount: deals.filter(d => d.outcome === 'won' && d.amount === 0).length
-    }
-  }
-}
-
-/** Коды стадий с заданной семантикой — например, все стадии брака лида (`F`). */
 /**
  * Только стадии провала — то, из чего складываются причины проигрыша.
  *

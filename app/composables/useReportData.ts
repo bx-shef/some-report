@@ -593,13 +593,7 @@ export function useReportData() {
         foreignCurrencyDeals: adaptedDeals.foreignCurrencyDeals,
         dealsWithoutLead: adaptedDeals.dealsWithoutLead,
         duplicateIds: adaptedDeals.duplicateIds,
-        wonWithoutAmount: adaptedDeals.wonWithoutAmount,
-        // Счётчики не видят связи лид → сделка поимённо, поэтому эти две оговорки здесь не считаются.
-        wonStageWithoutDeal: 0,
-        dealsWithMissingLead: 0,
-        // Время первого ответа приходит фоном из истории стадий; пока идёт — блок 6 говорит об
-        // этом сам, общая оговорка не нужна.
-        firstResponseNotFetched: false
+        wonWithoutAmount: adaptedDeals.wonWithoutAmount
       }
       // Пусто за период — выясняем, есть ли лиды вообще. Один запрос на одну запись, и только
       // когда он действительно нужен.

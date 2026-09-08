@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { adaptDeals, adaptDealsContext, adaptLeadCounts, adaptUnlinkedWonDeals, dealCountKey, leadCountKey, lossStages, statusIdsBySemantic } from '~/utils/b24Adapter'
-import { UNSPECIFIED_SOURCE, UNSPECIFIED_REASON } from '~/utils/metrics'
+import { buildReportFromAggregate, UNSPECIFIED_SOURCE, UNSPECIFIED_REASON } from '~/utils/metrics'
 import { dealContextBatch, dealStageBatch, dealsFromLeadsParams, leadCountBatch, unlinkedWonDealsParams } from '~/utils/b24Query'
 import { mergeReasons } from '~/utils/reasonMerge'
 
@@ -411,5 +411,82 @@ describe('валюта успешных сделок без лида', () => {
     ], CURRENCIES, ['CALL'])
     expect(result.foreign).toBe(0)
     expect(result.unconverted).toBe(0)
+  })
+})
+
+/**
+ * Стык трёх слоёв ЖИВОГО пути: счётчики лидов + строки сделок → отчёт.
+ *
+ * ⚠ Здесь стоит именно `buildReportFromAggregate`, а не `buildReport`: живая выборка зовёт
+ * первую (лиды приходят счётчиками, строками их за месяц не выбрать), вторая осталась для
+ * демо-набора. Прежний тест стыка гонял через цельный разбор строками, которого в живом пути нет
+ * вовсе, — то есть проверял сходимость слоёв, которые вместе никогда не работают.
+ *
+ * Юнит-тесты проверяют каждый слой отдельно, и ровно между ними уже пряталась дыра: адаптер не
+ * заполнял поле, а поймать это можно было только прогнав одно через другое.
+ */
+describe('счётчики + сделки + ядро отчёта', () => {
+  const CURRENCIES = [
+    { CURRENCY: 'BYN', BASE: 'Y', AMOUNT: '1', AMOUNT_CNT: '1' },
+    { CURRENCY: 'RUB', BASE: 'N', AMOUNT: '3.53', AMOUNT_CNT: '100' }
+  ]
+  const stages = [
+    { STATUS_ID: 'WON', NAME: 'Сделка успешна', SEMANTICS: 'S' },
+    { STATUS_ID: 'LOSE', NAME: 'Сделка провалена', SEMANTICS: 'F' }
+  ]
+  const reasons = mergeReasons(lossStages(stages))
+  const aggregate = adaptLeadCounts({
+    totals: {
+      [leadCountKey.total]: 100,
+      [leadCountKey.junk]: 30,
+      [leadCountKey.converted]: 20,
+      [leadCountKey.inWork]: 40,
+      [leadCountKey.source('CALL')]: 100,
+      [leadCountKey.sourceJunk('CALL')]: 30,
+      [leadCountKey.sourceConverted('CALL')]: 20
+    },
+    sourceIds: ['CALL'],
+    junkStatusIds: ['JUNK']
+  })
+  const adapted = adaptDeals([
+    { ID: '10', LEAD_ID: '3', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '456000', CURRENCY_ID: 'RUB', SOURCE_ID: 'CALL' },
+    { ID: '11', LEAD_ID: '4', STAGE_ID: 'LOSE', STAGE_SEMANTIC_ID: 'F', OPPORTUNITY: '10300', CURRENCY_ID: 'BYN', SOURCE_ID: 'CALL' }
+  ], CURRENCIES, reasons.keyByCode)
+  const report = buildReportFromAggregate(aggregate, adapted.deals, {
+    conversionBase: 'quality-leads',
+    firstResponseSlaMinutes: 60,
+    now: '2026-08-31T23:59:59Z'
+  })
+
+  it('ни одно число отчёта не превращается в NaN', () => {
+    const numbers = [
+      report.summary.junkShare, report.summary.qualifiedShare, report.summary.wonShare,
+      report.summary.revenue, report.lostDeals.lostRevenue, report.lostDeals.shareOfQualified,
+      report.preDealLoss.share
+    ]
+    expect(numbers.every(Number.isFinite)).toBe(true)
+  })
+
+  it('счётчики лидов доезжают до сводки как есть', () => {
+    expect(report.summary).toMatchObject({ totalLeads: 100, junk: 30, qualified: 20, wonDeals: 1 })
+  })
+
+  // 456 000 RUB × 3,53 / 100 — приведение курсом доехало через оба слоя, а не потерялось между ними.
+  it('сумма сделки приведена курсом и доехала до выручки', () => {
+    expect(report.summary.revenue).toBeCloseTo(16_096.8, 6)
+  })
+
+  // ⚠ Причина провала — каноничный ключ из mergeReasons, а не код стадии: словарь и сделки
+  // помечены одним и тем же, иначе строка причин печаталась бы сырым кодом.
+  it('причина проигрыша доезжает ключом, который знает словарь', () => {
+    const [row] = report.lostDeals.byReason
+    expect(row).toBeDefined()
+    expect(reasons.names[row!.reasonId]).toBe('Сделка провалена')
+  })
+
+  // ⚠ Оговорка про чужую валюту обязана доехать вместе с числом: сумма верна, а ввод — нет.
+  it('оговорка про чужую валюту доезжает вместе с суммой', () => {
+    expect(adapted.foreignCurrencyDeals).toBe(1)
+    expect(adapted.unconvertedDeals).toBe(0)
   })
 })
