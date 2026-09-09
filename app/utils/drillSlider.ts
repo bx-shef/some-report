@@ -58,6 +58,20 @@ export interface DrillSliderPayload {
    * как недоверенная, а у недоверенного ввода границы обязаны быть.
    */
   stageNames?: Record<string, string>
+  /**
+   * Источник ОДИН на весь список — его название, а не код.
+   *
+   * ⚠ Нужен потому, что колонка «Источник» иначе печатает СОБСТВЕННОЕ поле сделки, а список
+   * «успешные сделки источника» отобран по источнику ЛИДА. У «Заказа покупателя» из 1С своего
+   * источника нет вовсе: под заголовком «Успешные сделки из лидов: Звонок» строки стояли бы с
+   * пустым или чужим источником — то самое расхождение, ради устранения которого список и
+   * заведён, только теперь на глазах у человека и без объяснения.
+   *
+   * ⚠ Строка ОДНА, а не карта «сделка → источник», и это не упрощение: список целиком собран из
+   * сделок одного источника — перечислением их идентификаторов. Карта была бы вторым местом, где
+   * живёт то же самое, и разошлась бы с заголовком ровно тогда, когда этого никто не ждёт.
+   */
+  sourceName?: string
   /** Заголовок слайдера — та же подпись, что у числа, по которому нажали. */
   title: string
   /** ПОЛНЫЙ фильтр списка REST: период, отбор отчёта и условие клетки уже сведены вместе. */
@@ -272,6 +286,13 @@ const MAX_LIST_ITEMS = 1000
  */
 export const MAX_STAGE_NAMES = 50
 
+/**
+ * Длина подписи, приехавшей от портала. Название источника в Битрикс24 короткое, но приходит оно
+ * снаружи — а у недоверенного ввода границы обязаны быть, иначе одна строка нагрузки распухает
+ * в мегабайт и ложится в шапку списка.
+ */
+const MAX_LABEL_LENGTH = 200
+
 /** Годное значение фильтра — или `undefined`, если портал прислал что-то другое. */
 function readFilterValue(value: unknown): DrillFilterValue | undefined {
   if (typeof value === 'string') return value
@@ -449,6 +470,12 @@ export function readDrillPayload(stored: unknown, nonce: string): DrillPayloadRe
     ? data.categoryId
     : undefined
   const stageNames = readStageNames(data.stageNames)
+  // ⚠ Негодную подпись источника, как и подписи стадий, нагрузку НЕ отвергаем: это косметика,
+  // а не условие. Пустая строка и пробелы — «не прислали»: печатать пустой источник значит
+  // показать колонку, которая ничего не говорит.
+  const sourceName = typeof data.sourceName === 'string' && data.sourceName.trim()
+    ? data.sourceName.trim().slice(0, MAX_LABEL_LENGTH)
+    : undefined
 
   return {
     ok: true,
@@ -456,6 +483,7 @@ export function readDrillPayload(stored: unknown, nonce: string): DrillPayloadRe
       entity,
       title,
       filter,
+      ...(sourceName === undefined ? {} : { sourceName }),
       ...(dealScope === undefined ? {} : { dealScope }),
       ...(activityScope === undefined ? {} : { activityScope }),
       ...(leadScope === undefined ? {} : { leadScope }),

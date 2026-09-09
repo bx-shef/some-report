@@ -138,6 +138,7 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
         filter: params.filter,
         ...(next.dealScope === undefined ? {} : { dealScope: next.dealScope }),
         ...(stageNames === undefined ? {} : { stageNames }),
+        ...(next.sourceName === undefined ? {} : { sourceName: next.sourceName }),
         ...(next.total === undefined ? {} : { total: next.total })
       }, () => mine === seq)
       // ⚠ Пока ждали запись, могли нажать другое число: тогда эта панель уже не наша.
@@ -197,7 +198,7 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
           ...rows.value,
           ...page.map(row => current.entity === 'lead'
             ? leadDrillRow(row as B24DrillLeadRow, dictionaries)
-            : dealDrillRow(row as B24DrillDealRow, dictionaries, codes, current.dealScope))
+            : dealDrillRow(row as B24DrillDealRow, dictionaries, codes, current.dealScope, current.sourceName))
         ]
         added += page.length
         const last = Number(page.at(-1)?.ID)

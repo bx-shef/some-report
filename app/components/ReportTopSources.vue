@@ -90,6 +90,7 @@ const emit = defineEmits<{ drill: [DrillRequest] }>()
             <td class="py-2 pr-3 text-right tabular-nums">
               <DrillNumber
                 :request="drill.wonBySource(row.sourceId, sourceLabel(dictionaries, row.sourceId), row.wonDealIds)"
+                :unavailable-hint="drill.wonBySourceHint(row.sourceId, row.wonDealIds)"
                 :total="row.won"
                 @drill="emit('drill', $event)"
               >

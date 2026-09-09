@@ -43,6 +43,9 @@ describe('drill: что за числом', () => {
     // Собственного источника сделки в условии нет и быть не должно.
     expect(drill.wonBySource('CALL', 'Звонок', [10])!.extra).not.toHaveProperty('SOURCE_ID')
     expect(drill.wonBySource(UNSPECIFIED_SOURCE, 'Не указан', [10])).toBeUndefined()
+    // ⚠ Название источника едет ВМЕСТЕ со списком: колонка «Источник» иначе печатала бы
+    // собственное поле сделки, которого у «Заказа покупателя» из 1С нет вовсе.
+    expect(drill.wonBySource('CALL', 'Звонок', [10])!.sourceName).toBe('Звонок')
   })
 
   /**
@@ -56,6 +59,20 @@ describe('drill: что за числом', () => {
     const tooMany = Array.from({ length: DEFAULT_ID_CHUNK + 1 }, (_, i) => i + 1)
     expect(drill.wonBySource('CALL', 'Звонок', tooMany)).toBeUndefined()
     expect(drill.wonBySource('CALL', 'Звонок', tooMany.slice(0, DEFAULT_ID_CHUNK))).toBeDefined()
+  })
+
+  /**
+   * ⚠ Молча негорящее число читается как поломка отчёта: соседние в той же строке открываются, а
+   * это нет. Причина зависит от выбора человека — периода, — значит её надо назвать.
+   */
+  it('слишком длинный список объясняется подсказкой, а ноль и рабочий случай — молчат', () => {
+    const tooMany = Array.from({ length: DEFAULT_ID_CHUNK + 1 }, (_, i) => i + 1)
+    expect(drill.wonBySourceHint('CALL', tooMany)).toContain('501')
+    expect(drill.wonBySourceHint('CALL', tooMany)).toContain('период короче')
+    // Ноль сделок объяснять нечем: за нулём и не должно ничего открываться.
+    expect(drill.wonBySourceHint('CALL', [])).toBeUndefined()
+    expect(drill.wonBySourceHint('CALL', [10])).toBeUndefined()
+    expect(drill.wonBySourceHint(UNSPECIFIED_SOURCE, tooMany)).toBeUndefined()
   })
 
   it('сделки — причина проигрыша всеми кодами; удалённая — заведомо пусто; блок 7 — без лида', () => {
@@ -142,6 +159,25 @@ describe('drillListParams', () => {
 })
 
 describe('строки списка', () => {
+  /**
+   * ⛔ Источник строки — из НАГРУЗКИ, когда список отобран не по полю сделки.
+   *
+   * Список «успешные сделки источника» собран по источнику ЛИДА. У «Заказа покупателя» из 1С
+   * собственного источника нет, у 54 сделок из 261 он расходится с лидом — под заголовком
+   * «Успешные сделки из лидов: Звонок» встали бы строки с пустым или чужим источником, и это
+   * читалось бы как ошибка отчёта. Там, где список отобран ПО полю сделки, подписи в нагрузке
+   * нет, и печатается собственное поле.
+   */
+  it('источник строки берётся из нагрузки, когда список отобран по источнику лида', () => {
+    const row = { ID: '900', TITLE: 'Заказ покупателя', STAGE_ID: 'WON', SOURCE_ID: '', OPPORTUNITY: '10' }
+    expect(dealDrillRow(row, dictionaries, {}, 'from-leads', 'Входящий звонок').source).toBe('Входящий звонок')
+    // Своё поле сделки при этом даже не смотрится: у неё мог быть и ЧУЖОЙ источник.
+    expect(dealDrillRow({ ...row, SOURCE_ID: 'WEB' }, dictionaries, {}, 'from-leads', 'Входящий звонок').source).toBe('Входящий звонок')
+    // Без подписи — как раньше: собственное поле сделки через справочник.
+    expect(dealDrillRow({ ...row, SOURCE_ID: 'CALL' }, dictionaries, {}, 'from-leads').source).toBe('Входящий звонок')
+    expect(dealDrillRow(row, dictionaries, {}, 'from-leads').source).toBeUndefined()
+  })
+
   it('лид портала: подписи из справочников, путь карточки, без названия — «Лид #id»', () => {
     const row = leadDrillRow({ ID: '7', TITLE: '', DATE_CREATE: '2026-08-10T10:00:00+03:00', STATUS_ID: 'JUNK_DUPLICATE', SOURCE_ID: 'CALL', ASSIGNED_BY_ID: '2' }, { ...dictionaries, users: { 2: 'Петров Сергей' } })
     expect(row).toMatchObject({ id: 7, title: 'Лид #7', source: 'Входящий звонок', manager: 'Петров Сергей', path: '/crm/lead/details/7/' })

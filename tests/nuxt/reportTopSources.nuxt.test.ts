@@ -86,8 +86,28 @@ describe('ReportTopSources', () => {
       const button = wrapper.findAll('button').find((b: { attributes: (name: string) => string | undefined }) => b.attributes('title') === title)
       expect(button, title).toBeDefined()
       await button!.trigger('click')
-      const [request] = wrapper.emitted('drill')!.at(-1) as [{ extra: Record<string, unknown> }]
+      const [request] = wrapper.emitted('drill')!.at(-1) as [{ extra: Record<string, unknown>, sourceName?: string }]
       expect(request.extra.ID).toEqual(row.wonDealIds)
+      // Название источника едет вместе со списком: колонка «Источник» иначе печатала бы
+      // собственное поле сделки, а список отобран по источнику ЛИДА.
+      expect(request.sourceName).toBe(dataset.dictionaries.sources[row.sourceId])
     }
+  })
+
+  /**
+   * ⚠ Число, которое молча не открывается, читается как поломка отчёта. Причина зависит от
+   * выбора человека — периода, — поэтому она стоит подсказкой прямо у числа.
+   */
+  it('слишком длинный список объясняется подсказкой прямо у числа', async () => {
+    const row = report.topSources[0]!
+    const huge = {
+      ...report,
+      topSources: [{ ...row, wonDealIds: Array.from({ length: 501 }, (_, i) => i + 1) }],
+      bySource: [{ ...row, wonDealIds: Array.from({ length: 501 }, (_, i) => i + 1) }]
+    }
+    const wrapper = await render({ report: huge })
+    const title = `Открыть список: Успешные сделки из лидов: ${dataset.dictionaries.sources[row.sourceId]}`
+    expect(wrapper.findAll('button').some((b: { attributes: (name: string) => string | undefined }) => b.attributes('title') === title)).toBe(false)
+    expect(wrapper.html()).toContain('портал столько за раз не отдаёт')
   })
 })

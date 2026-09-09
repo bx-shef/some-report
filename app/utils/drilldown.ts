@@ -50,6 +50,12 @@ export interface DrillRequest {
   dealScope?: 'from-leads' | 'unlinked' | 'plain'
   /** Число, по которому нажали, — чтобы слайдер говорил «показано M из N», не долистывая до конца. */
   total?: number
+  /**
+   * Источник ВСЕХ записей списка — названием. Есть только у списка, отобранного по источнику
+   * ЛИДА (`wonBySource`): там колонка «Источник» иначе печатала бы собственное поле сделки,
+   * которого у «Заказа покупателя» из 1С нет вовсе.
+   */
+  sourceName?: string
 }
 
 /** Строка списка — уже с подписями из справочников; `path` — путь карточки в CRM портала. */
@@ -194,7 +200,20 @@ export const drill = {
    */
   wonBySource: (sourceId: string, label: string, wonDealIds: readonly number[]): DrillRequest | undefined =>
     sourceId !== UNSPECIFIED_SOURCE && wonDealIds.length && wonDealIds.length <= DEFAULT_ID_CHUNK
-      ? dealFromLeads(`Успешные сделки из лидов: ${label}`, { ID: [...wonDealIds] })
+      ? { ...dealFromLeads(`Успешные сделки из лидов: ${label}`, { ID: [...wonDealIds] }), sourceName: label }
+      : undefined,
+
+  /**
+   * Почему число «успешных» источника НЕ кликабельно — словами, для подсказки у самого числа.
+   *
+   * ⚠ Молча негорящее число читается как поломка отчёта: остальные в той же строке открываются, а
+   * это нет. Причина при этом объяснимая и зависит от ВЫБОРА человека — периода, — так что сказать
+   * её стоит. `undefined` значит «кликабельно» либо «объяснять нечего»: ноль сделок — это ноль
+   * записей, за ним не должно открываться ничего, и подпись тут была бы шумом.
+   */
+  wonBySourceHint: (sourceId: string, wonDealIds: readonly number[]): string | undefined =>
+    sourceId !== UNSPECIFIED_SOURCE && wonDealIds.length > DEFAULT_ID_CHUNK
+      ? `Список не открыть: ${wonDealIds.length} сделок — портал столько за раз не отдаёт. Выберите период короче.`
       : undefined,
   wonDeals: () => dealFromLeads('Успешные сделки из лидов', { STAGE_SEMANTIC_ID: 'S' }),
   lostDeals: () => dealFromLeads('Проигранные сделки', { STAGE_SEMANTIC_ID: 'F' }),
@@ -383,8 +402,10 @@ export function leadDrillRow(
  * Строка сделки портала → строка списка. Сумма — как в CRM, в валюте сделки: приводить к
  * базовой здесь незачем, человек сверяет список с карточкой. Стадия провала — названием причины
  * (сведённым, `reasonMerge`), остальные — кодом как есть: справочника стадий сделок в отчёте нет.
+ *
+ * @param sourceName источник ВСЕГО списка названием — когда он отобран не по полю сделки
  */
-export function dealDrillRow(row: B24DrillDealRow, dictionaries: ReportDictionaries, keyByCode: Record<string, string> = {}, scope: DrillRequest['dealScope'] = 'from-leads'): DrillRow {
+export function dealDrillRow(row: B24DrillDealRow, dictionaries: ReportDictionaries, keyByCode: Record<string, string> = {}, scope: DrillRequest['dealScope'] = 'from-leads', sourceName?: string): DrillRow {
   const id = toId(row.ID)
   const stage = toText(row.STAGE_ID)
   const reasonKey = keyByCode[stage]
@@ -400,7 +421,12 @@ export function dealDrillRow(row: B24DrillDealRow, dictionaries: ReportDictionar
     title: toText(row.TITLE) || `Сделка #${id}`,
     ...(when ? { when } : {}),
     ...(stage ? { stage: reasonKey ? lossReasonLabel(dictionaries, reasonKey) : (stageName ?? stage) } : {}),
-    ...(source ? { source: sourceLabel(dictionaries, source) } : {}),
+    // ⚠ Подпись источника, приехавшая со списком, ГЛАВНЕЕ собственного поля сделки — и это не
+    // произвол. Список «успешные сделки источника» отобран по источнику ЛИДА; у сделки он бывает
+    // пуст или свой (54 расхождения из 261 на боевом портале), и под заголовком «… : Звонок»
+    // встали бы строки с пустым источником. Собственное поле показывается там, где список по
+    // нему и отобран, — тогда подписи в нагрузке нет.
+    ...(sourceName ? { source: sourceName } : source ? { source: sourceLabel(dictionaries, source) } : {}),
     ...(manager ? { manager } : {}),
     ...(Number.isFinite(amount) ? { amount } : {}),
     ...(toText(row.CURRENCY_ID) ? { currencyId: toText(row.CURRENCY_ID) } : {}),
