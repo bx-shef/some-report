@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PORTAL_HANDLER_ROUTES, PRERENDER_ROUTES } from '../app/config/routes'
 import { HASH_PLACEHOLDER, buildHashDirective, extractInlineScripts, missingHashes } from '../scripts/cspHashes'
-import { ORIGINS_PLACEHOLDER, PAGES, cspProblems, directiveValue, extractCspHeader, isCspViolation, markersInMarkup, parseOrigin, postPaths, routeOf, serve, substituteOrigins, uncoveredRoutes } from '../scripts/cspSmoke'
+import { ASSET_CACHE_CONTROL, isViolationOf, ORIGINS_PLACEHOLDER, PAGES, cspProblems, directiveValue, embeddingProblems, extractCspHeader, firstAssetPath, headerProblems, isCspViolation, lostSecurityHeaders, markersInMarkup, parseOrigin, postPaths, routeOf, serve, substituteOrigins, uncoveredRoutes } from '../scripts/cspSmoke'
 
 /**
  * Чистые части смоука. Сам прогон браузером в юнит-тестах не гоняется — он в CI отдельным
@@ -248,5 +248,278 @@ describe('serve: статика под боевым заголовком', () =>
     expect((await rawGet(server.origin, '/nope.js')).status).toBe(404)
     expect((await rawGet(server.origin, '/%')).status).toBe(404)
     expect((await rawGet(server.origin, '/')).status).toBe(200)
+  })
+})
+
+/**
+ * ⛔ Директивы ВСТРАИВАНИЯ — самый неприятный класс инцидентов проекта: портал показывает пустую
+ * область без единой ошибки в интерфейсе. Браузерная часть смоука их не видела никогда: страница
+ * открывается вне фрейма и без запросов к REST.
+ */
+describe('embeddingProblems: frame-ancestors и connect-src', () => {
+  const ORIGINS = 'https://*.bitrix24.by https://bitrix.ankron.by'
+  const good = `default-src 'self'; connect-src 'self' ${ORIGINS}; frame-ancestors 'self' ${ORIGINS};`
+
+  it('исправный заголовок замечаний не даёт', () => {
+    expect(embeddingProblems(good)).toEqual([])
+  })
+
+  it('без заголовка вовсе — говорит, что проверять не по чему', () => {
+    expect(embeddingProblems(undefined)).toEqual(['нет заголовка Content-Security-Policy — проверять встраивание не по чему'])
+  })
+
+  it('нет директивы — называет какой именно', () => {
+    const problems = embeddingProblems(`default-src 'self'; connect-src 'self' ${ORIGINS};`)
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('нет frame-ancestors')
+  })
+
+  /**
+   * ⛔ Ровно тот отказ, ради которого проверка и заведена. `NGINX_ENVSUBST_FILTER` в `Dockerfile`
+   * перечисляет переменные поимённо: опечатка в фильтре оставляет `${…}` в живом заголовке,
+   * браузер читает это как имя домена, и портал не проходит НИ ПО ОДНОЙ директиве.
+   */
+  it('уцелевший плейсхолдер ловится в ОБЕИХ директивах и НИЧЕГО лишнего не добавляет', () => {
+    const problems = embeddingProblems(`connect-src 'self' ${ORIGINS_PLACEHOLDER}; frame-ancestors 'self' ${ORIGINS_PLACEHOLDER};`)
+    // ⚠ Длина всего массива, а не только совпадений: ложное срабатывание соседней проверки
+    // (пустой список, расхождение) при `filter(...)` осталось бы незамеченным.
+    expect(problems).toHaveLength(2)
+    expect(problems.every(p => p.includes(ORIGINS_PLACEHOLDER))).toBe(true)
+  })
+
+  /**
+   * ⚠ Худший из вариантов: портал НАС ВСТРОИТ, но данные мы отдать не сможем. Выглядит как
+   * «данных нет» — то есть как факт о CRM, а не как поломка настройки.
+   */
+  it('разошедшиеся списки — отдельное сообщение с обоими', () => {
+    const problems = embeddingProblems(`connect-src 'self' ${ORIGINS}; frame-ancestors 'self' https://*.bitrix24.by;`)
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('РАЗОШЛИСЬ')
+    expect(problems[0]).toContain('bitrix.ankron.by')
+  })
+
+  // Порядок доменов в конфиге — дело автора, расхождением он быть не должен.
+  it('разный ПОРЯДОК доменов расхождением не считает', () => {
+    const reversed = 'https://bitrix.ankron.by https://*.bitrix24.by'
+    expect(embeddingProblems(`connect-src 'self' ${ORIGINS}; frame-ancestors 'self' ${reversed};`)).toEqual([])
+  })
+
+  // `'self'` у директив значит разное (мы как источник и мы как родитель) — в сравнение не идёт.
+  it('лишний `self` расхождением не считает', () => {
+    expect(embeddingProblems(`connect-src ${ORIGINS}; frame-ancestors 'self' ${ORIGINS};`)).toEqual([])
+  })
+
+  it('пустой список доменов называет пустым, а не молчит', () => {
+    const problems = embeddingProblems('connect-src \'self\'; frame-ancestors \'self\';')
+    expect(problems).toHaveLength(2)
+    expect(problems.every(p => p.includes('ни одного домена портала'))).toBe(true)
+  })
+
+  // ⚠ `'none'` — не «пусто», а запрет всем: портал не встроит нас вообще, и это снова пустая
+  // область без ошибки. Отличается от пустого списка и сообщением, и причиной.
+  it('`none` называет запретом, а не пустым списком', () => {
+    const problems = embeddingProblems('connect-src \'none\'; frame-ancestors \'none\';')
+    expect(problems).toHaveLength(2)
+    expect(problems.every(p => p.includes('запрещено всем'))).toBe(true)
+  })
+
+  it('звёздочка вместо списка — это отсутствие ограничения, и так и сказано', () => {
+    const problems = embeddingProblems(`connect-src 'self' *; frame-ancestors 'self' *;`)
+    expect(problems).toHaveLength(2)
+    expect(problems.every(p => p.includes('стоит *'))).toBe(true)
+  })
+
+  /**
+   * ⛔ Опечатка в домене опаснее звёздочки: список выглядит настоящим и проходит все остальные
+   * проверки — он непустой, без `*`, обе директивы совпадают. А `https://*.by` — это любой сайт
+   * зоны, который сможет встроить отчёт и получить данные CRM.
+   */
+  it('слишком широкий домен зоны ловится, хотя список выглядит настоящим', () => {
+    const wide = 'https://*.by'
+    const problems = embeddingProblems(`connect-src 'self' ${wide}; frame-ancestors 'self' ${wide};`)
+    expect(problems).toHaveLength(2)
+    expect(problems.every(p => p.includes('слишком широкий домен'))).toBe(true)
+  })
+
+  it('настоящий домен портала широким НЕ считается', () => {
+    const ok = 'https://*.bitrix24.by https://bitrix.ankron.by'
+    expect(embeddingProblems(`connect-src 'self' ${ok}; frame-ancestors 'self' ${ok};`)).toEqual([])
+  })
+
+  // ⚠ При отсутствии ОБЕИХ директив сравнивать нечего — и сообщения о расхождении быть не должно.
+  it('нет обеих директив — два сообщения и ни одного про расхождение', () => {
+    const problems = embeddingProblems('default-src \'self\';')
+    expect(problems).toHaveLength(2)
+    expect(problems.some(p => p.includes('РАЗОШЛИСЬ'))).toBe(false)
+  })
+
+  /**
+   * ⚠ Следствия у директив РАЗНЫЕ, и человек в логе идёт чинить по этой строке. У `connect-src`
+   * есть откат на `default-src`, у `frame-ancestors` отката нет вовсе.
+   */
+  it('отсутствие каждой директивы объясняется СВОИМ следствием', () => {
+    const [noAncestors] = embeddingProblems('connect-src \'self\' https://a.b.c;') as [string]
+    expect(noAncestors).toContain('встроить нас может кто угодно')
+    const [noConnect] = embeddingProblems('frame-ancestors \'self\' https://a.b.c;') as [string]
+    expect(noConnect).toContain('отчёт во фрейме будет пустым')
+  })
+})
+
+/**
+ * ⚠ Между текстом конфига и ответом лежит правило nginx «локация со своим `add_header` НЕ
+ * наследует серверные». Заголовок, забытый в `location /_nuxt/`, в конфиге выглядит как обычная
+ * строка выше по файлу — а до ассетов не доезжает.
+ */
+describe('headerProblems: кэш живого ответа', () => {
+  const doc = { 'cache-control': 'no-cache' }
+  const asset = { 'cache-control': ASSET_CACHE_CONTROL }
+
+  it('исправные ответы замечаний не дают', () => {
+    expect(headerProblems('document', doc)).toEqual([])
+    expect(headerProblems('asset', asset)).toEqual([])
+  })
+
+  it('документ без Cache-Control — про старую сборку в портале, а не про «нет заголовка»', () => {
+    const problems = headerProblems('document', {})
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('старую сборку')
+  })
+
+  it('документ с вечным кэшем ловится', () => {
+    const [problem] = headerProblems('document', { 'cache-control': 'public, max-age=31536000' }) as [string]
+    expect(problem).toContain('без no-cache')
+  })
+
+  /**
+   * ⛔ Дефект живого выката: `expires 1y` печатает свой `Cache-Control`, и вместе с `add_header`
+   * заголовок уходил ДВУМЯ строками. Проверка по подстроке `max-age` такое пропускает — поэтому
+   * значение сравнивается целиком.
+   */
+  it('склеенные две политики кэша у ассета ловятся, хотя max-age на месте', () => {
+    const [problem] = headerProblems('asset', { 'cache-control': 'max-age=31536000, public, immutable' }) as [string]
+    expect(problem).toContain('ушёл дважды')
+  })
+
+  // ⚠ Причину не утверждаем: значение могли поменять и намеренно — тогда «ушёл дважды» отправило
+  // бы чинить несуществующий дубль. Сообщение обязано называть обе возможности.
+  it('изменённое значение кэша называет и вторую возможную причину', () => {
+    const [problem] = headerProblems('asset', { 'cache-control': 'public, max-age=604800, immutable' }) as [string]
+    expect(problem).toContain('значение поменяли')
+  })
+
+  it('ассет без Cache-Control — про бандл заново, а не про кэш вообще', () => {
+    const [problem] = headerProblems('asset', {}) as [string]
+    expect(problem).toContain('тянет бандл заново')
+  })
+
+  /**
+   * ⚠ Регистр имён приводит сама функция: она экспортирована, и вызывающий с `Cache-Control`
+   * получил бы правдоподобный, но неверный диагноз «заголовка нет».
+   */
+  it('имя заголовка в любом регистре читается одинаково', () => {
+    expect(headerProblems('document', { 'Cache-Control': 'no-cache' })).toEqual([])
+  })
+})
+
+/**
+ * ⚠ Сверяем НАБОР заголовков ассета с документом, а не список в коде: `location /_nuxt/`
+ * переобъявляет четыре заголовка, и перечислять их поимённо значило бы сторожить ровно те, о
+ * которых вспомнил автор проверки, — а забывают как раз невспомненные.
+ */
+describe('lostSecurityHeaders: что потерялось в локации', () => {
+  const full = {
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'strict-origin-when-cross-origin',
+    'permissions-policy': 'camera=()'
+  }
+
+  it('одинаковые наборы замечаний не дают', () => {
+    expect(lostSecurityHeaders(full, full)).toEqual([])
+  })
+
+  it('потерянный nosniff называет с подсказкой про наследование', () => {
+    const { 'x-content-type-options': _drop, ...withoutNosniff } = full
+    const [problem] = lostSecurityHeaders(full, withoutNosniff) as [string]
+    expect(problem).toContain('x-content-type-options')
+    expect(problem).toContain('не наследует')
+  })
+
+  // ⛔ Ровно тот заголовок, о котором забыл я сам: локация повторяет его, а проверка знала два.
+  it('потерянные Referrer-Policy и Permissions-Policy тоже ловятся', () => {
+    const problems = lostSecurityHeaders(full, { 'x-content-type-options': 'nosniff' })
+    expect(problems).toHaveLength(2)
+    expect(problems.join(' ')).toContain('referrer-policy')
+    expect(problems.join(' ')).toContain('permissions-policy')
+  })
+
+  // Заголовка нет НИ У КОГО — это не потеря в локации, а другой разговор: молчим.
+  it('заголовок, которого нет и у документа, потерей не считает', () => {
+    expect(lostSecurityHeaders({}, {})).toEqual([])
+  })
+
+  it('регистр имён не мешает', () => {
+    expect(lostSecurityHeaders({ 'X-Content-Type-Options': 'nosniff' }, { 'x-content-type-options': 'nosniff' })).toEqual([])
+  })
+})
+
+describe('firstAssetPath', () => {
+  // Имя ассета несёт хеш и меняется каждой сборкой: захардкоженный путь проверял бы заголовки 404.
+  it('берёт первый ассет из живой разметки', () => {
+    const html = '<link rel="modulepreload" href="/_nuxt/entry.B1c2d3.js"><link rel="stylesheet" href="/_nuxt/main.Ab12.css">'
+    expect(firstAssetPath(html)).toBe('/_nuxt/entry.B1c2d3.js')
+  })
+
+  it('в одинарных кавычках тоже находит', () => {
+    expect(firstAssetPath('<script src=\'/_nuxt/x.mjs\'>')).toBe('/_nuxt/x.mjs')
+  })
+
+  /**
+   * ⚠ Только `src`/`href`. В разметке есть JSON гидратации, и строка оттуда совпала бы с любой
+   * кавычечной — смоук пошёл бы проверять заголовки несуществующего адреса и назвал бы 404
+   * поломкой локации.
+   */
+  it('строку из полезной нагрузки за ассет не принимает', () => {
+    const html = '<script type="application/json">{"path":"/_nuxt/fake.js"}</script><script src="/_nuxt/real.js"></script>'
+    expect(firstAssetPath(html)).toBe('/_nuxt/real.js')
+  })
+
+  // Не нашёлся — это не «проверять нечего», а сигнал прогону: он скажет об этом отдельно.
+  it('без ассетов возвращает undefined, а не пустую строку', () => {
+    expect(firstAssetPath('<html><body>нет ассетов</body></html>')).toBeUndefined()
+  })
+})
+
+/**
+ * ⛔ Строки здесь — НЕ выдуманные: сняты с живого Chromium 2026-09-08 отдельным прогоном. Правило
+ * проекта «стенд не щедрее реального» тут работает наоборот: стенд обязан быть таким же
+ * КОВАРНЫМ, как настоящий браузер, иначе проверка встраивания зеленеет на чужом нарушении.
+ */
+describe('isViolationOf: отказ по НАЗВАННОЙ директиве', () => {
+  const ANCESTORS = 'Refused to frame \'http://127.0.0.1:44117/\' because an ancestor violates the following Content Security Policy directive: "frame-ancestors \'self\'".'
+  const FRAME_SRC = 'Refused to frame \'https://nested.invalid/\' because it violates the following Content Security Policy directive: "frame-src \'none\'".'
+  const CONNECT = 'Refused to connect to \'https://blocked.invalid/probe\' because it violates the following Content Security Policy directive: "connect-src \'self\'".'
+
+  it('свой отказ опознаёт', () => {
+    expect(isViolationOf(ANCESTORS, 'frame-ancestors')).toBe(true)
+    expect(isViolationOf(CONNECT, 'connect-src')).toBe(true)
+  })
+
+  /**
+   * ⛔ Главный тест этого блока. У нас в политике стоит `frame-src 'none'`, и его нарушение
+   * печатается тем же словом «frame». Совпадение по слову дало бы ЛОЖНЫЙ ЗЕЛЁНЫЙ: вложенный
+   * фрейм закрыл бы проверку `frame-ancestors` вместо неё самой.
+   */
+  it('чужой отказ со словом «frame» своим НЕ считает', () => {
+    expect(isViolationOf(FRAME_SRC, 'frame-ancestors')).toBe(false)
+  })
+
+  it('отказ по другой директиве не путает', () => {
+    expect(isViolationOf(CONNECT, 'frame-ancestors')).toBe(false)
+    expect(isViolationOf(ANCESTORS, 'connect-src')).toBe(false)
+  })
+
+  // Обычное сообщение страницы отказом не считается — иначе проверка зеленела бы от любого лога.
+  it('сообщение, не похожее на нарушение CSP, отказом не считает', () => {
+    expect(isViolationOf('в directive: "connect-src" всё хорошо', 'connect-src')).toBe(false)
   })
 })
