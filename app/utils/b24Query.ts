@@ -401,9 +401,9 @@ export function unlinkedWonDealsParams(period: ReportPeriod) {
  */
 export function dealsFromLeadsParams(
   period: ReportPeriod,
-  /** Фрагмент фильтра сделок (`dealRestFilter`): источник, стадии проигрыша. */
+  /** Фрагмент фильтра сделок (`dealRestFilter`): стадии проигрыша. Источника здесь нет — он у лида. */
   dealFilter: Record<string, string | string[]> = {},
-  /** Лиды под фильтром менеджера/стадии — сделки только по ним (`LEAD_ID in (...)`). */
+  /** Лиды под фильтром менеджера, стадии или источника — сделки только по ним (`LEAD_ID in (...)`). */
   leadIds?: readonly number[]
 ) {
   // ⚠ Пустой список — ошибка вызывающего, а не «ничего не найдено»: `LEAD_ID: [0]` на боевом

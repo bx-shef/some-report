@@ -305,6 +305,101 @@ describe('load', () => {
     expect(call?.revenue).toBeCloseTo(1206.51, 2)
   })
 
+  /**
+   * ⚠ Родителей спрашиваем только у УСПЕШНЫХ сделок: разрез кладёт на источник продажу и
+   * выручку, для остальных исходов карта не читается ни разу. На боевом портале это 160 лидов
+   * вместо 950 за месяц — один кусок вместо двух.
+   */
+  it('источники спрашиваются у лидов УСПЕШНЫХ сделок, а не всех прочитанных', async () => {
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([
+      { ID: '900', LEAD_ID: '77', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '10', CURRENCY_ID: 'BYN' },
+      { ID: '901', LEAD_ID: '88', STAGE_ID: 'LOSE', STAGE_SEMANTIC_ID: 'F', OPPORTUNITY: '99', CURRENCY_ID: 'BYN' }
+    ])
+    await vi.waitFor(() => expect(portal.pending[`lead-sources:${AUGUST.from}`]).toBeDefined())
+    expect(portal.filters[`lead-sources:${AUGUST.from}`]).toMatchObject({ ID: [77] })
+    portal.pending[`lead-sources:${AUGUST.from}`]!([{ ID: '77', SOURCE_ID: 'CALL' }])
+    await loading
+    expect(data.dataset.value.leadAggregate?.leadSourceById).toEqual({ 77: 'CALL' })
+  })
+
+  /**
+   * ⛔ Куски по 500 обязаны СКЛАДЫВАТЬСЯ в одну карту, а не заменять друг друга.
+   *
+   * Замена вместо накопления (`rows.push(...)` → `rows = [...]`) не роняет ни один тест на одном
+   * куске, а на боевом портале режет карту ровно наполовину: выручка первых пятисот лидов снова
+   * уезжает в «Другие источники» — тот самый дефект, ради которого карта и заведена. Месяц
+   * заказчика при 160 успешных сделках в один кусок укладывается, но год — нет.
+   */
+  it('источники нескольких кусков складываются в одну карту', async () => {
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    // 501 успешная сделка — ровно на два куска: 500 и один.
+    const deals = Array.from({ length: 501 }, (_, i) => ({
+      ID: String(1000 + i), LEAD_ID: String(1 + i), STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '1', CURRENCY_ID: 'BYN'
+    }))
+    portal.pending[AUGUST.from]!(deals)
+    const key = `lead-sources:${AUGUST.from}`
+    await vi.waitFor(() => expect(portal.pending[key]).toBeDefined())
+    expect((portal.filters[key]!.ID as number[]).length).toBe(500)
+    portal.pending[key]!([{ ID: '1', SOURCE_ID: 'CALL' }])
+    // Второй кусок — свой запрос по тому же ключу: ждём, пока стенд подменит обработчик.
+    await vi.waitFor(() => expect((portal.filters[key]!.ID as number[]).length).toBe(1))
+    portal.pending[key]!([{ ID: '501', SOURCE_ID: 'EMAIL' }])
+    await loading
+    expect(data.dataset.value.leadAggregate?.leadSourceById).toEqual({ 1: 'CALL', 501: 'EMAIL' })
+  })
+
+  /**
+   * ⚠ Отказ на карте источников роняет ВСЮ выборку, и это осознанно: разрез без карты молча
+   * положил бы выручку не в свои строки. Экран при этом остаётся с прежними данными и плашкой
+   * ошибки — а не с нулями, которые читаются как факт о CRM.
+   */
+  it('отказ на карте источников — ошибка выборки, а не тихий пустой разрез', async () => {
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([
+      { ID: '900', LEAD_ID: '77', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '10', CURRENCY_ID: 'BYN' }
+    ])
+    await vi.waitFor(() => expect(portal.pending[`lead-sources:${AUGUST.from}`]).toBeDefined())
+    portal.pending[`lead-sources:${AUGUST.from}`]!(new Error('QUERY_LIMIT_EXCEEDED'))
+    await loading
+    expect(data.error.value).toContain('QUERY_LIMIT_EXCEEDED')
+    // Данные портала на экран НЕ легли: набор остался прежним (демо-набор первой загрузки).
+    expect(data.isDemo.value).toBe(true)
+  })
+
+  /**
+   * ⚠ Отмена посреди чтения источников. Без неё карта покойного периода легла бы поверх свежего
+   * набора: выборка идёт кусками, и между ними человек успевает сменить период.
+   */
+  it('карта источников устаревшей выборки не попадает в набор', async () => {
+    const data = useReportData()
+    const first = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([
+      { ID: '900', LEAD_ID: '77', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '10', CURRENCY_ID: 'BYN' }
+    ])
+    await vi.waitFor(() => expect(portal.pending[`lead-sources:${AUGUST.from}`]).toBeDefined())
+
+    // Пока идут источники августа, человек переключился на сентябрь и тот успел ответить.
+    const second = data.load(SEPTEMBER)
+    await vi.waitFor(() => expect(portal.pending[SEPTEMBER.from]).toBeDefined())
+    portal.pending[SEPTEMBER.from]!([])
+    await second
+    expect(data.dataset.value.period).toEqual(SEPTEMBER)
+
+    portal.pending[`lead-sources:${AUGUST.from}`]!([{ ID: '77', SOURCE_ID: 'CALL' }])
+    await first
+    // Период и карта — сентябрьские: опоздавший август не переписал ни то, ни другое.
+    expect(data.dataset.value.period).toEqual(SEPTEMBER)
+    expect(data.dataset.value.leadAggregate?.leadSourceById).toEqual({})
+  })
+
   it('после загрузки источник — портал, период — запрошенный', async () => {
     const data = useReportData()
     const loading = data.load(AUGUST)
@@ -782,7 +877,7 @@ describe('load', () => {
       portal.pending[`ids:${AUGUST.from}`]!([{ ID: '1' }, { ID: '2' }])
       await vi.waitFor(() => expect(portal.pending['deals-by:1,2']).toBeDefined())
       expect(portal.filters['deals-by:1,2']).not.toHaveProperty('!LEAD_ID')
-      portal.pending['deals-by:1,2']!([{ ID: '10', LEAD_ID: '1', STAGE_ID: 'WON', OPPORTUNITY: '300', CURRENCY_ID: 'BYN', SOURCE_ID: 'CALL', DATE_CREATE: '2026-08-10T10:00:00+03:00', ASSIGNED_BY_ID: '562' }])
+      portal.pending['deals-by:1,2']!([{ ID: '10', LEAD_ID: '1', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '300', CURRENCY_ID: 'BYN', SOURCE_ID: 'CALL', DATE_CREATE: '2026-08-10T10:00:00+03:00', ASSIGNED_BY_ID: '562' }])
       // Источник ЛИДА спрашивается и под фильтром: разрез не должен зависеть от того, отбирали
       // ли что-то на экране.
       await vi.waitFor(() => expect(portal.pending[`lead-sources:${AUGUST.from}`]).toBeDefined())

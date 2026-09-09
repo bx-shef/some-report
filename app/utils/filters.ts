@@ -107,8 +107,20 @@ export function codesByReason(keyByCode: Record<string, string>): Record<string,
   return out
 }
 
+/**
+ * Длина списка идентификаторов в ОДНОМ запросе к порталу (`LEAD_ID in (...)`, `ID in (...)`).
+ *
+ * ⚠ Число проверено на боевом портале ([`PORTAL.md`](../../docs/PORTAL.md)) — это не круглая
+ * цифра «на глаз». Отсюда же берёт потолок детализация, которая открывает список ПЕРЕЧИСЛЕНИЕМ
+ * записей (`drill.bySource`, часть «успешные»): резать список на куски слайдер не умеет, значит
+ * условие обязано влезать в один запрос целиком. Брать там потолок разбора нагрузки
+ * (`MAX_LIST_ITEMS`, вдвое больше) было ошибкой: он про размер сообщения, а не про то, сколько
+ * значений выдерживает фильтр портала.
+ */
+export const DEFAULT_ID_CHUNK = 500
+
 /** Порезать список ID на куски: фильтр `LEAD_ID in (...)` в одном запросе не должен быть безразмерным. */
-export function chunkIds(ids: readonly number[], size = 500): number[][] {
+export function chunkIds(ids: readonly number[], size = DEFAULT_ID_CHUNK): number[][] {
   const out: number[][] = []
   for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size))
   return out

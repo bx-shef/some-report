@@ -63,4 +63,31 @@ describe('ReportTopSources', () => {
     const empty = buildReport([], [], { conversionBase: 'quality-leads' })
     expect((await render({ report: empty })).text()).toContain('За период лидов нет')
   })
+
+  /**
+   * ⛔ Обе таблицы обязаны отдавать за «Успешными» ОДИН И ТОТ ЖЕ список — тот, что посчитан в
+   * строке (`SourceRow.wonDealIds`).
+   *
+   * Проверка не формальная: список успешных сделок источника нельзя выразить условием REST
+   * (источник берётся у ЛИДА), поэтому он едет перечислением записей четвёртым аргументом. Пока
+   * у аргумента было умолчание, «Топ-5» его просто не передавал — колонка молча переставала быть
+   * кнопкой при полностью зелёной сборке. Тайпчекер теперь это ловит, но только пока аргумент
+   * обязателен; тест сторожит саму проводку — что едет список ЭТОЙ строки, а не соседней.
+   */
+  it('обе таблицы открывают за «Успешными» ровно те сделки, что посчитаны в строке', async () => {
+    const row = report.topSources[0]!
+    const title = `Открыть список: Успешные сделки из лидов: ${dataset.dictionaries.sources[row.sourceId]}`
+    expect(row.wonDealIds.length).toBeGreaterThan(0)
+
+    for (const wrapper of [
+      await render(),
+      await mountSuspended(ReportSources, { props: { report, dictionaries: dataset.dictionaries, currencyId: dataset.currencyId } })
+    ]) {
+      const button = wrapper.findAll('button').find((b: { attributes: (name: string) => string | undefined }) => b.attributes('title') === title)
+      expect(button, title).toBeDefined()
+      await button!.trigger('click')
+      const [request] = wrapper.emitted('drill')!.at(-1) as [{ extra: Record<string, unknown> }]
+      expect(request.extra.ID).toEqual(row.wonDealIds)
+    }
+  })
 })

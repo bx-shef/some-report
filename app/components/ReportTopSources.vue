@@ -89,7 +89,7 @@ const emit = defineEmits<{ drill: [DrillRequest] }>()
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
               <DrillNumber
-                :request="drill.bySource(row.sourceId, 'won', sourceLabel(dictionaries, row.sourceId))"
+                :request="drill.wonBySource(row.sourceId, sourceLabel(dictionaries, row.sourceId), row.wonDealIds)"
                 :total="row.won"
                 @drill="emit('drill', $event)"
               >
