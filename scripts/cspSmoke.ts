@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
 import { extname, isAbsolute, join, relative, resolve } from 'node:path'
-import type { Browser } from 'playwright-core'
+import type { Browser, Page } from 'playwright-core'
 import { PORTAL_HANDLER_ROUTES, PRERENDER_ROUTES } from '../app/config/routes.ts'
 import { HASH_PLACEHOLDER, applyHashes, buildHashDirective, htmlFiles, missingHashes } from './cspHashes.ts'
 
@@ -27,9 +27,13 @@ import { HASH_PLACEHOLDER, applyHashes, buildHashDirective, htmlFiles, missingHa
  *   видит весь путь `Dockerfile` → `envsubst` → `nginx -t` → реальные `add_header` по `location`
  *   и `error_page 405 =200` — то, что локальный сервер лишь имитирует.
  *
- * Что смоук НЕ проверяет: `frame-ancestors` и `connect-src` к REST портала. Страница открывается
- * вне фрейма, SDK не инициализируется — эти директивы срабатывают только внутри портала, и там
- * их по-прежнему проверяют руками после выката (см. `docs/DEPLOY.md`).
+ * ⛔ Директивы ВСТРАИВАНИЯ проверяются отдельно, и это самое ценное здесь. `frame-ancestors` и
+ * `connect-src` дают худший класс инцидентов проекта — портал показывает ПУСТУЮ ОБЛАСТЬ без
+ * единой ошибки на экране. Прежде смоук их не видел вовсе: страница открывается вне фрейма и без
+ * запросов к REST, значит обе директивы не срабатывают никогда, и проверка руками после выката
+ * была единственной. Теперь проверяются с ЧУЖОЙ стороны — так же, как ломается: страницу пробуют
+ * встроить с другого origin, и со страницы стучатся на посторонний домен. Обе попытки обязаны
+ * быть отвергнуты. Плюс сами списки доменов сверяются в живом заголовке.
  *
  * Браузер — системный Chrome раннера (`channel: 'chrome'`, без скачивания) либо путь из
  * `CSP_SMOKE_BROWSER`.
@@ -122,6 +126,166 @@ export function cspProblems(csp: string | undefined, html: string): string[] {
 }
 
 /**
+ * Что не так с директивами ВСТРАИВАНИЯ: `frame-ancestors` (кто может нас встроить) и `connect-src`
+ * (куда мы имеем право ходить).
+ *
+ * ⛔ Именно эта пара даёт самый неприятный класс инцидентов проекта: портал показывает ПУСТУЮ
+ * ОБЛАСТЬ без единой ошибки в интерфейсе. Ни браузерная часть смоука, ни тесты этого не видели:
+ * страница открывается вне фрейма и без запросов к REST, то есть обе директивы не срабатывают
+ * никогда. Проверка руками после выката была единственной — и она пропускается ровно тогда, когда
+ * выкат срочный.
+ *
+ * ⚠ Оба списка задаются ОДНОЙ переменной `${B24_PORTAL_ORIGINS}` в `nginx.conf` и обязаны
+ * совпадать: портал, которому позволено нас встроить, но к которому нам запрещено ходить, даёт
+ * пустой отчёт во встроенном фрейме — худший из вариантов, потому что выглядит как «данных нет».
+ *
+ * ⚠ Уцелевший плейсхолдер — отдельная беда и отдельное сообщение. `NGINX_ENVSUBST_FILTER` в
+ * `Dockerfile` перечисляет переменные поимённо; опечатка в фильтре оставляет `${…}` в живом
+ * заголовке, браузер читает это как имя домена, и портал не проходит НИ ПО ОДНОЙ директиве.
+ *
+ * @param csp значение заголовка из ЖИВОГО ответа, а не из конфига на диске
+ */
+export function embeddingProblems(csp: string | undefined): string[] {
+  if (!csp) return ['нет заголовка Content-Security-Policy — проверять встраивание не по чему']
+  const problems: string[] = []
+  const lists: Partial<Record<'frame-ancestors' | 'connect-src', string[]>> = {}
+  for (const name of ['frame-ancestors', 'connect-src'] as const) {
+    const value = directiveValue(csp, name)
+    if (value === undefined) {
+      // ⚠ Следствия у директив РАЗНЫЕ, и человек в логе идёт чинить по этой строке. У
+      // `connect-src` есть откат на `default-src 'self'` — REST портала окажется закрыт, и отчёт
+      // во фрейме будет пустым. У `frame-ancestors` отката нет вовсе: встроить сможет кто угодно.
+      problems.push(name === 'frame-ancestors'
+        ? 'в CSP нет frame-ancestors — встроить нас может кто угодно, защиты от кликджекинга нет'
+        : 'в CSP нет connect-src — сработает откат на default-src, REST портала закрыт, отчёт во фрейме будет пустым')
+      continue
+    }
+    if (value.includes(ORIGINS_PLACEHOLDER)) {
+      problems.push(`в ${name} остался плейсхолдер ${ORIGINS_PLACEHOLDER} — envsubst не подставил домены порталов`)
+    }
+    const origins = value.split(/\s+/).filter(Boolean)
+    // ⚠ `'self'` из сравнения убираем: у `connect-src` он про наш же домен, у `frame-ancestors` —
+    // про нас как родителя. Совпадать обязаны именно ДОМЕНЫ ПОРТАЛОВ.
+    lists[name] = origins.filter(origin => origin !== '\'self\'').sort()
+    if (!lists[name].length) {
+      problems.push(`в ${name} нет ни одного домена портала — во фрейме портала будет пустая область без ошибки`)
+    }
+    if (origins.includes('*')) {
+      problems.push(`в ${name} стоит * — список доменов порталов не ограничивает никого`)
+    }
+    /**
+     * ⛔ Опечатка в домене опаснее звёздочки, потому что выглядит как настоящий список.
+     * `https://*.by` вместо `https://*.bitrix24.by` — это ЛЮБОЙ сайт в зоне `.by`: он сможет
+     * встроить отчёт и получить данные CRM. Ни валидатор доменов при сборке, ни сравнение
+     * списков между директивами такого не видят — оба считают значение нормальным.
+     *
+     * Отличаем по числу меток после звёздочки: у боевых доменов их две и больше
+     * (`*.bitrix24.by`), у опечатки — одна (`*.by`).
+     */
+    for (const origin of origins) {
+      const host = origin.replace(/^[a-z]+:\/\//i, '')
+      if (host.startsWith('*.') && host.split('.').length < 3) {
+        problems.push(`в ${name} слишком широкий домен ${origin} — под него попадает вся зона целиком; похоже на опечатку в ${ORIGINS_PLACEHOLDER}`)
+      }
+    }
+    // ⚠ `'none'` — не «пусто», а ЗАПРЕТ всем. У `frame-ancestors` это значит, что портал не
+    // встроит нас вообще: пустая область вместо отчёта, и опять без единой ошибки на экране.
+    if (origins.includes('\'none\'')) {
+      problems.push(`в ${name} стоит 'none' — запрещено всем, портал получит пустую область вместо отчёта`)
+    }
+  }
+  const ancestors = lists['frame-ancestors']
+  const connect = lists['connect-src']
+  if (ancestors && connect && ancestors.join(' ') !== connect.join(' ')) {
+    problems.push(`списки доменов в frame-ancestors и connect-src РАЗОШЛИСЬ: «${ancestors.join(' ')}» против «${connect.join(' ')}» — портал сможет нас встроить, но не сможет отдать данные`)
+  }
+  return problems
+}
+
+/** Что за ответ проверяем заголовками: документ или ассет с хешем в имени. */
+export type ResponseKind = 'document' | 'asset'
+
+/** Ожидаемый `Cache-Control` ассета — ОДНОЙ строкой, см. `headerProblems`. */
+export const ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable'
+
+/**
+ * Заголовки безопасности, которые `nginx.conf` повторяет в `location /_nuxt/`. Проверяются
+ * НАБОРОМ, а не поимённо: локация переобъявляет четыре, и перечислять их здесь по одному значило
+ * бы сторожить ровно те, о которых вспомнил автор проверки.
+ */
+export const SECURITY_HEADERS = ['x-content-type-options', 'referrer-policy', 'permissions-policy'] as const
+
+/**
+ * Заголовки ответа, которые ломаются молча и видны только на НАСТОЯЩЕМ nginx.
+ *
+ * ⚠ Текст конфига сторожит `tests/nginxConf.test.ts`, и этого мало: между конфигом и ответом
+ * лежит правило nginx «локация со своим `add_header` НЕ наследует серверные». Заголовок, забытый
+ * в `location /_nuxt/`, в конфиге выглядит как обычная строка выше по файлу — а до ассетов не
+ * доезжает. Увидеть это можно только по живому ответу.
+ *
+ * ⚠ `Cache-Control` у ассета сверяется ЦЕЛОЙ СТРОКОЙ, а не по подстроке `max-age`. Директива
+ * `expires` печатает свой `Cache-Control`, и вместе с `add_header` заголовок уходил ДВУМЯ
+ * строками (замечено на живом выкате). Две строки с одним именем — две политики кэша, и какая
+ * применится, зависит от реализации.
+ *
+ * @param kind документ или ассет — у них РАЗНЫЙ ожидаемый `Cache-Control`, и перепутать их значит
+ *   пропустить либо вечный кэш на HTML, либо отсутствие кэша на ассетах
+ * @param raw заголовки живого ответа; регистр имён приводим здесь, а не полагаемся на вызывающего:
+ *   функция экспортирована, и второй вызывающий с `Cache-Control` получил бы правдоподобный, но
+ *   неверный диагноз «заголовка нет»
+ */
+export function headerProblems(kind: ResponseKind, raw: Record<string, string>): string[] {
+  const headers: Record<string, string> = {}
+  for (const [name, value] of Object.entries(raw)) headers[name.toLowerCase()] = value
+
+  const problems: string[] = []
+  const cache = headers['cache-control']
+  if (kind === 'document') {
+    if (!cache) problems.push('у документа нет Cache-Control — браузер применит эвристику и будет держать старую сборку часами')
+    else if (!cache.includes('no-cache')) problems.push(`у документа Cache-Control «${cache}» без no-cache — в портале это выглядит как невыкаченная правка`)
+  } else {
+    if (!cache) problems.push('у ассета /_nuxt/ нет Cache-Control — вечный кэш не работает, каждый заход тянет бандл заново')
+    // ⚠ Сравнение ЦЕЛИКОМ: склеенные политики («max-age=31536000, public, immutable») дают
+    // подстроку `max-age` и прошли бы проверку по включению — а это ровно тот дефект.
+    else if (cache !== ASSET_CACHE_CONTROL) {
+      // Причину не утверждаем: значение могли поменять и намеренно. Называем расхождение и
+      // подсказываем самую частую причину — иначе смоук отправит чинить несуществующий дубль.
+      problems.push(`у ассета /_nuxt/ Cache-Control «${cache}» вместо ожидаемого «${ASSET_CACHE_CONTROL}» — либо заголовок ушёл дважды (expires + add_header), либо значение поменяли и забыли про смоук`)
+    }
+  }
+  return problems
+}
+
+/**
+ * Заголовки безопасности, которые есть у документа, но пропали у ассета.
+ *
+ * ⚠ Сверяем с ДОКУМЕНТОМ, а не со списком в коде: `location /_nuxt/` повторяет серверные
+ * заголовки, и любой из них можно забыть при правке. Список в коде сторожил бы только те, что
+ * автор проверки вспомнил, — а забывают как раз невспомненные.
+ */
+export function lostSecurityHeaders(document: Record<string, string>, asset: Record<string, string>): string[] {
+  const at = (headers: Record<string, string>, name: string): string | undefined => {
+    for (const [key, value] of Object.entries(headers)) if (key.toLowerCase() === name) return value
+    return undefined
+  }
+  return SECURITY_HEADERS
+    .filter(name => at(document, name) !== undefined && at(asset, name) === undefined)
+    .map(name => `у ассета /_nuxt/ нет заголовка ${name}, а у документа он есть — nginx не наследует add_header в локацию со своими заголовками`)
+}
+
+/**
+ * Первый ассет `/_nuxt/` из разметки страницы — по нему и проверяются заголовки локации.
+ *
+ * Берём из живой разметки, а не из списка файлов сборки: имя с хешем меняется каждой сборкой, и
+ * захардкоженный путь превратил бы проверку в «404 отдаёт правильные заголовки».
+ */
+export function firstAssetPath(html: string): string | undefined {
+  // ⚠ Привязка к `src`/`href`, а не любая строка в кавычках: в разметке есть JSON гидратации, и
+  // совпасть могла бы строка оттуда — тогда смоук проверял бы заголовки несуществующего адреса.
+  return /(?:src|href)=["'](\/_nuxt\/[^"']+\.(?:js|mjs|css))["']/.exec(html)?.[1]
+}
+
+/**
  * Значение директивы по точному имени. Не regex по подстроке: `script-src-attr 'none'`, стоящая
  * раньше `script-src`, подошла бы под `/script-src([^;]*)/` и «съела» бы настоящую директиву.
  */
@@ -179,7 +343,13 @@ export function extractCspHeader(conf: string): string {
   return matches[0][1]
 }
 
-/** Домены порталов в заголовке. Для смоука значение не важно: страницу никто не встраивает. */
+/**
+ * Домены порталов в заголовке.
+ *
+ * ⚠ Значение ЗНАЧИМО: `embeddingProblems` разбирает список, а `checkEnforcement` проверяет его
+ * действие живым браузером. Прежде тут стояло «для смоука значение не важно» — это было верно,
+ * пока страницу никто не встраивал.
+ */
 export function substituteOrigins(csp: string, origins: string): string {
   return csp.replaceAll(ORIGINS_PLACEHOLDER, origins)
 }
@@ -187,6 +357,25 @@ export function substituteOrigins(csp: string, origins: string): string {
 /** Сообщение консоли — о нарушении CSP? Формулировки Chromium: «Refused to …», «Content Security Policy». */
 export function isCspViolation(text: string): boolean {
   return /Refused to|Content Security Policy/i.test(text)
+}
+
+/**
+ * Сообщение консоли — отказ ИМЕННО по названной директиве?
+ *
+ * ⛔ Проверять по слову нельзя, и это не теория. Замер на живом Chromium (2026-09-08):
+ *
+ *   frame-ancestors → «Refused to frame '…' because an ancestor violates the following Content
+ *                      Security Policy directive: "frame-ancestors 'self'".»
+ *   frame-src       → «Refused to frame '…' because it violates the following Content Security
+ *                      Policy directive: "frame-src 'none'".»
+ *
+ * Слово «frame» есть в обоих. У нас в политике `frame-src 'none'` стоит, значит вложенный фрейм
+ * на проверяемой странице закрыл бы проверку `frame-ancestors` ВМЕСТО неё самой — ложный зелёный
+ * ровно там, где проверка должна краснеть. Спасает то, что Chromium печатает название
+ * нарушенной директивы дословно и в кавычках: по нему и опознаём.
+ */
+export function isViolationOf(text: string, directive: string): boolean {
+  return isCspViolation(text) && text.includes(`"${directive} `)
 }
 
 const MIME: Record<string, string> = {
@@ -299,10 +488,164 @@ async function checkPost(origin: string, path: string): Promise<PageResult> {
     if (response.status !== 200) problems.push(`HTTP ${response.status} — портал открывает обработчик POST-запросом и увидит пустоту`)
     else if (!body.includes('id="__nuxt"')) problems.push('в ответе нет разметки приложения')
     problems.push(...cspProblems(response.headers.get('content-security-policy') ?? undefined, body))
+    // ⚠ Этот ответ портал и рисует во фрейме — значит `Cache-Control` и заголовки безопасности у
+    // него обязаны быть те же, что у обычного документа. `error_page` с именованной локацией мог
+    // бы отдать его без серверных `add_header`, и кэшируемый HTML выглядел бы как невыкаченная
+    // правка ровно там, где её замечают позже всего.
+    problems.push(...headerProblems('document', Object.fromEntries(response.headers)))
   } catch (error) {
     problems.push(`запрос не прошёл: ${error instanceof Error ? error.message.slice(0, 160) : String(error)}`)
   }
   return { path: `POST ${path}`, problems }
+}
+
+/** Заголовки ответа с именами в нижнем регистре. */
+function headersOf(response: Response): Record<string, string> {
+  return Object.fromEntries(response.headers)
+}
+
+/**
+ * Документ и ассет `/_nuxt/`: заголовки локаций плюс директивы встраивания.
+ *
+ * ⚠ Документ скачивается ОДИН раз и отдаёт сразу обе проверки — заголовки и CSP. Два отдельных
+ * запроса за одной и той же страницей стоили бы лишний круг по сети на каждом прогоне CI.
+ *
+ * ⚠ Заголовки ассета проверяются только при 200. На 404 nginx отдаёт `/404.html` серверными
+ * заголовками, и проверка честно, но бессмысленно ругалась бы на `Cache-Control: no-cache` у
+ * «ассета» — отправляя чинить несуществующий дубль `add_header` вместо пропавшего файла.
+ */
+async function checkDocumentAndAsset(origin: string, withLocations: boolean): Promise<PageResult[]> {
+  const results: PageResult[] = []
+  try {
+    const document = await fetch(`${origin}/`, { signal: AbortSignal.timeout(15_000) })
+    const html = await document.text()
+    const documentHeaders = headersOf(document)
+    results.push({
+      path: 'CSP: домены порталов',
+      problems: embeddingProblems(documentHeaders['content-security-policy'])
+    })
+    if (!withLocations) return results
+
+    results.push({ path: 'заголовки документа /', problems: headerProblems('document', documentHeaders) })
+    const asset = firstAssetPath(html)
+    if (!asset) {
+      results.push({ path: 'заголовки ассета /_nuxt/', problems: ['в разметке / нет ссылки на /_nuxt/ — проверять локацию не на чем'] })
+      return results
+    }
+    const response = await fetch(origin + asset, { signal: AbortSignal.timeout(15_000) })
+    await response.body?.cancel()
+    if (response.status !== 200) {
+      results.push({ path: `заголовки ассета ${asset}`, problems: [`HTTP ${response.status} — ассета из разметки нет на сервере, заголовки локации проверить не на чем`] })
+      return results
+    }
+    const assetHeaders = headersOf(response)
+    results.push({
+      path: `заголовки ассета ${asset}`,
+      problems: [...headerProblems('asset', assetHeaders), ...lostSecurityHeaders(documentHeaders, assetHeaders)]
+    })
+  } catch (error) {
+    results.push({ path: 'заголовки ответа', problems: [`запрос не прошёл: ${error instanceof Error ? error.message.slice(0, 160) : String(error)}`] })
+  }
+  return results
+}
+
+/** Одностраничный сервер на свободном порту — ЧУЖОЙ origin для проверки `frame-ancestors`. */
+async function serveDocument(html: string): Promise<{ origin: string, close: () => void }> {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+    res.end(html)
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('сервер-«портал» не поднялся')
+  return { origin: `http://127.0.0.1:${address.port}`, close: () => server.close() }
+}
+
+/**
+ * Отказ ИМЕННО по названной директиве.
+ *
+ * ⛔ Совпадение по слову «frame» давало ЛОЖНЫЙ ЗЕЛЁНЫЙ. Замер на живом Chromium: нарушение
+ * `frame-src` печатается как «Refused to frame '…' because it violates … "frame-src 'none'"» —
+ * то же слово, другая директива. У нас в политике `frame-src 'none'` стоит, и вложенный фрейм на
+ * проверяемой странице закрывал бы проверку `frame-ancestors` вместо неё самой. То же у
+ * `X-Frame-Options`: «Refused to display … 'X-Frame-Options'». Поэтому ищем НАЗВАНИЕ директивы —
+ * Chromium печатает его в кавычках дословно.
+ *
+ * ⚠ Ждём СОБЫТИЕ, а не фиксированную паузу циклом: на загруженном раннере пауза либо мала
+ * (ложный провал), либо велика (медленный шаг). Подписка оформляется ДО действия — иначе
+ * сообщение успевает прийти раньше, чем его начали слушать.
+ */
+async function refusedBy(page: Page, directive: string, act: () => Promise<unknown>): Promise<boolean> {
+  const seen = page
+    .waitForEvent('console', {
+      predicate: message => isViolationOf(message.text(), directive),
+      timeout: 20_000
+    })
+    .then(() => true, () => false)
+  try {
+    await act()
+  } catch {
+    // Действие могло упасть само (страница не открылась) — тогда отказа не будет, и это провал
+    // проверки, а не исключение: причину назовёт вызывающий.
+  }
+  return seen
+}
+
+/**
+ * ⛔ Главная проверка этой задачи: директивы встраивания РАБОТАЮТ, а не просто написаны.
+ *
+ * Обе проверяются с ЧУЖОЙ стороны, потому что именно чужая сторона и ломается молча:
+ *
+ * 1. `frame-ancestors` — страница открывается во фрейме документа с другого origin (свой порт,
+ *    значит другой origin) и обязана быть ОТВЕРГНУТА. Пройди она — нас мог бы встроить кто угодно;
+ * 2. `connect-src` — со страницы делается `fetch` на посторонний домен и обязан быть ОТВЕРГНУТ.
+ *    Пройди он — приложение могло бы отправить данные CRM куда угодно.
+ *
+ * ⚠ Домен пробы — `.invalid`: он не резолвится по стандарту, поэтому «запрос ушёл в сеть» и
+ * «запрос отвергнут политикой» здесь не перепутать, а из CI наружу ничего не уходит.
+ *
+ * ⚠ Нарушения тут ОЖИДАЕМЫ, поэтому проверка живёт отдельно от `checkPage`: там любое сообщение
+ * о нарушении CSP — провал, и складывать их в один обработчик значило бы либо ослабить тот, либо
+ * получить ложный провал здесь.
+ *
+ * ⚠ Чего эта проверка НЕ делает: она не сверяет САМ СПИСОК доменов с эталоном. Забытый домен
+ * конкретного заказчика тут не всплывёт — его сторожит `tests/nginxConf.test.ts` по `Dockerfile`.
+ */
+async function checkEnforcement(origin: string, browser: Browser): Promise<PageResult[]> {
+  const results: PageResult[] = []
+  const portal = await serveDocument(`<!doctype html><meta charset="utf-8"><iframe src="${origin}/app/"></iframe>`)
+  try {
+    const page = await browser.newPage()
+    try {
+      const refused = await refusedBy(page, 'frame-ancestors', () => page.goto(portal.origin, { waitUntil: 'load', timeout: 30_000 }))
+      results.push({
+        path: 'frame-ancestors: чужой origin не может нас встроить',
+        problems: refused ? [] : ['страница открылась во фрейме ЧУЖОГО документа — frame-ancestors не применяется, встроить нас может кто угодно']
+      })
+    } finally {
+      await page.close()
+    }
+  } finally {
+    portal.close()
+  }
+
+  const probe = await browser.newPage()
+  try {
+    await probe.goto(`${origin}/app/`, { waitUntil: 'domcontentloaded', timeout: 30_000 })
+    // Результат самого `fetch` не важен: при работающей политике он падает ДО сети. Важно, что
+    // браузер сказал об отказе — иначе запрос ушёл бы в сеть и упал уже по своей причине.
+    const refused = await refusedBy(probe, 'connect-src', () =>
+      probe.evaluate(() => fetch('https://blocked-by-smoke.invalid/probe').catch(() => undefined)))
+    results.push({
+      path: 'connect-src: посторонний домен закрыт',
+      problems: refused ? [] : ['запрос на посторонний домен не отвергнут политикой — connect-src не применяется, данные CRM можно отправить куда угодно']
+    })
+  } catch (error) {
+    results.push({ path: 'connect-src: посторонний домен закрыт', problems: [`не проверилось: ${error instanceof Error ? error.message.slice(0, 160) : String(error)}`] })
+  } finally {
+    await probe.close()
+  }
+  return results
 }
 
 const USAGE = `Использование:
@@ -315,7 +658,10 @@ async function serveBuild(dir: string, configPath: string): Promise<{ origin: st
   const pages = await Promise.all((await htmlFiles(root)).map(file => readFile(file, 'utf-8')))
   if (!pages.length) throw new Error(`В ${dir} нет ни одного .html — сборка пуста?`)
   const conf = applyHashes(await readFile(configPath, 'utf-8'), buildHashDirective(pages))
-  const csp = substituteOrigins(extractCspHeader(conf), process.env.B24_PORTAL_ORIGINS ?? 'https://*.bitrix24.by')
+  // ⚠ `||`, а не `??`: ПУСТАЯ строка в переменной — не значение, а её отсутствие. С `??` пустая
+  // строка доезжала до заголовка (`frame-ancestors 'self' ;`), и смоук падал, обвиняя исправный
+  // конфиг. Контейнер на пустое значение тоже не поднимается (`deploy/validate-portal-origins.sh`).
+  const csp = substituteOrigins(extractCspHeader(conf), process.env.B24_PORTAL_ORIGINS || 'https://*.bitrix24.by')
   return serve(root, csp)
 }
 
@@ -337,36 +683,48 @@ async function main(): Promise<void> {
   // POST — только на образе: локальный сервер на метод не смотрит, и зелёная галочка там ничего
   // не значила бы. Идёт до браузера: nginx проверяется и тогда, когда Chrome не нашёлся.
   const results: PageResult[] = []
+  // Директивы встраивания — в ОБОИХ режимах: заголовок и локально собран из `nginx.conf`, значит
+  // сломанную политику видно уже на PR. Заголовки локаций — только на образе: локальный сервер о
+  // `location` ничего не знает, и зелёная галочка там значила бы «проверили сами себя».
+  results.push(...await checkDocumentAndAsset(server.origin, imageMode))
   if (imageMode) {
     for (const path of postPaths(PORTAL_HANDLER_ROUTES)) results.push(await checkPost(server.origin, path))
   } else {
-    console.log('[smoke] POST на обработчики: пропущено — проверяется только на образе (pnpm smoke:image)')
+    console.log('[smoke] POST и заголовки локаций: пропущено — проверяется только на образе (pnpm smoke:image)')
   }
 
   // Браузер подключаем только здесь: тесты импортируют чистые функции выше и тянуть playwright не должны.
   const { chromium } = await import('playwright-core')
   const executablePath = process.env.CSP_SMOKE_BROWSER
-  // Запуск браузера — внутри try: не нашёлся Chrome — сервер всё равно надо погасить.
   let browser: Browser | undefined
+  let launchError: unknown
   try {
     browser = await chromium.launch(executablePath ? { executablePath } : { channel: 'chrome' })
     for (const check of PAGES) results.push(await checkPage(server.origin, check, browser))
-    let failed = 0
-    for (const { path, problems } of results) {
-      if (problems.length) {
-        failed++
-        console.error(`[smoke] ✕ ${path}`)
-        for (const problem of problems) console.error(`         ${problem}`)
-      } else {
-        console.log(`[smoke] ✓ ${path}`)
-      }
-    }
-    if (failed) throw new Error(`проверок с проблемами: ${failed} из ${results.length}`)
-    console.log(`[smoke] ${server.origin}: все ${results.length} проверки прошли под боевым CSP без нарушений`)
+    results.push(...await checkEnforcement(server.origin, browser))
+  } catch (error) {
+    // ⚠ Не бросаем сразу: без браузера уже посчитаны проверки nginx — CSP, POST, заголовки
+    // локаций. Прежде они молча терялись вместе с исключением, и лог показывал одну строку про
+    // запуск Chrome, хотя рядом лежал готовый ответ, почему сломан выкат.
+    launchError = error
   } finally {
     await browser?.close()
     server.close()
   }
+
+  let failed = 0
+  for (const { path, problems } of results) {
+    if (problems.length) {
+      failed++
+      console.error(`[smoke] ✕ ${path}`)
+      for (const problem of problems) console.error(`         ${problem}`)
+    } else {
+      console.log(`[smoke] ✓ ${path}`)
+    }
+  }
+  if (launchError) throw launchError
+  if (failed) throw new Error(`проверок с проблемами: ${failed} из ${results.length}`)
+  console.log(`[smoke] ${server.origin}: все ${results.length} проверки прошли под боевым CSP без нарушений`)
 }
 
 // Запуск только как CLI: при импорте из теста main() не должен ничего поднимать.
