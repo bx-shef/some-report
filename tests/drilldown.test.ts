@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ReportDictionaries } from '~/types/report'
 import { activityDrillRow, callDrillRow, crmPath, dealDrillRow, drill, drillListParams, leadDrillRow, ownerSection, plainDealListParams } from '~/utils/drilldown'
+import { DEFAULT_ID_CHUNK } from '~/utils/filters'
 import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
 import { buildMockDataset } from '~/utils/mockReport'
 
@@ -21,7 +22,57 @@ describe('drill: что за числом', () => {
     expect(drill.junkReason(UNSPECIFIED_REASON, 'Не указана', ['JUNK']).extra).toEqual({ 'STATUS_SEMANTIC_ID': 'F', '!STATUS_ID': ['JUNK'] })
     expect(drill.junkReason(UNSPECIFIED_REASON, 'Не указана', []).extra).toEqual({ STATUS_SEMANTIC_ID: 'F' })
     expect(drill.bySource(UNSPECIFIED_SOURCE, 'leads', 'Не указан')).toBeUndefined()
-    expect(drill.bySource('CALL', 'won', 'Звонок')).toMatchObject({ entity: 'deal', dealScope: 'from-leads', extra: { SOURCE_ID: 'CALL', STAGE_SEMANTIC_ID: 'S' } })
+    expect(drill.bySource('CALL', 'leads', 'Звонок')).toMatchObject({ entity: 'lead', extra: { SOURCE_ID: 'CALL' } })
+  })
+
+  /**
+   * ⛔ Успешные сделки источника — ПЕРЕЧИСЛЕНИЕМ записей, а не условием `SOURCE_ID`.
+   *
+   * Разрез считает продажу по источнику ЛИДА, а условия «источник моего лида» у `crm.deal.list`
+   * нет. Спроси мы собственный `SOURCE_ID` сделки — под числом открылся бы ДРУГОЙ список: на
+   * боевом портале у 54 сделок из 261 он расходится с лидом, а у «Заказа покупателя» из 1С его
+   * нет вовсе. Поэтому список — те же самые сделки, что посчитаны (`SourceRow.wonDealIds`).
+   */
+  it('успешные сделки источника открываются перечислением ровно тех сделок, что посчитаны', () => {
+    expect(drill.wonBySource('CALL', 'Звонок', [10, 11])).toMatchObject({
+      entity: 'deal',
+      dealScope: 'from-leads',
+      title: 'Успешные сделки из лидов: Звонок',
+      extra: { ID: [10, 11] }
+    })
+    // Собственного источника сделки в условии нет и быть не должно.
+    expect(drill.wonBySource('CALL', 'Звонок', [10])!.extra).not.toHaveProperty('SOURCE_ID')
+    expect(drill.wonBySource(UNSPECIFIED_SOURCE, 'Не указан', [10])).toBeUndefined()
+    // ⚠ Название источника едет ВМЕСТЕ со списком: колонка «Источник» иначе печатала бы
+    // собственное поле сделки, которого у «Заказа покупателя» из 1С нет вовсе.
+    expect(drill.wonBySource('CALL', 'Звонок', [10])!.sourceName).toBe('Звонок')
+  })
+
+  /**
+   * ⚠ Ноль успешных — число некликабельно: пустой `ID: []` портал НЕ ВИДИТ, и под заголовком
+   * одного источника открылся бы весь период. Список длиннее ОДНОГО запроса (`DEFAULT_ID_CHUNK`,
+   * 500 — проверено на боевом портале) — тоже: резать его на куски слайдер не умеет, а молча
+   * обрезанный список короче числа над ним.
+   */
+  it('успешные сделки источника: ноль и перебор потолка делают число некликабельным', () => {
+    expect(drill.wonBySource('CALL', 'Звонок', [])).toBeUndefined()
+    const tooMany = Array.from({ length: DEFAULT_ID_CHUNK + 1 }, (_, i) => i + 1)
+    expect(drill.wonBySource('CALL', 'Звонок', tooMany)).toBeUndefined()
+    expect(drill.wonBySource('CALL', 'Звонок', tooMany.slice(0, DEFAULT_ID_CHUNK))).toBeDefined()
+  })
+
+  /**
+   * ⚠ Молча негорящее число читается как поломка отчёта: соседние в той же строке открываются, а
+   * это нет. Причина зависит от выбора человека — периода, — значит её надо назвать.
+   */
+  it('слишком длинный список объясняется подсказкой, а ноль и рабочий случай — молчат', () => {
+    const tooMany = Array.from({ length: DEFAULT_ID_CHUNK + 1 }, (_, i) => i + 1)
+    expect(drill.wonBySourceHint('CALL', tooMany)).toContain('501')
+    expect(drill.wonBySourceHint('CALL', tooMany)).toContain('период короче')
+    // Ноль сделок объяснять нечем: за нулём и не должно ничего открываться.
+    expect(drill.wonBySourceHint('CALL', [])).toBeUndefined()
+    expect(drill.wonBySourceHint('CALL', [10])).toBeUndefined()
+    expect(drill.wonBySourceHint(UNSPECIFIED_SOURCE, tooMany)).toBeUndefined()
   })
 
   it('сделки — причина проигрыша всеми кодами; удалённая — заведомо пусто; блок 7 — без лида', () => {
@@ -51,6 +102,37 @@ describe('drillListParams', () => {
     expect(byLead.byLeadIds).toBe(true)
   })
 
+  /**
+   * ⛔ Условие, называющее записи ПОИМЁННО, списка ID лидов не требует — даже под фильтром.
+   *
+   * Разница не косметическая: `byLeadIds` решает не только «как читать», но и «чем показывать».
+   * С ним список читается кусками, а такое условие в параметры слайдера портала не помещается —
+   * и под фильтром «Источник» детализация открывалась бы запасной панелью вместо настоящего
+   * слайдера (решение владельца 2026-09-06). Пересечение при этом ничего не меняет: эти сделки
+   * и так отобраны из набора, посчитанного под тем же фильтром.
+   */
+  it('перечисление сделок не требует списка ID лидов даже под фильтром по полю лида', () => {
+    const params = drillListParams(drill.wonBySource('CALL', 'Звонок', [10, 11])!, AUGUST, { sourceId: 'CALL' }, {})
+    expect(params.byLeadIds).toBe(false)
+    expect(params.filter).toMatchObject({ ID: [10, 11] })
+    // Под фильтром по менеджеру — то же самое: условие самодостаточно.
+    expect(drillListParams(drill.wonBySource('CALL', 'Звонок', [10])!, AUGUST, { assignedById: 562 }, {}).byLeadIds).toBe(false)
+  })
+
+  /**
+   * ⛔ Фильтр отчёта «Источник» — тоже по списку ID лидов, как менеджер и стадия.
+   *
+   * Спросить у сделки её `SOURCE_ID` технически можно — поле есть, — и отчёт так и делал. Но
+   * разрез по источникам считает продажу по источнику ЛИДА: под фильтром «Звонок» открывалось бы
+   * не то множество, что стоит в строке «Звонок» той же таблицы.
+   */
+  it('фильтр по источнику отбирает сделки по лидам, а не собственным полем сделки', () => {
+    const params = drillListParams(drill.wonDeals(), AUGUST, { sourceId: 'CALL' }, {})
+    expect(params.byLeadIds).toBe(true)
+    expect(params.filter).not.toHaveProperty('SOURCE_ID')
+    expect(params.filter).not.toHaveProperty('!LEAD_ID')
+  })
+
   // ⚠ Фильтр и число пишут в одно поле: спред условия числа поверх фильтра молча заменил бы
   // условие, и под нулём «Не обработано» открывались бы все NEW за период.
   it('условие числа спорит с фильтром по одному полю — список пуст без запроса; совпадение — не спор', () => {
@@ -59,7 +141,9 @@ describe('drillListParams', () => {
     expect(drillListParams(drill.junkReason('SPAM', 'Спам', []), AUGUST, { junkReasonId: 'DUP' }, {}).empty).toBe(true)
     expect(drillListParams(drill.junkReason('DUP', 'Дубль', []), AUGUST, { junkReasonId: 'DUP' }, {}).empty).toBe(false)
     expect(drillListParams(drill.bySource('EMAIL', 'leads', 'Почта')!, AUGUST, { sourceId: 'CALL' }, {}).empty).toBe(true)
-    expect(drillListParams(drill.bySource('CALL', 'won', 'Звонок')!, AUGUST, { sourceId: 'CALL' }, {}).empty).toBe(false)
+    // ⚠ У сделок спора по источнику быть НЕ МОЖЕТ: фильтр отчёта отбирает их списком ID лидов,
+    // а условие числа — перечислением сделок. Разные поля, оба применяются.
+    expect(drillListParams(drill.wonBySource('CALL', 'Звонок', [10])!, AUGUST, { sourceId: 'CALL' }, {}).empty).toBe(false)
     const codes = { 'дорого': ['LOSE'], 'не отвечает': ['APOLOGY'] }
     expect(drillListParams(drill.lossReason('не отвечает', 'x', codes), AUGUST, { lossReasonKey: 'дорого' }, codes).empty).toBe(true)
     expect(drillListParams(drill.lossReason('дорого', 'x', codes), AUGUST, { lossReasonKey: 'дорого' }, codes).empty).toBe(false)
@@ -75,6 +159,25 @@ describe('drillListParams', () => {
 })
 
 describe('строки списка', () => {
+  /**
+   * ⛔ Источник строки — из НАГРУЗКИ, когда список отобран не по полю сделки.
+   *
+   * Список «успешные сделки источника» собран по источнику ЛИДА. У «Заказа покупателя» из 1С
+   * собственного источника нет, у 54 сделок из 261 он расходится с лидом — под заголовком
+   * «Успешные сделки из лидов: Звонок» встали бы строки с пустым или чужим источником, и это
+   * читалось бы как ошибка отчёта. Там, где список отобран ПО полю сделки, подписи в нагрузке
+   * нет, и печатается собственное поле.
+   */
+  it('источник строки берётся из нагрузки, когда список отобран по источнику лида', () => {
+    const row = { ID: '900', TITLE: 'Заказ покупателя', STAGE_ID: 'WON', SOURCE_ID: '', OPPORTUNITY: '10' }
+    expect(dealDrillRow(row, dictionaries, {}, 'from-leads', 'Входящий звонок').source).toBe('Входящий звонок')
+    // Своё поле сделки при этом даже не смотрится: у неё мог быть и ЧУЖОЙ источник.
+    expect(dealDrillRow({ ...row, SOURCE_ID: 'WEB' }, dictionaries, {}, 'from-leads', 'Входящий звонок').source).toBe('Входящий звонок')
+    // Без подписи — как раньше: собственное поле сделки через справочник.
+    expect(dealDrillRow({ ...row, SOURCE_ID: 'CALL' }, dictionaries, {}, 'from-leads').source).toBe('Входящий звонок')
+    expect(dealDrillRow(row, dictionaries, {}, 'from-leads').source).toBeUndefined()
+  })
+
   it('лид портала: подписи из справочников, путь карточки, без названия — «Лид #id»', () => {
     const row = leadDrillRow({ ID: '7', TITLE: '', DATE_CREATE: '2026-08-10T10:00:00+03:00', STATUS_ID: 'JUNK_DUPLICATE', SOURCE_ID: 'CALL', ASSIGNED_BY_ID: '2' }, { ...dictionaries, users: { 2: 'Петров Сергей' } })
     expect(row).toMatchObject({ id: 7, title: 'Лид #7', source: 'Входящий звонок', manager: 'Петров Сергей', path: '/crm/lead/details/7/' })

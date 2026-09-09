@@ -73,7 +73,7 @@ export function useDrillPage() {
         case 'lead': return leadDrillRow(row as B24DrillLeadRow, dictionaries.value, leadScope)
         case 'activity': return activityDrillRow(row as B24DrillActivityRow, dictionaries.value, deedScope)
         case 'call': return callDrillRow(row as B24DrillCallRow, dictionaries.value)
-        default: return dealDrillRow(row as B24DrillDealRow, dictionaries.value, {}, scope)
+        default: return dealDrillRow(row as B24DrillDealRow, dictionaries.value, {}, scope, payload.value?.sourceName)
       }
     })
   })

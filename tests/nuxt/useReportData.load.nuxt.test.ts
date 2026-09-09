@@ -45,6 +45,8 @@ const portal = vi.hoisted(() => ({
   users: [] as Array<{ ID: string, NAME?: string, LAST_NAME?: string }>,
   /** `user.get` падает (нет права) — отчёт от этого страдать не должен. */
   usersFail: false,
+  /** Счётчики лидов по ключам пакета: `src:CALL` и прочие. Чего нет — ноль. */
+  counters: {} as Record<string, number>,
   /** Справочники портала — чтобы пакет счётчиков строил и пофакторные команды. */
   sources: [{ STATUS_ID: 'CALL', NAME: 'Звонок' }, { STATUS_ID: 'EMAIL', NAME: 'Почта' }],
   leadStatuses: [
@@ -66,7 +68,14 @@ function pagedKey(method: string, filter: Record<string, unknown>): string | und
   if (method === 'crm.deal.list' && !Array.isArray(filter.LEAD_ID) && filter['>=CLOSEDATE']) {
     return `closed:${String(filter['>=CLOSEDATE'])}`
   }
-  if (method === 'crm.lead.list' && filter['>=DATE_CREATE']) return `leads:${String(filter['>=DATE_CREATE'])}`
+  if (method === 'crm.lead.list' && filter['>=DATE_CREATE']) {
+    // ⚠ Смещением по `crm.lead.list` читаются ДВЕ разные выборки: строки лидов для истории
+    // (весь период) и источники родительских лидов (перечисление `ID in (...)`). Ключ у них
+    // обязан быть разный — иначе тест «доехала ли карта источников» зеленел бы на строках
+    // истории, то есть на совершенно другом запросе.
+    const byIds = Array.isArray(filter.ID)
+    return `${byIds ? 'lead-sources' : 'leads'}:${String(filter['>=DATE_CREATE'])}`
+  }
   return undefined
 }
 
@@ -91,7 +100,10 @@ function batchAnswer(commands: Record<string, unknown>) {
       continue
     }
     const rows = key === 'sources' ? portal.sources : key === 'leadStatuses' ? portal.leadStatuses : []
-    data[key] = { getTotal: () => (key === 'total' ? portal.leadTotal : key === 'unprocessed' ? Math.min(2, portal.leadTotal) : 0), getData: () => ({ result: rows }) }
+    data[key] = {
+      getTotal: () => portal.counters[key] ?? (key === 'total' ? portal.leadTotal : key === 'unprocessed' ? Math.min(2, portal.leadTotal) : 0),
+      getData: () => ({ result: rows })
+    }
   }
   return { isSuccess: true, getData: () => data, getErrorMessages: () => [] }
 }
@@ -120,7 +132,12 @@ mockNuxtImport('useB24', () => () => ({
               ? Array.isArray(leadIds) ? `deals-by:${leadIds.join(',')}` : `closed:${params.filter?.['>=CLOSEDATE'] ?? '?'}`
               : history
                 ? `${(params.filter as { TYPE_ID?: unknown })?.TYPE_ID === 1 ? 'created' : 'history'}:${params.filter?.['>=CREATED_TIME'] ?? '?'}`
-                : cursor && method === 'crm.lead.list' ? `${onlyId ? 'ids' : 'leads'}:${params.filter?.['>=DATE_CREATE'] ?? '?'}` : undefined
+                : cursor && method === 'crm.lead.list'
+                  // ⚠ Ключ `cursor-lead-sources` существует, чтобы возврат к чтению КУРСОРОМ был
+                  // виден: он ждёт ответа, которого тест не даст, и выборка встанет. Источники
+                  // лидов читаются смещением (см. `pagedKey`) — курсор платит за сортировку.
+                  ? `${((params as { select?: string[] }).select ?? []).includes('SOURCE_ID') ? 'cursor-lead-sources' : onlyId ? 'ids' : 'leads'}:${params.filter?.['>=DATE_CREATE'] ?? '?'}`
+                  : undefined
 
             /**
              * ПЕРВАЯ страница выборки, читаемой смещением: тест отдаёт весь набор разом, стенд
@@ -238,6 +255,9 @@ beforeEach(() => {
   portal.users = []
   portal.dismissedUsers = []
   portal.usersFail = false
+  // ⚠ Счётчики сбрасываются тоже: они переживают тест, и оставленный от соседа `src:CALL` тихо
+  // подменял бы данные следующему — тот проверял бы не то, что задумывал, и оставался зелёным.
+  portal.counters = {}
 })
 
 const AUGUST = { from: '2026-08-01', to: '2026-08-31' }
@@ -250,6 +270,134 @@ describe('load', () => {
     await data.load(AUGUST)
     expect(portal.calls).toEqual([])
     expect(data.isDemo.value).toBe(true)
+  })
+
+  /**
+   * ⛔ Живой путь разреза источников. Дефект, который этот тест сторожит, стоил ВСЕЙ выручки
+   * блока 5: замер боевого портала 2026-09-09 — за 1–9 сентября 14 861,98 BYN на 20 успешных
+   * сделках уходили в «Другие источники» вместо «Звонка» и почты.
+   *
+   * Причина: «Заказ покупателя» из 1С приходит БЕЗ источника и привязывается к лиду руками,
+   * окном «Подбор сделки». Разрез брал источник у самой сделки — там пусто.
+   *
+   * ⚠ Чистые функции это не ловят: удали строку, которая кладёт карту в агрегат, — и все они
+   * останутся зелёными. Ровно так и вышло при проверке саботажем, поэтому тест здесь.
+   */
+  it('выручка ложится на источник ЛИДА: карта источников спрашивается и доезжает до разреза', async () => {
+    portal.counters = { 'src:CALL': 1, 'srcConv:CALL': 1, 'converted': 1 }
+    portal.leadTotal = 1
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    // Сделка из лида: успешная, с деньгами и БЕЗ своего источника.
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([
+      { ID: '900', LEAD_ID: '77', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '1206.51', CURRENCY_ID: 'BYN', SOURCE_ID: '' }
+    ])
+    // Раз у сделки источника нет — отчёт обязан спросить источник её ЛИДА.
+    await vi.waitFor(() => expect(portal.pending[`lead-sources:${AUGUST.from}`]).toBeDefined())
+    expect(portal.filters[`lead-sources:${AUGUST.from}`]).toMatchObject({ ID: [77] })
+    portal.pending[`lead-sources:${AUGUST.from}`]!([{ ID: '77', SOURCE_ID: 'CALL' }])
+    await loading
+
+    expect(data.dataset.value.leadAggregate?.leadSourceById).toEqual({ 77: 'CALL' })
+    const call = data.report.value.bySource.find(row => row.sourceId === 'CALL')
+    expect(call).toMatchObject({ leads: 1, won: 1 })
+    expect(call?.revenue).toBeCloseTo(1206.51, 2)
+  })
+
+  /**
+   * ⚠ Родителей спрашиваем только у УСПЕШНЫХ сделок: разрез кладёт на источник продажу и
+   * выручку, для остальных исходов карта не читается ни разу. На боевом портале это 160 лидов
+   * вместо 950 за месяц — один кусок вместо двух.
+   */
+  it('источники спрашиваются у лидов УСПЕШНЫХ сделок, а не всех прочитанных', async () => {
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([
+      { ID: '900', LEAD_ID: '77', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '10', CURRENCY_ID: 'BYN' },
+      { ID: '901', LEAD_ID: '88', STAGE_ID: 'LOSE', STAGE_SEMANTIC_ID: 'F', OPPORTUNITY: '99', CURRENCY_ID: 'BYN' }
+    ])
+    await vi.waitFor(() => expect(portal.pending[`lead-sources:${AUGUST.from}`]).toBeDefined())
+    expect(portal.filters[`lead-sources:${AUGUST.from}`]).toMatchObject({ ID: [77] })
+    portal.pending[`lead-sources:${AUGUST.from}`]!([{ ID: '77', SOURCE_ID: 'CALL' }])
+    await loading
+    expect(data.dataset.value.leadAggregate?.leadSourceById).toEqual({ 77: 'CALL' })
+  })
+
+  /**
+   * ⛔ Куски по 500 обязаны СКЛАДЫВАТЬСЯ в одну карту, а не заменять друг друга.
+   *
+   * Замена вместо накопления (`rows.push(...)` → `rows = [...]`) не роняет ни один тест на одном
+   * куске, а на боевом портале режет карту ровно наполовину: выручка первых пятисот лидов снова
+   * уезжает в «Другие источники» — тот самый дефект, ради которого карта и заведена. Месяц
+   * заказчика при 160 успешных сделках в один кусок укладывается, но год — нет.
+   */
+  it('источники нескольких кусков складываются в одну карту', async () => {
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    // 501 успешная сделка — ровно на два куска: 500 и один.
+    const deals = Array.from({ length: 501 }, (_, i) => ({
+      ID: String(1000 + i), LEAD_ID: String(1 + i), STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '1', CURRENCY_ID: 'BYN'
+    }))
+    portal.pending[AUGUST.from]!(deals)
+    const key = `lead-sources:${AUGUST.from}`
+    await vi.waitFor(() => expect(portal.pending[key]).toBeDefined())
+    expect((portal.filters[key]!.ID as number[]).length).toBe(500)
+    portal.pending[key]!([{ ID: '1', SOURCE_ID: 'CALL' }])
+    // Второй кусок — свой запрос по тому же ключу: ждём, пока стенд подменит обработчик.
+    await vi.waitFor(() => expect((portal.filters[key]!.ID as number[]).length).toBe(1))
+    portal.pending[key]!([{ ID: '501', SOURCE_ID: 'EMAIL' }])
+    await loading
+    expect(data.dataset.value.leadAggregate?.leadSourceById).toEqual({ 1: 'CALL', 501: 'EMAIL' })
+  })
+
+  /**
+   * ⚠ Отказ на карте источников роняет ВСЮ выборку, и это осознанно: разрез без карты молча
+   * положил бы выручку не в свои строки. Экран при этом остаётся с прежними данными и плашкой
+   * ошибки — а не с нулями, которые читаются как факт о CRM.
+   */
+  it('отказ на карте источников — ошибка выборки, а не тихий пустой разрез', async () => {
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([
+      { ID: '900', LEAD_ID: '77', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '10', CURRENCY_ID: 'BYN' }
+    ])
+    await vi.waitFor(() => expect(portal.pending[`lead-sources:${AUGUST.from}`]).toBeDefined())
+    portal.pending[`lead-sources:${AUGUST.from}`]!(new Error('QUERY_LIMIT_EXCEEDED'))
+    await loading
+    expect(data.error.value).toContain('QUERY_LIMIT_EXCEEDED')
+    // Данные портала на экран НЕ легли: набор остался прежним (демо-набор первой загрузки).
+    expect(data.isDemo.value).toBe(true)
+  })
+
+  /**
+   * ⚠ Отмена посреди чтения источников. Без неё карта покойного периода легла бы поверх свежего
+   * набора: выборка идёт кусками, и между ними человек успевает сменить период.
+   */
+  it('карта источников устаревшей выборки не попадает в набор', async () => {
+    const data = useReportData()
+    const first = data.load(AUGUST)
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([
+      { ID: '900', LEAD_ID: '77', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '10', CURRENCY_ID: 'BYN' }
+    ])
+    await vi.waitFor(() => expect(portal.pending[`lead-sources:${AUGUST.from}`]).toBeDefined())
+
+    // Пока идут источники августа, человек переключился на сентябрь и тот успел ответить.
+    const second = data.load(SEPTEMBER)
+    await vi.waitFor(() => expect(portal.pending[SEPTEMBER.from]).toBeDefined())
+    portal.pending[SEPTEMBER.from]!([])
+    await second
+    expect(data.dataset.value.period).toEqual(SEPTEMBER)
+
+    portal.pending[`lead-sources:${AUGUST.from}`]!([{ ID: '77', SOURCE_ID: 'CALL' }])
+    await first
+    // Период и карта — сентябрьские: опоздавший август не переписал ни то, ни другое.
+    expect(data.dataset.value.period).toEqual(SEPTEMBER)
+    expect(data.dataset.value.leadAggregate?.leadSourceById).toEqual({})
   })
 
   it('после загрузки источник — портал, период — запрошенный', async () => {
@@ -686,12 +834,26 @@ describe('load', () => {
    * проверить: счётчики и строки приходят уже отфильтрованными, ядро о фильтрах не знает.
    */
   describe('фильтры', () => {
-    it('источник — в каждый счётчик лидов, в сделки и в строки лидов для истории; контекст всех сделок не спрашивается', async () => {
+    /**
+     * ⛔ Сделки под фильтром по источнику спрашиваются СПИСКОМ ID ЛИДОВ, а не собственным
+     * `SOURCE_ID` сделки, хотя такое поле у неё есть и запрос был бы короче.
+     *
+     * Разрез по источникам размечает продажу источником ЛИДА (`sourceRows`): у сделки он бывает
+     * пуст («Заказ покупателя» из 1С) или свой — 54 расхождения из 261 на боевом портале. Спроси
+     * фильтр поле сделки — под фильтром «Звонок» открылось бы не то множество, что посчитано в
+     * строке «Звонок» той же таблицы.
+     */
+    it('источник — в каждый счётчик лидов, а в сделки по списку ID ЛИДОВ; контекст всех сделок не спрашивается', async () => {
       const data = useReportData()
       const loading = data.load(AUGUST, { sourceId: 'CALL' })
-      await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
-      expect(portal.filters[AUGUST.from]).toMatchObject({ 'SOURCE_ID': 'CALL', '!LEAD_ID': null })
-      portal.pending[AUGUST.from]!([])
+      await vi.waitFor(() => expect(portal.pending[`ids:${AUGUST.from}`]).toBeDefined())
+      expect(portal.filters[`ids:${AUGUST.from}`]).toMatchObject({ SOURCE_ID: 'CALL' })
+      portal.pending[`ids:${AUGUST.from}`]!([{ ID: '1' }])
+      await vi.waitFor(() => expect(portal.pending['deals-by:1']).toBeDefined())
+      // Собственного источника сделки в запросе нет и «лид есть» тоже: список ID уже уже.
+      expect(portal.filters['deals-by:1']).not.toHaveProperty('SOURCE_ID')
+      expect(portal.filters['deals-by:1']).not.toHaveProperty('!LEAD_ID')
+      portal.pending['deals-by:1']!([])
       await loading
       expect(data.filters.value).toEqual({ sourceId: 'CALL' })
       for (const [key, filter] of Object.entries(portal.batchFilters)) expect(filter, key).toMatchObject({ SOURCE_ID: 'CALL' })
@@ -715,7 +877,11 @@ describe('load', () => {
       portal.pending[`ids:${AUGUST.from}`]!([{ ID: '1' }, { ID: '2' }])
       await vi.waitFor(() => expect(portal.pending['deals-by:1,2']).toBeDefined())
       expect(portal.filters['deals-by:1,2']).not.toHaveProperty('!LEAD_ID')
-      portal.pending['deals-by:1,2']!([{ ID: '10', LEAD_ID: '1', STAGE_ID: 'WON', OPPORTUNITY: '300', CURRENCY_ID: 'BYN', SOURCE_ID: 'CALL', DATE_CREATE: '2026-08-10T10:00:00+03:00', ASSIGNED_BY_ID: '562' }])
+      portal.pending['deals-by:1,2']!([{ ID: '10', LEAD_ID: '1', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '300', CURRENCY_ID: 'BYN', SOURCE_ID: 'CALL', DATE_CREATE: '2026-08-10T10:00:00+03:00', ASSIGNED_BY_ID: '562' }])
+      // Источник ЛИДА спрашивается и под фильтром: разрез не должен зависеть от того, отбирали
+      // ли что-то на экране.
+      await vi.waitFor(() => expect(portal.pending[`lead-sources:${AUGUST.from}`]).toBeDefined())
+      portal.pending[`lead-sources:${AUGUST.from}`]!([{ ID: '1', SOURCE_ID: 'CALL' }])
       await loading
       expect(data.dataset.value.deals).toHaveLength(1)
       // Список ID остаётся в наборе — по нему детализация строит сделки «тем же фильтром».
@@ -790,8 +956,10 @@ describe('load', () => {
       const historyCalls = portal.calls.filter(c => c.startsWith('history:')).length
 
       const second = data.load(AUGUST, { sourceId: 'CALL' })
-      await vi.waitFor(() => expect(portal.filters[AUGUST.from]).toMatchObject({ SOURCE_ID: 'CALL' }))
-      portal.pending[AUGUST.from]!([])
+      // Под фильтром по источнику сделки идут по списку ID лидов — см. тест про источник выше.
+      await vi.waitFor(() => expect(portal.pending[`ids:${AUGUST.from}`]).toBeDefined())
+      expect(portal.filters[`ids:${AUGUST.from}`]).toMatchObject({ SOURCE_ID: 'CALL' })
+      portal.pending[`ids:${AUGUST.from}`]!([])
       await second
       // Справка на месте и не перезапрошена; история — из памяти, заново только строки лидов.
       expect(data.dataset.value.unlinkedDeals?.total).toBe(1)
@@ -805,8 +973,8 @@ describe('load', () => {
 
       // Другой период — справка и история заново.
       const third = data.load(SEPTEMBER, { sourceId: 'CALL' })
-      await vi.waitFor(() => expect(portal.pending[SEPTEMBER.from]).toBeDefined())
-      portal.pending[SEPTEMBER.from]!([])
+      await vi.waitFor(() => expect(portal.pending[`ids:${SEPTEMBER.from}`]).toBeDefined())
+      portal.pending[`ids:${SEPTEMBER.from}`]!([])
       await third
       expect(data.dataset.value.unlinkedDeals).toBeUndefined()
       await vi.waitFor(() => expect(portal.pending[`closed:${SEPTEMBER.from}`]).toBeDefined())

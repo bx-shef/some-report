@@ -58,11 +58,20 @@ export function lockedFilterValue(leadFilter: Record<string, string | number>, f
 }
 
 /**
- * Фильтры, которых у СДЕЛКИ нет полем: менеджер и стадия — это поля лида. Такие фильтры
- * применяются к сделкам через список ID лидов (`LEAD_ID in (...)`).
+ * Фильтры, которые у СДЕЛКИ нельзя спросить её собственным полем. Такие фильтры применяются к
+ * сделкам через список ID лидов (`LEAD_ID in (...)`).
+ *
+ * Менеджер и стадия — поля лида, у сделки их нет вовсе. ⛔ А вот `SOURCE_ID` у сделки ЕСТЬ, и
+ * именно поэтому фильтр по источнику здесь оказался не сразу: спросить его прямо технически
+ * можно, и отчёт так и делал — а показывал при этом другое множество. Отчёт считает источник
+ * продажи ПО ЛИДУ (`sourceRows`), потому что у сделки он бывает пуст: замер боевого портала
+ * 2026-09-09 — 54 расхождения из 261 сделки, и все 14 861,98 BYN выручки шли мимо своих строк.
+ * Значит и фильтр «Источник» обязан отбирать сделки по источнику ЛИДА, иначе таблица под
+ * фильтром спорила бы сама с собой: число в строке источника одно, а под фильтром по нему —
+ * другое.
  */
 export function needsLeadIds(filters: ReportFilters): boolean {
-  return hasManager(filters) || Boolean(leadStatusFilter(filters))
+  return Boolean(filters.sourceId) || hasManager(filters) || Boolean(leadStatusFilter(filters))
 }
 
 /**
@@ -77,14 +86,16 @@ export function stageCodesFor(reasonKey: string, codesByReasonKey: Record<string
 }
 
 /**
- * Фрагмент REST-фильтра для СДЕЛОК ИЗ ЛИДОВ. Источник у сделки свой (портал копирует его из лида
- * при конвертации) — фильтруем прямо. Причина проигрыша — стадии провала под каноничным ключом
- * (`reasonMerge`): одна причина в четырёх направлениях — несколько кодов, поэтому `STAGE_ID` —
- * массив (см. `stageCodesFor`).
+ * Фрагмент REST-фильтра для СДЕЛОК ИЗ ЛИДОВ — то, что спрашивается у сделки её СОБСТВЕННЫМИ
+ * полями. Причина проигрыша — стадии провала под каноничным ключом (`reasonMerge`): одна причина
+ * в четырёх направлениях — несколько кодов, поэтому `STAGE_ID` — массив (см. `stageCodesFor`).
+ *
+ * ⛔ Источника здесь НЕТ, хотя поле `SOURCE_ID` у сделки есть: он приходит списком ID лидов
+ * (`needsLeadIds`). Вернуть его сюда — значит снова показать под фильтром «Источник: Звонок»
+ * не те сделки, что стоят в строке «Звонок» той же таблицы.
  */
 export function dealRestFilter(filters: ReportFilters, codesByReasonKey: Record<string, string[]>): Record<string, string | string[]> {
   const out: Record<string, string | string[]> = {}
-  if (filters.sourceId) out.SOURCE_ID = filters.sourceId
   if (filters.lossReasonKey) out.STAGE_ID = stageCodesFor(filters.lossReasonKey, codesByReasonKey)
   return out
 }
@@ -96,8 +107,20 @@ export function codesByReason(keyByCode: Record<string, string>): Record<string,
   return out
 }
 
+/**
+ * Длина списка идентификаторов в ОДНОМ запросе к порталу (`LEAD_ID in (...)`, `ID in (...)`).
+ *
+ * ⚠ Число проверено на боевом портале ([`PORTAL.md`](../../docs/PORTAL.md)) — это не круглая
+ * цифра «на глаз». Отсюда же берёт потолок детализация, которая открывает список ПЕРЕЧИСЛЕНИЕМ
+ * записей (`drill.bySource`, часть «успешные»): резать список на куски слайдер не умеет, значит
+ * условие обязано влезать в один запрос целиком. Брать там потолок разбора нагрузки
+ * (`MAX_LIST_ITEMS`, вдвое больше) было ошибкой: он про размер сообщения, а не про то, сколько
+ * значений выдерживает фильтр портала.
+ */
+export const DEFAULT_ID_CHUNK = 500
+
 /** Порезать список ID на куски: фильтр `LEAD_ID in (...)` в одном запросе не должен быть безразмерным. */
-export function chunkIds(ids: readonly number[], size = 500): number[][] {
+export function chunkIds(ids: readonly number[], size = DEFAULT_ID_CHUNK): number[][] {
   const out: number[][] = []
   for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size))
   return out
@@ -133,8 +156,8 @@ export function demoLeadHasStatus(lead: ReportLead, statusId: string): boolean {
 /**
  * Те же фильтры для СТРОК демо-набора — чтобы предпросмотр вне портала вёл себя как живой отчёт.
  *
- * Правила те же, что у запросов: менеджер и стадия — по лиду (сделка остаётся, если остался её
- * лид), источник — у лида и у сделки свой, причина проигрыша — только по сделкам.
+ * Правила те же, что у запросов: менеджер, стадия И ИСТОЧНИК — по лиду (сделка остаётся, если
+ * остался её лид), причина проигрыша — по собственному полю сделки.
  */
 export function applyFilters(leads: ReportLead[], deals: ReportDeal[], filters: ReportFilters): { leads: ReportLead[], deals: ReportDeal[] } {
   if (!hasFilters(filters)) return { leads, deals }
@@ -148,7 +171,9 @@ export function applyFilters(leads: ReportLead[], deals: ReportDeal[], filters: 
   const leadIds = new Set(keptLeads.map(l => l.id))
   const keptDeals = deals.filter((deal) => {
     if (needsLeadIds(filters) && (deal.leadId === undefined || !leadIds.has(deal.leadId))) return false
-    if (filters.sourceId && deal.sourceId !== filters.sourceId) return false
+    // ⚠ Собственный источник сделки здесь не спрашивается — и это не упрощение: у сделки он
+    // бывает свой или пустой, а разрез считает по источнику ЛИДА. Проверь мы оба — под фильтром
+    // «Звонок» пропала бы ровно та сделка, что в строке «Звонок» посчитана.
     if (filters.lossReasonKey && deal.lossReasonId !== filters.lossReasonKey) return false
     return true
   })

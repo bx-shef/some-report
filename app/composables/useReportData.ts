@@ -1,11 +1,12 @@
 import { getCurrentScope, onScopeDispose } from 'vue'
 import { mergeReasons } from '~/utils/reasonMerge'
-import type { ConversionBase, ReportDataset, ReportFilters, ReportMetrics, ReportPeriod } from '~/types/report'
+import type { ConversionBase, LeadAggregate, ReportDataset, ReportDeal, ReportFilters, ReportMetrics, ReportPeriod } from '~/types/report'
 import type { AdapterWarnings, B24CurrencyRow, B24LeadRow, B24StatusRow, B24DealRow } from '~/utils/b24Adapter'
 import {
   adaptDeals,
   adaptDealsContext,
   adaptLeadCounts,
+  leadSourcesById,
   adaptUnlinkedWonDeals,
   openLeadStatusIds,
   baseCurrency,
@@ -26,6 +27,7 @@ import {
   leadHistoryParams,
   dedupeById,
   leadIdsParams,
+  leadSourcesParams,
   LIST_PAGE_SIZE,
   listPageCommands,
   listPageOfKey,
@@ -448,8 +450,8 @@ export function useReportData() {
   /**
    * Сделки из лидов периода под фильтрами.
    *
-   * Источник и причина проигрыша у сделки — свои поля, они уходят в фильтр напрямую. Менеджер и
-   * стадия — поля ЛИДА: сначала идентификаторы лидов под фильтром, потом сделки по ним кусками
+   * Причина проигрыша — собственное поле сделки, она уходит в фильтр напрямую. Менеджер, стадия
+   * и ИСТОЧНИК — по лиду: сначала идентификаторы лидов под фильтром, потом сделки по ним кусками
    * по 500 (`LEAD_ID in (...)`; 500 проверено на боевом портале, `docs/PORTAL.md`), друг за
    * другом — параллельные потоки к порталу дороже времени. Обе выборки отменяемые: на годе это
    * сотни страниц, и смена фильтра посреди них не должна оставлять их дожёвывать лимит портала.
@@ -467,6 +469,47 @@ export function useReportData() {
     }
     // Список ID остаётся в наборе: детализация по клику строит сделки «тем же фильтром» по нему.
     return { rows, leadIds }
+  }
+
+  /**
+   * Источники лидов, на которые ссылаются прочитанные сделки.
+   *
+   * ⛔ Без этой выборки выручка ложится на источник САМОЙ СДЕЛКИ, а он бывает пуст. Замер боевого
+   * портала 2026-09-09: за 1–9 сентября ВСЯ выручка блока 5 (14 861,98 BYN на 20 успешных
+   * сделках) уходила в «Другие источники» вместо «Звонка» и почты — «Заказ покупателя» из 1С
+   * приходит без источника и привязывается к лиду руками. Спрашиваем ровно те лиды, что нужны:
+   * не все лиды периода (их втрое больше), а только родителей прочитанных сделок.
+   *
+   * ⚠ Спрашиваем родителей только УСПЕШНЫХ сделок, а не всех прочитанных: разрез кладёт на
+   * источник продажи и выручку (`sourceRows`), для остальных исходов карта не читается ни разу.
+   * На августе боевого портала это 636 лидов вместо 987 — куска всё равно два, зато на годе
+   * разница уже в семь кусков. Дело не только в скорости: спрашивать то, что заведомо не
+   * прочитают, — лишняя нагрузка на общий с открытой страницей предел интенсивности портала.
+   *
+   * ⚠ Кусками по 500, как и сделки по лидам: длина `ID in (...)` проверена на боевом портале.
+   *
+   * ⚠ Читаем СМЕЩЕНИЕМ пакетами (`fetchAllPaged`), а не курсором, по той же причине, что
+   * успешные сделки без лида: курсор платит за сортировку. Курсором кусок в 500 лидов — это
+   * десять кругов по сети друг за другом, смещением — два запроса (страница + пакет остальных).
+   * Месяц заказчика (636 успешных сделок за август) — два куска, ЧЕТЫРЕ запроса.
+   *
+   * ⚠ Отказ этой выборки роняет всю выборку, и это намеренно: разрез по источникам без карты
+   * молча положил бы выручку не в свои строки — тот самый дефект, ради которого она заведена.
+   * Экран при этом остаётся с прежними данными и плашкой ошибки, а не показывает нули как факт
+   * о CRM. Тип `LeadCounts` не даст собрать агрегат, «пропустив» карту.
+   */
+  async function fetchLeadSources(period: ReportPeriod, deals: readonly ReportDeal[], sourceIds: readonly string[], stale: () => boolean): Promise<Record<number, string>> {
+    const ids = [...new Set(deals
+      .filter(deal => deal.outcome === 'won')
+      .map(deal => deal.leadId)
+      .filter((id): id is number => id !== undefined && id > 0))]
+    if (!ids.length) return {}
+    const rows: B24LeadRow[] = []
+    for (const chunk of chunkIds(ids)) {
+      if (stale()) break
+      rows.push(...await fetchAllPaged<B24LeadRow>('crm.lead.list', leadSourcesParams(period, chunk), stale))
+    }
+    return leadSourcesById(rows, sourceIds)
   }
 
   /**
@@ -550,8 +593,15 @@ export function useReportData() {
 
       if (mine !== seq) return
 
-      const leadAggregate = adaptLeadCounts({ totals: leadTotals, sourceIds, junkStatusIds, openStatusIds, leadFilter })
+      const leadCounts = adaptLeadCounts({ totals: leadTotals, sourceIds, junkStatusIds, openStatusIds, leadFilter })
       const adaptedDeals = adaptDeals(dealsFetched.rows, currencies, reasons.keyByCode)
+      // ⚠ После сделок и ДО сборки набора: карта нужна разрезу источников с первого показа, а не
+      // фоном. Стоит она четырёх запросов на месяц — против 17 секунд самой выборки это ничто.
+      const leadAggregate: LeadAggregate = {
+        ...leadCounts,
+        leadSourceById: await fetchLeadSources(period, adaptedDeals.deals, sourceIds, () => mine !== seq)
+      }
+      if (mine !== seq) return
       const currencyId = baseCurrency(currencies)
       const dealsContext = dealTotals ? adaptDealsContext(dealTotals) : undefined
 

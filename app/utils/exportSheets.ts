@@ -109,7 +109,7 @@ export function reportSheets(report: ReportMetrics, dataset: ReportDataset, filt
   // листа «Источники» меньше выручки сводки, и в файле этому негде объясниться (issue #3).
   if (outsideSources.deals > 0 || outsideSources.revenue > 0) {
     summaryRows.push(
-      ['Успешных сделок без лида-родителя', outsideSources.deals, '', 'в сводке учтены, в разрезе источников — нет: источник неизвестен'],
+      ['Успешных сделок вне разреза по источникам', outsideSources.deals, '', 'в сводке учтены, в разрезе источников — нет: источник лида неизвестен (лида нет или он создан раньше периода)'],
       [`их выручка, ${currencyId}`, outsideSources.revenue, '', '']
     )
   }
@@ -149,7 +149,9 @@ export function reportSheets(report: ReportMetrics, dataset: ReportDataset, filt
     sourcesRows.push(['Итого', totals.leads, totals.junk, percent(totals.junkShare), totals.qualified, percent(totals.crToDeal), totals.won, percent(totals.crToSale), totals.revenue])
   }
   if (outsideSources.deals > 0 || outsideSources.revenue > 0) {
-    sourcesRows.push(wide(`Успешных сделок без лида-родителя: ${formatCount(outsideSources.deals)} на ${formatMoney(outsideSources.revenue, currencyId)} — их источник неизвестен, в эту таблицу они не входят, в сводке учтены`, sourceHeader.length))
+    // Та же формулировка, что под таблицей на экране: разрез берёт источник у ЛИДА, поэтому мимо
+    // него идут и сделки без лида, и сделки по лиду прошлых периодов.
+    sourcesRows.push(wide(`Успешных сделок вне разреза: ${formatCount(outsideSources.deals)} на ${formatMoney(outsideSources.revenue, currencyId)} — у них неизвестен источник лида (лида нет или он создан раньше периода), в эту таблицу они не входят, в сводке учтены`, sourceHeader.length))
   }
   sheets.push({ name: 'Источники', rows: sourcesRows })
   sheets.push({ name: 'Топ-5 источников', rows: [sourceHeader, ...report.topSources.map(sourceRow)] })

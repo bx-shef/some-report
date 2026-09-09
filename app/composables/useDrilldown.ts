@@ -22,9 +22,9 @@ export const DRILL_PAGE_SIZE = 50
  * 2026-09-04, п. 10). Что за список — `app/utils/drilldown.ts`; здесь — состояние слайдера и
  * листание страницами по курсору `ID`, как в остальных выборках отчёта.
  *
- * ⚠ Под фильтром по менеджеру или стадии лида сделки «тем же фильтром» — по списку ID лидов из
- * набора (`filteredLeadIds`), кусками по 500: курсор идёт внутри куска, кусок исчерпан —
- * следующий. Иначе список разошёлся бы с числом, по которому нажали.
+ * ⚠ Под фильтром по полям ЛИДА (менеджер, стадия, источник) сделки «тем же фильтром» — по
+ * списку ID лидов из набора (`filteredLeadIds`), кусками по 500: курсор идёт внутри куска, кусок
+ * исчерпан — следующий. Иначе список разошёлся бы с числом, по которому нажали.
  */
 export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<ReportFilters> }) {
   const b24 = useB24()
@@ -138,6 +138,7 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
         filter: params.filter,
         ...(next.dealScope === undefined ? {} : { dealScope: next.dealScope }),
         ...(stageNames === undefined ? {} : { stageNames }),
+        ...(next.sourceName === undefined ? {} : { sourceName: next.sourceName }),
         ...(next.total === undefined ? {} : { total: next.total })
       }, () => mine === seq)
       // ⚠ Пока ждали запись, могли нажать другое число: тогда эта панель уже не наша.
@@ -197,7 +198,7 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
           ...rows.value,
           ...page.map(row => current.entity === 'lead'
             ? leadDrillRow(row as B24DrillLeadRow, dictionaries)
-            : dealDrillRow(row as B24DrillDealRow, dictionaries, codes, current.dealScope))
+            : dealDrillRow(row as B24DrillDealRow, dictionaries, codes, current.dealScope, current.sourceName))
         ]
         added += page.length
         const last = Number(page.at(-1)?.ID)

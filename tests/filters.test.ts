@@ -31,7 +31,6 @@ describe('фрагменты REST-фильтра', () => {
     expect(hasFilters({ assignedById: 0 })).toBe(false)
     expect(hasFilters({ assignedById: Number.NaN })).toBe(false)
     expect(leadRestFilter({ sourceId: '', assignedById: 0 })).toEqual({})
-    expect(needsLeadIds({ sourceId: 'CALL' })).toBe(false)
     expect(needsLeadIds({ assignedById: 0 })).toBe(false)
   })
 
@@ -47,12 +46,19 @@ describe('фрагменты REST-фильтра', () => {
     expect(leadRestFilter({ leadStatusId: '1' })).toEqual({ STATUS_ID: '1' })
     expect(needsLeadIds({ assignedById: 562 })).toBe(true)
     expect(needsLeadIds({ junkReasonId: 'JUNK' })).toBe(true)
+    // ⛔ Источник — тоже через лидов, хотя поле `SOURCE_ID` у сделки есть. Разрез по источникам
+    // размечает продажу источником ЛИДА (`sourceRows`); спроси фильтр собственное поле сделки —
+    // под фильтром «Звонок» оказалось бы не то множество, что посчитано в строке «Звонок».
+    expect(needsLeadIds({ sourceId: 'CALL' })).toBe(true)
   })
 
-  it('у сделки — источник и стадии проигрыша по каноничному ключу; удалённая причина — заведомо пусто', () => {
+  it('у сделки — только стадии проигрыша по каноничному ключу; удалённая причина — заведомо пусто', () => {
     const codes = codesByReason({ 'LOSE': 'дорого', 'C2:LOSE': 'дорого', 'C2:APOLOGY': 'не отвечает' })
     expect(codes).toEqual({ 'дорого': ['LOSE', 'C2:LOSE'], 'не отвечает': ['C2:APOLOGY'] })
-    expect(dealRestFilter({ sourceId: 'CALL', lossReasonKey: 'дорого' }, codes)).toEqual({ SOURCE_ID: 'CALL', STAGE_ID: ['LOSE', 'C2:LOSE'] })
+    // ⛔ Источника у сделки НЕ спрашиваем, хотя поле есть: продажу размечает источник ЛИДА, и
+    // фильтр «Источник» отбирает сделки списком ID лидов (`needsLeadIds`). Вернись `SOURCE_ID`
+    // сюда — под фильтром открылось бы не то множество, что посчитано в строке источника.
+    expect(dealRestFilter({ sourceId: 'CALL', lossReasonKey: 'дорого' }, codes)).toEqual({ STAGE_ID: ['LOSE', 'C2:LOSE'] })
     // Ключ без кодов — сам код: стадия вне справочников помечена сырым кодом; название удалённой
     // причины стадией не является, и портал ответит пусто, а не «все сделки».
     expect(dealRestFilter({ lossReasonKey: 'нет такой' }, codes)).toEqual({ STAGE_ID: ['нет такой'] })
@@ -195,15 +201,34 @@ describe('applyFilters (демо-набор)', () => {
     expect(rows.deals).toBe(dataset.deals)
   })
 
-  it('источник — у лидов и сделок свой; сводка считает только его', () => {
+  it('источник — по ЛИДУ: сводка считает только его лиды', () => {
     const [sourceId] = Object.keys(dataset.dictionaries.sources)
     const rows = applyFilters(dataset.leads, dataset.deals, { sourceId })
     expect(rows.leads.every(l => l.sourceId === sourceId)).toBe(true)
-    expect(rows.deals.every(d => d.sourceId === sourceId)).toBe(true)
+    // Сделка остаётся, если остался её лид, — то же правило, что у менеджера и стадии.
+    const keptLeads = new Set(rows.leads.map(l => l.id))
+    expect(rows.deals.every(d => d.leadId !== undefined && keptLeads.has(d.leadId))).toBe(true)
     const report = buildReport(rows.leads, rows.deals, options)
     const full = buildReport(dataset.leads, dataset.deals, options)
     expect(report.summary.totalLeads).toBe(full.bySource.find(r => r.sourceId === sourceId)!.leads)
     expect(report.summary.totalLeads).toBeLessThan(full.summary.totalLeads)
+  })
+
+  /**
+   * ⛔ Собственный источник сделки под фильтром НЕ смотрится — ни в портале, ни в демо-наборе.
+   *
+   * У «Заказа покупателя» из 1С источника нет вовсе, а разрез размечает продажу источником ЛИДА.
+   * Проверь фильтр оба поля — под «Звонком» пропала бы ровно та сделка, что в строке «Звонок»
+   * посчитана, и таблица заспорила бы сама с собой. Демо-набор обязан вести себя так же:
+   * предпросмотр вне портала показывает устройство отчёта, а не другой отчёт.
+   */
+  it('сделка с ЧУЖИМ собственным источником остаётся, если её лид под фильтром', () => {
+    const lead = { id: 1, sourceId: 'CALL', assignedById: 1, outcome: 'converted' as const, createdAt: '2026-08-01T10:00:00+03:00', dealIds: [10] }
+    const deal = { id: 10, leadId: 1, sourceId: 'EMAIL', assignedById: 1, outcome: 'won' as const, amount: 100 }
+    const rows = applyFilters([lead], [deal], { sourceId: 'CALL' })
+    expect(rows.deals).toEqual([deal])
+    // И наоборот: свой источник сделку под чужой фильтр не протаскивает.
+    expect(applyFilters([lead], [deal], { sourceId: 'EMAIL' }).deals).toEqual([])
   })
 
   it('менеджер — по лиду: сделка остаётся, только если остался её лид', () => {

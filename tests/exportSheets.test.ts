@@ -124,10 +124,13 @@ describe('reportSheets', () => {
   it('сделки вне разреза источников — пояснение в сводке и под таблицей источников', () => {
     const outside = { ...report, outsideSources: { deals: 3, revenue: 900 } }
     const by = Object.fromEntries(reportSheets(outside, dataset, {}, false).map(s => [s.name, s.rows]))
-    expect(by['Сводка']).toContainEqual(['Успешных сделок без лида-родителя', 3, '', 'в сводке учтены, в разрезе источников — нет: источник неизвестен'])
+    expect(by['Сводка']).toContainEqual(['Успешных сделок вне разреза по источникам', 3, '', 'в сводке учтены, в разрезе источников — нет: источник лида неизвестен (лида нет или он создан раньше периода)'])
     expect(by['Сводка']).toContainEqual([`их выручка, ${dataset.currencyId}`, 900, '', ''])
     const note = by['Источники']!.at(-1)!
-    expect(String(note[0])).toContain('без лида-родителя: 3')
+    // ⚠ «Без лида-родителя» тут было неверно: мимо разреза идут и сделки по лиду ПРОШЛОГО
+    // периода (37 из 947 за август на боевом портале) — их источника в таблице нет тоже.
+    expect(String(note[0])).toContain('вне разреза: 3')
+    expect(String(note[0])).toContain('создан раньше периода')
     expect(note).toHaveLength(by['Источники']![0]!.length)
   })
 

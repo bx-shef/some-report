@@ -153,7 +153,10 @@ describe('открытые стадии лида', () => {
   it('потери до сделки: открытые лиды по стадиям — по убыванию, потом по коду; без счётчиков поля нет', () => {
     const aggregate = {
       total: 10, junk: 2, qualified: 3, inWork: 5, closedWithoutDeal: 0,
-      junkByReason: {}, bySource: {}, byOpenStage: { NEW: 1, 1: 3, B: 1 }
+      junkByReason: {}, bySource: {}, byOpenStage: { NEW: 1, 1: 3, B: 1 },
+      // Потерям до сделки карта источников не нужна, но агрегат без неё не собрать: она
+      // обязательна ровно затем, чтобы её нельзя было забыть там, где она нужна.
+      leadSourceById: {}
     }
     const summary = summaryMetrics(aggregate, [], { conversionBase: 'quality-leads' })
     expect(preDealLoss(aggregate, summary).byStage).toEqual([{ stageId: '1', count: 3 }, { stageId: 'B', count: 1 }, { stageId: 'NEW', count: 1 }])

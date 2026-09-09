@@ -1,7 +1,7 @@
 import type { ReportDictionaries, ReportFilters, ReportPeriod } from '~/types/report'
 import type { DrillFilterValue } from '~/utils/drillSlider'
 import { periodFilter, unlinkedWonDealsParams } from '~/utils/b24Query'
-import { dealRestFilter, leadRestFilter, needsLeadIds, stageCodesFor } from '~/utils/filters'
+import { DEFAULT_ID_CHUNK, dealRestFilter, leadRestFilter, needsLeadIds, stageCodesFor } from '~/utils/filters'
 import { INITIAL_LEAD_STATUS } from '~/utils/leadHistory'
 import { leadStageLabel, lossReasonLabel, sourceLabel } from '~/utils/labels'
 import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
@@ -32,10 +32,15 @@ export interface DrillRequest {
   /** Как подписано число, по которому нажали, — заголовок слайдера. */
   title: string
   /**
-   * Условие поверх периода и фильтров отчёта: стадия, семантика, источник. У `dealScope: 'plain'`
-   * это ПОЛНЫЙ фильтр списка — там отчёт строит его сам, целиком (матрица менеджеров).
+   * Условие поверх периода и фильтров отчёта: стадия, семантика, источник, перечисление записей.
+   * У `dealScope: 'plain'` это ПОЛНЫЙ фильтр списка — там отчёт строит его сам, целиком
+   * (матрица менеджеров).
+   *
+   * ⚠ Числа в перечислении разрешены не для симметрии: идентификаторы записей портала приходят
+   * числами (`ID in (...)` у списка успешных сделок источника), и приведение их к строкам было бы
+   * лишним местом, где значение может потеряться.
    */
-  extra: Record<string, string | string[] | number>
+  extra: Record<string, string | number | Array<string | number>>
   /**
    * Сделки: из лидов (как в воронке — период по дате создания, фильтры отчёта действуют),
    * без лида (блок 7: по дате закрытия, `LEAD_ID` пуст, только успешные, фильтры не действуют)
@@ -45,6 +50,12 @@ export interface DrillRequest {
   dealScope?: 'from-leads' | 'unlinked' | 'plain'
   /** Число, по которому нажали, — чтобы слайдер говорил «показано M из N», не долистывая до конца. */
   total?: number
+  /**
+   * Источник ВСЕХ записей списка — названием. Есть только у списка, отобранного по источнику
+   * ЛИДА (`wonBySource`): там колонка «Источник» иначе печатала бы собственное поле сделки,
+   * которого у «Заказа покупателя» из 1С нет вовсе.
+   */
+  sourceName?: string
 }
 
 /** Строка списка — уже с подписями из справочников; `path` — путь карточки в CRM портала. */
@@ -153,16 +164,57 @@ export const drill = {
     reasonId === UNSPECIFIED_REASON
       ? lead(`Брак лидов: ${label}`, knownJunkIds.length ? { 'STATUS_SEMANTIC_ID': 'F', '!STATUS_ID': [...knownJunkIds] } : { STATUS_SEMANTIC_ID: 'F' })
       : lead(`Брак лидов: ${label}`, { STATUS_ID: reasonId }),
-  /** Разрез по источнику: лиды, брак, квалифицировано — лиды; успешные — сделки из лидов. */
-  bySource: (sourceId: string, part: 'leads' | 'junk' | 'qualified' | 'won', label: string): DrillRequest | undefined => {
+  /**
+   * Разрез по источнику: лиды, брак, квалифицировано. Источник у лида — его собственное поле,
+   * условие спрашивается прямо.
+   *
+   * ⚠ Успешных сделок здесь НЕТ, и это не забывчивость: у них другой источник данных и другая
+   * механика списка — см. `wonBySource`. Одна функция на оба случая уже стоила дефекта: список
+   * успешных приходит четвёртым аргументом, забыть его было нечем, и «Топ-5 источников» молча
+   * потерял кликабельность колонки при полностью зелёной сборке.
+   */
+  bySource: (sourceId: string, part: 'leads' | 'junk' | 'qualified', label: string): DrillRequest | undefined => {
     if (sourceId === UNSPECIFIED_SOURCE) return undefined
     switch (part) {
       case 'leads': return lead(`Лиды: ${label}`, { SOURCE_ID: sourceId })
       case 'junk': return lead(`Брак лидов: ${label}`, { SOURCE_ID: sourceId, STATUS_SEMANTIC_ID: 'F' })
       case 'qualified': return lead(`Квалифицировано: ${label}`, { SOURCE_ID: sourceId, STATUS_SEMANTIC_ID: 'S' })
-      case 'won': return dealFromLeads(`Успешные сделки из лидов: ${label}`, { SOURCE_ID: sourceId, STAGE_SEMANTIC_ID: 'S' })
     }
   },
+  /**
+   * Успешные сделки источника — ПЕРЕЧИСЛЕНИЕМ тех самых записей, что вошли в число.
+   *
+   * ⛔ Условия «источник моего лида» у `crm.deal.list` нет, а собственный `SOURCE_ID` сделки
+   * спрашивать нельзя: разрез размечает продажу источником ЛИДА (`sourceRows`), у сделки он
+   * бывает пуст или свой — 54 расхождения из 261 на боевом портале (замер 2026-09-09). Поэтому
+   * список — не «то же условие», а буквально те же сделки: `wonDealIds` считается тем же
+   * проходом, что и `won` с выручкой, и разойтись им негде.
+   *
+   * ⚠ Ноль успешных — число некликабельно: пустой `ID: []` портал НЕ ВИДИТ, и под заголовком
+   * одного источника открылся бы весь период.
+   *
+   * ⚠ Перечисление длиннее одного запроса (`DEFAULT_ID_CHUNK`) — тоже: резать список на куски
+   * слайдер не умеет, а молча обрезанный список короче числа над ним. На боевом портале это
+   * ~160 успешных сделок из лидов в месяц на все источники разом, то есть упереться в потолок
+   * можно только очень длинным периодом.
+   */
+  wonBySource: (sourceId: string, label: string, wonDealIds: readonly number[]): DrillRequest | undefined =>
+    sourceId !== UNSPECIFIED_SOURCE && wonDealIds.length && wonDealIds.length <= DEFAULT_ID_CHUNK
+      ? { ...dealFromLeads(`Успешные сделки из лидов: ${label}`, { ID: [...wonDealIds] }), sourceName: label }
+      : undefined,
+
+  /**
+   * Почему число «успешных» источника НЕ кликабельно — словами, для подсказки у самого числа.
+   *
+   * ⚠ Молча негорящее число читается как поломка отчёта: остальные в той же строке открываются, а
+   * это нет. Причина при этом объяснимая и зависит от ВЫБОРА человека — периода, — так что сказать
+   * её стоит. `undefined` значит «кликабельно» либо «объяснять нечего»: ноль сделок — это ноль
+   * записей, за ним не должно открываться ничего, и подпись тут была бы шумом.
+   */
+  wonBySourceHint: (sourceId: string, wonDealIds: readonly number[]): string | undefined =>
+    sourceId !== UNSPECIFIED_SOURCE && wonDealIds.length > DEFAULT_ID_CHUNK
+      ? `Список не открыть: ${wonDealIds.length} сделок — портал столько за раз не отдаёт. Выберите период короче.`
+      : undefined,
   wonDeals: () => dealFromLeads('Успешные сделки из лидов', { STAGE_SEMANTIC_ID: 'S' }),
   lostDeals: () => dealFromLeads('Проигранные сделки', { STAGE_SEMANTIC_ID: 'F' }),
   /**
@@ -195,8 +247,16 @@ export interface DrillListParams {
    */
   filter: Record<string, DrillFilterValue>
   /**
-   * Сделки под фильтром по менеджеру или стадии лида — только по списку ID лидов (`LEAD_ID in`),
-   * как и в самом отчёте; список у композабла, здесь только признак.
+   * Сделки под фильтром по полям ЛИДА — только по списку ID лидов (`LEAD_ID in`), как и в самом
+   * отчёте; список у композабла, здесь только признак.
+   *
+   * ⚠ Полей лида три: менеджер, стадия и ИСТОЧНИК. Источник попал сюда не сразу — `SOURCE_ID` у
+   * сделки есть, и спросить его прямо технически можно; но разрез размечает продажу источником
+   * лида, и прямой вопрос дал бы под фильтром не то множество, что посчитано в строке.
+   *
+   * ⚠ От этого признака зависит не только КАК читать, но и ЧЕМ показывать: условие «кусками по
+   * списку ID» в параметры слайдера портала не помещается, поэтому такой список открывает
+   * запасная панель внутри отчёта (`useDrilldown`, случай 1).
    */
   byLeadIds: boolean
   /**
@@ -238,7 +298,12 @@ export function drillListParams(request: DrillRequest, period: ReportPeriod, fil
   if (request.dealScope === 'unlinked') {
     return { method: 'crm.deal.list', select: [...DRILL_DEAL_SELECT], filter: { ...unlinkedWonDealsParams(period).filter, ...request.extra }, byLeadIds: false, empty: false }
   }
-  const byLeadIds = needsLeadIds(filters)
+  // Условие числа уже НАЗЫВАЕТ записи поимённо (`wonBySource`) — список ID лидов ему не нужен:
+  // эти сделки отобраны из набора, уже посчитанного под фильтром отчёта, и пересечение с ним
+  // ничего не изменит. Разница не косметическая: с `byLeadIds` список читается кусками, а такое
+  // условие в слайдер портала не помещается — и под фильтром «Источник» ВСЕ детализации сделок
+  // открывались бы запасной панелью вместо настоящего слайдера (решение владельца 2026-09-06).
+  const byLeadIds = needsLeadIds(filters) && !('ID' in request.extra)
   const base = { ...periodFilter(period), ...(byLeadIds ? {} : { '!LEAD_ID': null }), ...dealRestFilter(filters, codesByReason) }
   return {
     method: 'crm.deal.list',
@@ -337,8 +402,10 @@ export function leadDrillRow(
  * Строка сделки портала → строка списка. Сумма — как в CRM, в валюте сделки: приводить к
  * базовой здесь незачем, человек сверяет список с карточкой. Стадия провала — названием причины
  * (сведённым, `reasonMerge`), остальные — кодом как есть: справочника стадий сделок в отчёте нет.
+ *
+ * @param sourceName источник ВСЕГО списка названием — когда он отобран не по полю сделки
  */
-export function dealDrillRow(row: B24DrillDealRow, dictionaries: ReportDictionaries, keyByCode: Record<string, string> = {}, scope: DrillRequest['dealScope'] = 'from-leads'): DrillRow {
+export function dealDrillRow(row: B24DrillDealRow, dictionaries: ReportDictionaries, keyByCode: Record<string, string> = {}, scope: DrillRequest['dealScope'] = 'from-leads', sourceName?: string): DrillRow {
   const id = toId(row.ID)
   const stage = toText(row.STAGE_ID)
   const reasonKey = keyByCode[stage]
@@ -354,7 +421,12 @@ export function dealDrillRow(row: B24DrillDealRow, dictionaries: ReportDictionar
     title: toText(row.TITLE) || `Сделка #${id}`,
     ...(when ? { when } : {}),
     ...(stage ? { stage: reasonKey ? lossReasonLabel(dictionaries, reasonKey) : (stageName ?? stage) } : {}),
-    ...(source ? { source: sourceLabel(dictionaries, source) } : {}),
+    // ⚠ Подпись источника, приехавшая со списком, ГЛАВНЕЕ собственного поля сделки — и это не
+    // произвол. Список «успешные сделки источника» отобран по источнику ЛИДА; у сделки он бывает
+    // пуст или свой (54 расхождения из 261 на боевом портале), и под заголовком «… : Звонок»
+    // встали бы строки с пустым источником. Собственное поле показывается там, где список по
+    // нему и отобран, — тогда подписи в нагрузке нет.
+    ...(sourceName ? { source: sourceName } : source ? { source: sourceLabel(dictionaries, source) } : {}),
     ...(manager ? { manager } : {}),
     ...(Number.isFinite(amount) ? { amount } : {}),
     ...(toText(row.CURRENCY_ID) ? { currencyId: toText(row.CURRENCY_ID) } : {}),
