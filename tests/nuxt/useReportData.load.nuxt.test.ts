@@ -45,6 +45,8 @@ const portal = vi.hoisted(() => ({
   users: [] as Array<{ ID: string, NAME?: string, LAST_NAME?: string }>,
   /** `user.get` падает (нет права) — отчёт от этого страдать не должен. */
   usersFail: false,
+  /** Счётчики лидов по ключам пакета: `src:CALL` и прочие. Чего нет — ноль. */
+  counters: {} as Record<string, number>,
   /** Справочники портала — чтобы пакет счётчиков строил и пофакторные команды. */
   sources: [{ STATUS_ID: 'CALL', NAME: 'Звонок' }, { STATUS_ID: 'EMAIL', NAME: 'Почта' }],
   leadStatuses: [
@@ -91,7 +93,10 @@ function batchAnswer(commands: Record<string, unknown>) {
       continue
     }
     const rows = key === 'sources' ? portal.sources : key === 'leadStatuses' ? portal.leadStatuses : []
-    data[key] = { getTotal: () => (key === 'total' ? portal.leadTotal : key === 'unprocessed' ? Math.min(2, portal.leadTotal) : 0), getData: () => ({ result: rows }) }
+    data[key] = {
+      getTotal: () => portal.counters[key] ?? (key === 'total' ? portal.leadTotal : key === 'unprocessed' ? Math.min(2, portal.leadTotal) : 0),
+      getData: () => ({ result: rows })
+    }
   }
   return { isSuccess: true, getData: () => data, getErrorMessages: () => [] }
 }
@@ -120,7 +125,10 @@ mockNuxtImport('useB24', () => () => ({
               ? Array.isArray(leadIds) ? `deals-by:${leadIds.join(',')}` : `closed:${params.filter?.['>=CLOSEDATE'] ?? '?'}`
               : history
                 ? `${(params.filter as { TYPE_ID?: unknown })?.TYPE_ID === 1 ? 'created' : 'history'}:${params.filter?.['>=CREATED_TIME'] ?? '?'}`
-                : cursor && method === 'crm.lead.list' ? `${onlyId ? 'ids' : 'leads'}:${params.filter?.['>=DATE_CREATE'] ?? '?'}` : undefined
+                : cursor && method === 'crm.lead.list'
+                  // Источники лидов узнаются по `SOURCE_ID` в `select`: своя выборка, свой ключ.
+                  ? `${((params as { select?: string[] }).select ?? []).includes('SOURCE_ID') ? 'lead-sources' : onlyId ? 'ids' : 'leads'}:${params.filter?.['>=DATE_CREATE'] ?? '?'}`
+                  : undefined
 
             /**
              * ПЕРВАЯ страница выборки, читаемой смещением: тест отдаёт весь набор разом, стенд
@@ -250,6 +258,39 @@ describe('load', () => {
     await data.load(AUGUST)
     expect(portal.calls).toEqual([])
     expect(data.isDemo.value).toBe(true)
+  })
+
+  /**
+   * ⛔ Живой путь разреза источников. Дефект, который этот тест сторожит, стоил ВСЕЙ выручки
+   * блока 5: замер боевого портала 2026-09-09 — за 1–9 сентября 14 861,98 BYN на 20 успешных
+   * сделках уходили в «Другие источники» вместо «Звонка» и почты.
+   *
+   * Причина: «Заказ покупателя» из 1С приходит БЕЗ источника и привязывается к лиду руками,
+   * окном «Подбор сделки». Разрез брал источник у самой сделки — там пусто.
+   *
+   * ⚠ Чистые функции это не ловят: удали строку, которая кладёт карту в агрегат, — и все они
+   * останутся зелёными. Ровно так и вышло при проверке саботажем, поэтому тест здесь.
+   */
+  it('выручка ложится на источник ЛИДА: карта источников спрашивается и доезжает до разреза', async () => {
+    portal.counters = { 'src:CALL': 1, 'srcConv:CALL': 1, 'converted': 1 }
+    portal.leadTotal = 1
+    const data = useReportData()
+    const loading = data.load(AUGUST)
+    // Сделка из лида: успешная, с деньгами и БЕЗ своего источника.
+    await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
+    portal.pending[AUGUST.from]!([
+      { ID: '900', LEAD_ID: '77', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '1206.51', CURRENCY_ID: 'BYN', SOURCE_ID: '' }
+    ])
+    // Раз у сделки источника нет — отчёт обязан спросить источник её ЛИДА.
+    await vi.waitFor(() => expect(portal.pending[`lead-sources:${AUGUST.from}`]).toBeDefined())
+    expect(portal.filters[`lead-sources:${AUGUST.from}`]).toMatchObject({ ID: [77] })
+    portal.pending[`lead-sources:${AUGUST.from}`]!([{ ID: '77', SOURCE_ID: 'CALL' }])
+    await loading
+
+    expect(data.dataset.value.leadAggregate?.leadSourceById).toEqual({ 77: 'CALL' })
+    const call = data.report.value.bySource.find(row => row.sourceId === 'CALL')
+    expect(call).toMatchObject({ leads: 1, won: 1 })
+    expect(call?.revenue).toBeCloseTo(1206.51, 2)
   })
 
   it('после загрузки источник — портал, период — запрошенный', async () => {
@@ -716,6 +757,10 @@ describe('load', () => {
       await vi.waitFor(() => expect(portal.pending['deals-by:1,2']).toBeDefined())
       expect(portal.filters['deals-by:1,2']).not.toHaveProperty('!LEAD_ID')
       portal.pending['deals-by:1,2']!([{ ID: '10', LEAD_ID: '1', STAGE_ID: 'WON', OPPORTUNITY: '300', CURRENCY_ID: 'BYN', SOURCE_ID: 'CALL', DATE_CREATE: '2026-08-10T10:00:00+03:00', ASSIGNED_BY_ID: '562' }])
+      // Источник ЛИДА спрашивается и под фильтром: разрез не должен зависеть от того, отбирали
+      // ли что-то на экране.
+      await vi.waitFor(() => expect(portal.pending[`lead-sources:${AUGUST.from}`]).toBeDefined())
+      portal.pending[`lead-sources:${AUGUST.from}`]!([{ ID: '1', SOURCE_ID: 'CALL' }])
       await loading
       expect(data.dataset.value.deals).toHaveLength(1)
       // Список ID остаётся в наборе — по нему детализация строит сделки «тем же фильтром».

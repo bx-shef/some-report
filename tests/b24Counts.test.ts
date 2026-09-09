@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { adaptDeals, adaptDealsContext, adaptLeadCounts, adaptUnlinkedWonDeals, dealCountKey, leadCountKey, lossStages, statusIdsBySemantic } from '~/utils/b24Adapter'
+import { adaptDeals, adaptDealsContext, adaptLeadCounts, adaptUnlinkedWonDeals, dealCountKey, leadCountKey, leadSourcesById, lossStages, statusIdsBySemantic } from '~/utils/b24Adapter'
 import { buildReportFromAggregate, UNSPECIFIED_SOURCE, UNSPECIFIED_REASON } from '~/utils/metrics'
-import { dealContextBatch, dealStageBatch, dealsFromLeadsParams, leadCountBatch, unlinkedWonDealsParams } from '~/utils/b24Query'
+import { dealContextBatch, dealStageBatch, dealsFromLeadsParams, leadCountBatch, leadSourcesParams, unlinkedWonDealsParams } from '~/utils/b24Query'
 import { mergeReasons } from '~/utils/reasonMerge'
 
 /**
@@ -488,5 +488,115 @@ describe('счётчики + сделки + ядро отчёта', () => {
   it('оговорка про чужую валюту доезжает вместе с суммой', () => {
     expect(adapted.foreignCurrencyDeals).toBe(1)
     expect(adapted.unconvertedDeals).toBe(0)
+  })
+
+  /**
+   * ⛔ ТОТ САМЫЙ дефект, ради которого заведена карта «лид → источник».
+   *
+   * Замер боевого портала 2026-09-09: за 1–9 сентября ВСЯ выручка блока 5 — 14 861,98 BYN на 20
+   * успешных сделках — уходила в «Другие источники» вместо «Звонка» и почты. Причина: «Заказ
+   * покупателя» из 1С приходит БЕЗ источника и привязывается к лиду руками, окном «Подбор
+   * сделки». Разрез брал источник у самой сделки, а его там нет.
+   *
+   * ⚠ Без карты этот тест зелёным быть НЕ МОЖЕТ: деньги окажутся в остатке, а не в CALL.
+   */
+  it('выручка ложится на источник ЛИДА, даже когда у сделки источника нет', () => {
+    const aggregate = adaptLeadCounts({
+      totals: {
+        [leadCountKey.total]: 1,
+        [leadCountKey.converted]: 1,
+        [leadCountKey.source('CALL')]: 1,
+        [leadCountKey.sourceConverted('CALL')]: 1
+      },
+      sourceIds: ['CALL'],
+      junkStatusIds: []
+    })
+    aggregate.leadSourceById = leadSourcesById([{ ID: '77', SOURCE_ID: 'CALL' }], ['CALL'])
+    const fromOneC = adaptDeals(
+      // Источник у сделки ПУСТ — ровно как у «Заказа покупателя» из 1С.
+      [{ ID: '900', LEAD_ID: '77', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '1206.51', CURRENCY_ID: 'BYN', SOURCE_ID: '' }],
+      CURRENCIES
+    )
+    const built = buildReportFromAggregate(aggregate, fromOneC.deals, {
+      conversionBase: 'quality-leads', firstResponseSlaMinutes: 60, now: '2026-09-09T23:59:59Z'
+    })
+    const call = built.bySource.find(row => row.sourceId === 'CALL')
+    expect(call).toMatchObject({ leads: 1, qualified: 1, won: 1 })
+    expect(call?.revenue).toBeCloseTo(1206.51, 2)
+    // И в остаток «Другие источники» не утекло ничего.
+    expect(built.bySource.find(row => row.sourceId === UNSPECIFIED_SOURCE)).toBeUndefined()
+  })
+
+  /**
+   * ⚠ Сделка периода может ссылаться на лид ПРОШЛОГО месяца. Такой лид в карту не попадает
+   * (её собирают запросом с периодом), и сделка обязана выпасть из разреза: иначе выручка легла
+   * бы на источник, у которого за период нет ни одного лида, и итоги разошлись бы со сводкой.
+   */
+  it('сделка лида вне периода в разрез не входит', () => {
+    const aggregate = adaptLeadCounts({
+      totals: { [leadCountKey.total]: 1, [leadCountKey.converted]: 1, [leadCountKey.source('CALL')]: 1 },
+      sourceIds: ['CALL'],
+      junkStatusIds: []
+    })
+    // В карте только лид 77; сделка ссылается на 99 — его запрос с периодом не вернул.
+    aggregate.leadSourceById = leadSourcesById([{ ID: '77', SOURCE_ID: 'CALL' }], ['CALL'])
+    const old = adaptDeals(
+      [{ ID: '901', LEAD_ID: '99', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '5000', CURRENCY_ID: 'BYN', SOURCE_ID: 'CALL' }],
+      CURRENCIES
+    )
+    const built = buildReportFromAggregate(aggregate, old.deals, {
+      conversionBase: 'quality-leads', firstResponseSlaMinutes: 60, now: '2026-09-09T23:59:59Z'
+    })
+    expect(built.bySource.find(row => row.sourceId === 'CALL')).toMatchObject({ won: 0, revenue: 0 })
+  })
+})
+
+/**
+ * ⛔ Карта «лид → источник» — то, без чего выручка ложится не на тот источник.
+ *
+ * Замер боевого портала 2026-09-09: за 1–9 сентября ВСЯ выручка блока 5 (14 861,98 BYN на 20
+ * успешных сделках) уходила в «Другие источники» вместо «Звонка» и почты. У «Заказа покупателя»
+ * из 1С источника нет вовсе, а к лиду он привязан руками.
+ */
+describe('leadSourcesById', () => {
+  it('строит карту по идентификатору лида', () => {
+    const map = leadSourcesById([{ ID: '10', SOURCE_ID: 'CALL' }, { ID: '11', SOURCE_ID: 'EMAIL' }], ['CALL', 'EMAIL'])
+    expect(map).toEqual({ 10: 'CALL', 11: 'EMAIL' })
+  })
+
+  /**
+   * ⚠ Ключ ТОТ ЖЕ, что у `adaptLeadCounts`: источник вне справочника уходит в остаток. Отдай
+   * карта сырой код — строки под него в разрезе нет, и сделка молча выпала бы из таблицы при
+   * полностью исправной выборке.
+   */
+  it('источник вне справочника кладёт в остаток, а не отдаёт кодом', () => {
+    expect(leadSourcesById([{ ID: '10', SOURCE_ID: 'DELETED' }], ['CALL'])).toEqual({ 10: UNSPECIFIED_SOURCE })
+  })
+
+  it('пустой источник — тоже остаток', () => {
+    expect(leadSourcesById([{ ID: '10', SOURCE_ID: null }], ['CALL'])).toEqual({ 10: UNSPECIFIED_SOURCE })
+  })
+
+  // ⚠ `toNumber` отдаёт 0 и для пустого, и для непонятного ID: такая строка карту не засоряет.
+  it('строку без внятного идентификатора пропускает', () => {
+    expect(leadSourcesById([{ ID: '', SOURCE_ID: 'CALL' }, { ID: 'нет', SOURCE_ID: 'CALL' }], ['CALL'])).toEqual({})
+  })
+})
+
+describe('leadSourcesParams', () => {
+  /**
+   * ⚠ Период здесь ОБЯЗАТЕЛЕН и это не дубль фильтра сделок: сделка периода может ссылаться на
+   * лид прошлого месяца. Такой лид в разрез не входит — период отсекает его здесь, карта его не
+   * получит, и сделка сама выпадет из разреза.
+   */
+  it('спрашивает только источник и только за период', () => {
+    const params = leadSourcesParams(PERIOD, [1, 2])
+    expect(params.select).toEqual(['ID', 'SOURCE_ID'])
+    expect(params.filter).toMatchObject({ 'ID': [1, 2], '>=DATE_CREATE': PERIOD.from })
+  })
+
+  // Пустой список — ошибка вызывающего: `ID: []` портал трактует непредсказуемо.
+  it('пустой список отвергает, а не спрашивает портал', () => {
+    expect(() => leadSourcesParams(PERIOD, [])).toThrow()
   })
 })

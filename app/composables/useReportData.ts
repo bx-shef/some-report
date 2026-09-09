@@ -1,11 +1,12 @@
 import { getCurrentScope, onScopeDispose } from 'vue'
 import { mergeReasons } from '~/utils/reasonMerge'
-import type { ConversionBase, ReportDataset, ReportFilters, ReportMetrics, ReportPeriod } from '~/types/report'
+import type { ConversionBase, ReportDataset, ReportDeal, ReportFilters, ReportMetrics, ReportPeriod } from '~/types/report'
 import type { AdapterWarnings, B24CurrencyRow, B24LeadRow, B24StatusRow, B24DealRow } from '~/utils/b24Adapter'
 import {
   adaptDeals,
   adaptDealsContext,
   adaptLeadCounts,
+  leadSourcesById,
   adaptUnlinkedWonDeals,
   openLeadStatusIds,
   baseCurrency,
@@ -26,6 +27,7 @@ import {
   leadHistoryParams,
   dedupeById,
   leadIdsParams,
+  leadSourcesParams,
   LIST_PAGE_SIZE,
   listPageCommands,
   listPageOfKey,
@@ -470,6 +472,28 @@ export function useReportData() {
   }
 
   /**
+   * Источники лидов, на которые ссылаются прочитанные сделки.
+   *
+   * ⛔ Без этой выборки выручка ложится на источник САМОЙ СДЕЛКИ, а он бывает пуст. Замер боевого
+   * портала 2026-09-09: за 1–9 сентября ВСЯ выручка блока 5 (14 861,98 BYN на 20 успешных
+   * сделках) уходила в «Другие источники» вместо «Звонка» и почты — «Заказ покупателя» из 1С
+   * приходит без источника и привязывается к лиду руками. Спрашиваем ровно те лиды, что нужны:
+   * не все лиды периода (их втрое больше), а только родителей прочитанных сделок.
+   *
+   * ⚠ Кусками по 500, как и сделки по лидам: длина `ID in (...)` проверена на боевом портале.
+   */
+  async function fetchLeadSources(period: ReportPeriod, deals: readonly ReportDeal[], sourceIds: readonly string[], stale: () => boolean): Promise<Record<number, string>> {
+    const ids = [...new Set(deals.map(deal => deal.leadId).filter((id): id is number => id !== undefined && id > 0))]
+    if (!ids.length) return {}
+    const rows: B24LeadRow[] = []
+    for (const chunk of chunkIds(ids)) {
+      if (stale()) break
+      rows.push(...await fetchAllUntil<B24LeadRow>('crm.lead.list', leadSourcesParams(period, chunk), stale))
+    }
+    return leadSourcesById(rows, sourceIds)
+  }
+
+  /**
    * Забрать данные портала за период и пересчитать отчёт.
    *
    * Вне фрейма — тихо остаёмся на демонстрационном наборе: это штатный режим страницы,
@@ -552,6 +576,10 @@ export function useReportData() {
 
       const leadAggregate = adaptLeadCounts({ totals: leadTotals, sourceIds, junkStatusIds, openStatusIds, leadFilter })
       const adaptedDeals = adaptDeals(dealsFetched.rows, currencies, reasons.keyByCode)
+      // ⚠ После сделок и ДО сборки набора: карта нужна разрезу источников с первого показа, а не
+      // фоном. Стоит она двух запросов на месяц — против 17 секунд самой выборки это ничто.
+      leadAggregate.leadSourceById = await fetchLeadSources(period, adaptedDeals.deals, sourceIds, () => mine !== seq)
+      if (mine !== seq) return
       const currencyId = baseCurrency(currencies)
       const dealsContext = dealTotals ? adaptDealsContext(dealTotals) : undefined
 

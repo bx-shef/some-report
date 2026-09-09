@@ -471,6 +471,32 @@ export function adaptLeadCounts(input: LeadCountsInput): LeadAggregate {
   }
 }
 
+/**
+ * Строки `crm.lead.list` (`ID` + `SOURCE_ID`) → карта «лид → источник» для `sourceRows`.
+ *
+ * ⚠ Ключ источника ТОТ ЖЕ, что у `adaptLeadCounts`: источник, которого нет в справочнике
+ * (удалили после того, как лиды им пометились), уходит в остаток `UNSPECIFIED_SOURCE`. Иначе
+ * карта отдала бы код, строки под который в разрезе нет, и сделка молча выпала бы из таблицы —
+ * при полностью исправной выборке.
+ *
+ * @param knownSourceIds коды источников из справочника: по ним же спрашивались счётчики лидов
+ */
+export function leadSourcesById(
+  rows: readonly B24LeadRow[],
+  knownSourceIds: readonly string[] = []
+): Record<number, string> {
+  const known = new Set(knownSourceIds)
+  // Без прототипа: ключи приходят из портала (см. `currencyRates`).
+  const map: Record<number, string> = Object.create(null)
+  for (const row of rows) {
+    const id = toNumber(row.ID)
+    if (id <= 0) continue
+    const source = toText(row.SOURCE_ID)
+    map[id] = source && known.has(source) ? source : UNSPECIFIED_SOURCE
+  }
+  return map
+}
+
 /** Ключи счётчиков сделок всего портала. */
 export const dealCountKey = { won: 'dealsWon', lost: 'dealsLost', inWork: 'dealsInWork' } as const
 
