@@ -126,7 +126,10 @@ describe('adaptLeadCounts', () => {
   })
 
   it('не притворяется, что знает лиды построчно', () => {
-    expect(agg.leadSourceById).toBeUndefined()
+    // ⚠ Ключа НЕТ, а не «есть, но пустой»: пустая карта означала бы «источник не нашёлся ни у
+    // одного лида», и разрез молча остался бы без выручки. Тип `LeadCounts` это и закрепляет,
+    // но проверка живёт и здесь: тип не сторожит объект, собранный через `as`.
+    expect('leadSourceById' in agg).toBe(false)
     expect(agg.processing).toBeUndefined()
   })
 })
@@ -452,7 +455,13 @@ describe('счётчики + сделки + ядро отчёта', () => {
     { ID: '10', LEAD_ID: '3', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '456000', CURRENCY_ID: 'RUB', SOURCE_ID: 'CALL' },
     { ID: '11', LEAD_ID: '4', STAGE_ID: 'LOSE', STAGE_SEMANTIC_ID: 'F', OPPORTUNITY: '10300', CURRENCY_ID: 'BYN', SOURCE_ID: 'CALL' }
   ], CURRENCIES, reasons.keyByCode)
-  const report = buildReportFromAggregate(aggregate, adapted.deals, {
+  // Третий слой живого пути: карту «лид → источник» досылает отдельный запрос, и без неё разрез
+  // источников собрать нечем — счётчики лидов поимённо не знают.
+  const withSources = {
+    ...aggregate,
+    leadSourceById: leadSourcesById([{ ID: '3', SOURCE_ID: 'CALL' }, { ID: '4', SOURCE_ID: 'CALL' }], ['CALL'])
+  }
+  const report = buildReportFromAggregate(withSources, adapted.deals, {
     conversionBase: 'quality-leads',
     firstResponseSlaMinutes: 60,
     now: '2026-08-31T23:59:59Z'
@@ -484,6 +493,14 @@ describe('счётчики + сделки + ядро отчёта', () => {
     expect(reasons.names[row!.reasonId]).toBe('Сделка провалена')
   })
 
+  // Разрез источников собирается из ТРЁХ слоёв сразу: счётчики лидов, строки сделок и карта
+  // «лид → источник». Список за числом — те же сделки, что в него посчитаны.
+  it('разрез источников сходится по всем трём слоям', () => {
+    const call = report.bySource.find(row => row.sourceId === 'CALL')
+    expect(call).toMatchObject({ leads: 100, junk: 30, qualified: 20, won: 1 })
+    expect(call?.wonDealIds).toEqual([10])
+  })
+
   // ⚠ Оговорка про чужую валюту обязана доехать вместе с числом: сумма верна, а ввод — нет.
   it('оговорка про чужую валюту доезжает вместе с суммой', () => {
     expect(adapted.foreignCurrencyDeals).toBe(1)
@@ -511,13 +528,13 @@ describe('счётчики + сделки + ядро отчёта', () => {
       sourceIds: ['CALL'],
       junkStatusIds: []
     })
-    aggregate.leadSourceById = leadSourcesById([{ ID: '77', SOURCE_ID: 'CALL' }], ['CALL'])
+    const withSources = { ...aggregate, leadSourceById: leadSourcesById([{ ID: '77', SOURCE_ID: 'CALL' }], ['CALL']) }
     const fromOneC = adaptDeals(
       // Источник у сделки ПУСТ — ровно как у «Заказа покупателя» из 1С.
       [{ ID: '900', LEAD_ID: '77', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '1206.51', CURRENCY_ID: 'BYN', SOURCE_ID: '' }],
       CURRENCIES
     )
-    const built = buildReportFromAggregate(aggregate, fromOneC.deals, {
+    const built = buildReportFromAggregate(withSources, fromOneC.deals, {
       conversionBase: 'quality-leads', firstResponseSlaMinutes: 60, now: '2026-09-09T23:59:59Z'
     })
     const call = built.bySource.find(row => row.sourceId === 'CALL')
@@ -539,12 +556,12 @@ describe('счётчики + сделки + ядро отчёта', () => {
       junkStatusIds: []
     })
     // В карте только лид 77; сделка ссылается на 99 — его запрос с периодом не вернул.
-    aggregate.leadSourceById = leadSourcesById([{ ID: '77', SOURCE_ID: 'CALL' }], ['CALL'])
+    const withSources = { ...aggregate, leadSourceById: leadSourcesById([{ ID: '77', SOURCE_ID: 'CALL' }], ['CALL']) }
     const old = adaptDeals(
       [{ ID: '901', LEAD_ID: '99', STAGE_ID: 'WON', STAGE_SEMANTIC_ID: 'S', OPPORTUNITY: '5000', CURRENCY_ID: 'BYN', SOURCE_ID: 'CALL' }],
       CURRENCIES
     )
-    const built = buildReportFromAggregate(aggregate, old.deals, {
+    const built = buildReportFromAggregate(withSources, old.deals, {
       conversionBase: 'quality-leads', firstResponseSlaMinutes: 60, now: '2026-09-09T23:59:59Z'
     })
     expect(built.bySource.find(row => row.sourceId === 'CALL')).toMatchObject({ won: 0, revenue: 0 })

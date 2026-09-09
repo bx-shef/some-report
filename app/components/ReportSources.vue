@@ -138,7 +138,7 @@ const outsideSources = computed(() => props.report.outsideSources)
             </td>
             <td class="py-2 pr-3 text-right tabular-nums">
               <DrillNumber
-                :request="drill.bySource(row.sourceId, 'won', sourceLabel(dictionaries, row.sourceId))"
+                :request="drill.bySource(row.sourceId, 'won', sourceLabel(dictionaries, row.sourceId), row.wonDealIds)"
                 :total="row.won"
                 @drill="emit('drill', $event)"
               >
@@ -214,10 +214,16 @@ const outsideSources = computed(() => props.report.outsideSources)
       class="mt-4 text-xs opacity-60"
     >
       <!-- Формулировка обходит согласование с числом: «1 успешных сделок» читается как опечатка,
-           а правило множественного числа ради одной строки заводить незачем. -->
-      Успешных сделок без лида-родителя: {{ formatCount(outsideSources.deals) }} на
-      {{ formatMoney(outsideSources.revenue, currencyId) }}. Их источник неизвестен, поэтому в эту
-      таблицу они не попадают — в сводке выше они учтены.
+           а правило множественного числа ради одной строки заводить незачем.
+
+           ⚠ «Без лида-родителя» тут было НЕВЕРНО: разрез берёт источник у лида, поэтому мимо
+           таблицы идёт и сделка, чей лид создан ДО периода (37 из 947 за август на боевом
+           портале, 0 BYN). Подпись обязана называть обе причины — иначе она объясняет расхождение
+           тем, чего в живой выборке почти не бывает: сделки без лида читаются отдельно, блоком 7. -->
+      Успешных сделок вне разреза: {{ formatCount(outsideSources.deals) }} на
+      {{ formatMoney(outsideSources.revenue, currencyId) }}. У них неизвестен источник лида — его
+      нет вовсе или лид создан раньше периода, — поэтому в эту таблицу они не попадают; в сводке
+      выше они учтены.
     </p>
   </B24Card>
 </template>

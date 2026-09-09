@@ -94,6 +94,15 @@ mockNuxtImport('useB24', () => () => ({
                 portal.pending[`closed:${params.filter?.['>=CLOSEDATE'] ?? '?'}`] = rows => resolve({ isSuccess: true, getData: () => ({ result: rows }), getErrorMessages: () => [] })
               })
             }
+            // ⚠ Под фильтром по полям ЛИДА (менеджер, стадия, источник) отчёт сначала спрашивает
+            // идентификаторы лидов — курсором через `call`, а не `callList`. Без этой ветки
+            // выборка падала бы на «ответ пришёл не списком строк», и страница показывала бы
+            // ошибку вместо «читаем…» — при полностью исправном отчёте.
+            if (method === 'crm.lead.list' && (params as { start?: number }).start === -1) {
+              return new Promise((resolve) => {
+                portal.pending[`ids:${params.filter?.['>=DATE_CREATE'] ?? '?'}`] = rows => resolve({ isSuccess: true, getData: () => ({ result: rows }), getErrorMessages: () => [] })
+              })
+            }
             return Promise.resolve({ isSuccess: true, getData: () => ({ result: { categories: [] } }), getErrorMessages: () => [] })
           }
         },
@@ -202,7 +211,10 @@ describe('страница отчёта в портале', () => {
     portal.leadTotal = 0
     wrapper.findComponent(ReportFilters).vm.$emit('update:modelValue', { sourceId: 'CALL' })
     await vi.waitFor(() => expect(wrapper.text()).toContain('Читаем лиды и сделки портала…'))
-    portal.pending[from]!([])
+    // ⚠ Под фильтром по источнику сделки идут по списку ID лидов: пустой список — сделок нет, и
+    // портал о них не спрашивают вовсе (`LEAD_ID: [0]` отдал бы сделки БЕЗ лида).
+    await vi.waitFor(() => expect(portal.pending[`ids:${from}`]).toBeDefined())
+    portal.pending[`ids:${from}`]!([])
     await vi.waitFor(() => expect(wrapper.text()).toContain('Под выбранными фильтрами за этот период лидов нет'))
     expect(wrapper.text()).not.toContain('Последний лид создан')
     expect(wrapper.text()).toContain('Фильтры отчёта здесь не действуют')
@@ -280,7 +292,9 @@ describe('страница отчёта в портале', () => {
     })
     await mountSuspended(AppPage)
     await vi.waitFor(() => expect(mainKeys()).toHaveLength(1))
-    expect(mainKeys()[0]).toBe('2026-07-01')
+    // ⚠ Ключ с приставкой `ids:` — потому что под фильтром по источнику первой идёт выборка
+    // идентификаторов лидов. Проверяется здесь всё равно ПЕРИОД: с каким отчёт пошёл в портал.
+    expect(mainKeys()[0]).toBe('ids:2026-07-01')
   })
 
   // Негодную настройку (перевёрнутый период) отчёт молча не берёт: отбор, которого человек не

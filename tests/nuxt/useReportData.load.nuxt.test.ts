@@ -68,7 +68,14 @@ function pagedKey(method: string, filter: Record<string, unknown>): string | und
   if (method === 'crm.deal.list' && !Array.isArray(filter.LEAD_ID) && filter['>=CLOSEDATE']) {
     return `closed:${String(filter['>=CLOSEDATE'])}`
   }
-  if (method === 'crm.lead.list' && filter['>=DATE_CREATE']) return `leads:${String(filter['>=DATE_CREATE'])}`
+  if (method === 'crm.lead.list' && filter['>=DATE_CREATE']) {
+    // ⚠ Смещением по `crm.lead.list` читаются ДВЕ разные выборки: строки лидов для истории
+    // (весь период) и источники родительских лидов (перечисление `ID in (...)`). Ключ у них
+    // обязан быть разный — иначе тест «доехала ли карта источников» зеленел бы на строках
+    // истории, то есть на совершенно другом запросе.
+    const byIds = Array.isArray(filter.ID)
+    return `${byIds ? 'lead-sources' : 'leads'}:${String(filter['>=DATE_CREATE'])}`
+  }
   return undefined
 }
 
@@ -126,8 +133,10 @@ mockNuxtImport('useB24', () => () => ({
               : history
                 ? `${(params.filter as { TYPE_ID?: unknown })?.TYPE_ID === 1 ? 'created' : 'history'}:${params.filter?.['>=CREATED_TIME'] ?? '?'}`
                 : cursor && method === 'crm.lead.list'
-                  // Источники лидов узнаются по `SOURCE_ID` в `select`: своя выборка, свой ключ.
-                  ? `${((params as { select?: string[] }).select ?? []).includes('SOURCE_ID') ? 'lead-sources' : onlyId ? 'ids' : 'leads'}:${params.filter?.['>=DATE_CREATE'] ?? '?'}`
+                  // ⚠ Ключ `cursor-lead-sources` существует, чтобы возврат к чтению КУРСОРОМ был
+                  // виден: он ждёт ответа, которого тест не даст, и выборка встанет. Источники
+                  // лидов читаются смещением (см. `pagedKey`) — курсор платит за сортировку.
+                  ? `${((params as { select?: string[] }).select ?? []).includes('SOURCE_ID') ? 'cursor-lead-sources' : onlyId ? 'ids' : 'leads'}:${params.filter?.['>=DATE_CREATE'] ?? '?'}`
                   : undefined
 
             /**
@@ -246,6 +255,9 @@ beforeEach(() => {
   portal.users = []
   portal.dismissedUsers = []
   portal.usersFail = false
+  // ⚠ Счётчики сбрасываются тоже: они переживают тест, и оставленный от соседа `src:CALL` тихо
+  // подменял бы данные следующему — тот проверял бы не то, что задумывал, и оставался зелёным.
+  portal.counters = {}
 })
 
 const AUGUST = { from: '2026-08-01', to: '2026-08-31' }
@@ -727,12 +739,26 @@ describe('load', () => {
    * проверить: счётчики и строки приходят уже отфильтрованными, ядро о фильтрах не знает.
    */
   describe('фильтры', () => {
-    it('источник — в каждый счётчик лидов, в сделки и в строки лидов для истории; контекст всех сделок не спрашивается', async () => {
+    /**
+     * ⛔ Сделки под фильтром по источнику спрашиваются СПИСКОМ ID ЛИДОВ, а не собственным
+     * `SOURCE_ID` сделки, хотя такое поле у неё есть и запрос был бы короче.
+     *
+     * Разрез по источникам размечает продажу источником ЛИДА (`sourceRows`): у сделки он бывает
+     * пуст («Заказ покупателя» из 1С) или свой — 54 расхождения из 261 на боевом портале. Спроси
+     * фильтр поле сделки — под фильтром «Звонок» открылось бы не то множество, что посчитано в
+     * строке «Звонок» той же таблицы.
+     */
+    it('источник — в каждый счётчик лидов, а в сделки по списку ID ЛИДОВ; контекст всех сделок не спрашивается', async () => {
       const data = useReportData()
       const loading = data.load(AUGUST, { sourceId: 'CALL' })
-      await vi.waitFor(() => expect(portal.pending[AUGUST.from]).toBeDefined())
-      expect(portal.filters[AUGUST.from]).toMatchObject({ 'SOURCE_ID': 'CALL', '!LEAD_ID': null })
-      portal.pending[AUGUST.from]!([])
+      await vi.waitFor(() => expect(portal.pending[`ids:${AUGUST.from}`]).toBeDefined())
+      expect(portal.filters[`ids:${AUGUST.from}`]).toMatchObject({ SOURCE_ID: 'CALL' })
+      portal.pending[`ids:${AUGUST.from}`]!([{ ID: '1' }])
+      await vi.waitFor(() => expect(portal.pending['deals-by:1']).toBeDefined())
+      // Собственного источника сделки в запросе нет и «лид есть» тоже: список ID уже уже.
+      expect(portal.filters['deals-by:1']).not.toHaveProperty('SOURCE_ID')
+      expect(portal.filters['deals-by:1']).not.toHaveProperty('!LEAD_ID')
+      portal.pending['deals-by:1']!([])
       await loading
       expect(data.filters.value).toEqual({ sourceId: 'CALL' })
       for (const [key, filter] of Object.entries(portal.batchFilters)) expect(filter, key).toMatchObject({ SOURCE_ID: 'CALL' })
@@ -835,8 +861,10 @@ describe('load', () => {
       const historyCalls = portal.calls.filter(c => c.startsWith('history:')).length
 
       const second = data.load(AUGUST, { sourceId: 'CALL' })
-      await vi.waitFor(() => expect(portal.filters[AUGUST.from]).toMatchObject({ SOURCE_ID: 'CALL' }))
-      portal.pending[AUGUST.from]!([])
+      // Под фильтром по источнику сделки идут по списку ID лидов — см. тест про источник выше.
+      await vi.waitFor(() => expect(portal.pending[`ids:${AUGUST.from}`]).toBeDefined())
+      expect(portal.filters[`ids:${AUGUST.from}`]).toMatchObject({ SOURCE_ID: 'CALL' })
+      portal.pending[`ids:${AUGUST.from}`]!([])
       await second
       // Справка на месте и не перезапрошена; история — из памяти, заново только строки лидов.
       expect(data.dataset.value.unlinkedDeals?.total).toBe(1)
@@ -850,8 +878,8 @@ describe('load', () => {
 
       // Другой период — справка и история заново.
       const third = data.load(SEPTEMBER, { sourceId: 'CALL' })
-      await vi.waitFor(() => expect(portal.pending[SEPTEMBER.from]).toBeDefined())
-      portal.pending[SEPTEMBER.from]!([])
+      await vi.waitFor(() => expect(portal.pending[`ids:${SEPTEMBER.from}`]).toBeDefined())
+      portal.pending[`ids:${SEPTEMBER.from}`]!([])
       await third
       expect(data.dataset.value.unlinkedDeals).toBeUndefined()
       await vi.waitFor(() => expect(portal.pending[`closed:${SEPTEMBER.from}`]).toBeDefined())

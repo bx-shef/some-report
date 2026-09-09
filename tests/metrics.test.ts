@@ -503,23 +503,44 @@ describe('aggregateLeads', () => {
     expect(byRows.bySource.find(r => r.sourceId === 'CALL')).toMatchObject({ won: 1, revenue: 500 })
   })
 
-  // Счётчики не знают лидов поимённо — источник сделки берётся у самой сделки. При конвертации
-  // портал копирует источник из лида, так что для сделки ИЗ ЛИДА это тот же источник.
-  it('без карты лидов источник сделки берётся у сделки', () => {
+  /**
+   * ⛔ Источник продажи берётся ТОЛЬКО у лида, собственный `SOURCE_ID` сделки не смотрится вовсе.
+   *
+   * Прежде здесь стояла запасная ветка «нет карты — возьмём у сделки», и обоснование звучало
+   * убедительно: при конвертации портал копирует источник из лида. На боевом портале боевой
+   * оказалась именно эта ветка, и она врала: «Заказ покупателя» из 1С приходит БЕЗ источника,
+   * 54 расхождения из 261 сделки за девять дней сентября.
+   */
+  it('источник продажи берётся у лида, а собственный источник сделки не смотрится', () => {
     const agg = aggregateLeads([lead({ id: 2, outcome: 'converted', dealIds: [10], sourceId: 'CALL' })], ALL)
-    delete agg.leadSourceById
-    const rows = sourceRows(agg, [deal({ id: 10, leadId: 2, outcome: 'won', amount: 7, sourceId: 'CALL' })], ALL)
+    const rows = sourceRows(agg, [deal({ id: 10, leadId: 2, outcome: 'won', amount: 7, sourceId: 'WEB' })], ALL)
     expect(rows.find(r => r.sourceId === 'CALL')).toMatchObject({ won: 1, revenue: 7 })
+    // Строки «WEB» нет вовсе: у сделки свой источник, но продажу он не размечает.
+    expect(rows.find(r => r.sourceId === 'WEB')).toBeUndefined()
   })
 
-  // ⚠ Без карты лидов сделка по лиду ПРОШЛОГО месяца несёт источник, у которого за период нет
-  // ни одного лида. Строка «лидов 0, успешных 1» с конверсией 300 % при трёх таких сделках —
-  // ровно то, чего в отчёте быть не должно; оба режима её не рисуют.
-  it('без карты лидов сделка источника без лидов строки не создаёт', () => {
-    const agg = aggregateLeads([lead({ id: 2, outcome: 'converted', dealIds: [10], sourceId: 'CALL' })], ALL)
-    delete agg.leadSourceById
-    const rows = sourceRows(agg, [deal({ id: 11, leadId: 99, outcome: 'won', amount: 7, sourceId: 'WEB' })], ALL)
-    expect(rows.find(r => r.sourceId === 'WEB')).toBeUndefined()
+  /**
+   * Список за числом собирается ТЕМ ЖЕ проходом, что и число: разойтись им негде.
+   *
+   * ⚠ Проверка не формальная. Условия «сделки, у чьего лида источник X» у `crm.deal.list` нет, и
+   * список открывается перечислением этих самых записей (`drill.bySource`). Разъедься `won` и
+   * `wonDealIds` — человек увидел бы под числом «2» список из одной строки.
+   */
+  it('идентификаторы успешных сделок сходятся с числом в строке', () => {
+    const agg = aggregateLeads([
+      lead({ id: 2, outcome: 'converted', dealIds: [10], sourceId: 'CALL' }),
+      lead({ id: 3, outcome: 'converted', dealIds: [11], sourceId: 'CALL' }),
+      lead({ id: 4, outcome: 'converted', dealIds: [12], sourceId: 'WEB' })
+    ], ALL)
+    const rows = sourceRows(agg, [
+      deal({ id: 10, leadId: 2, outcome: 'won', amount: 7 }),
+      deal({ id: 11, leadId: 3, outcome: 'lost', amount: 5 }),
+      deal({ id: 12, leadId: 4, outcome: 'won', amount: 9 })
+    ], ALL)
+    const call = rows.find(r => r.sourceId === 'CALL')
+    expect(call).toMatchObject({ won: 1 })
+    expect(call?.wonDealIds).toEqual([10])
+    expect(rows.find(r => r.sourceId === 'WEB')?.wonDealIds).toEqual([12])
   })
 
   // Сделка, чей лид известен по карте, но в выборке отсутствует, в разрез не входит: иначе выручка

@@ -1,5 +1,5 @@
 import type { ReportDictionaries, ReportFilters, ReportPeriod } from '~/types/report'
-import type { DrillFilterValue } from '~/utils/drillSlider'
+import { type DrillFilterValue, MAX_LIST_ITEMS } from '~/utils/drillSlider'
 import { periodFilter, unlinkedWonDealsParams } from '~/utils/b24Query'
 import { dealRestFilter, leadRestFilter, needsLeadIds, stageCodesFor } from '~/utils/filters'
 import { INITIAL_LEAD_STATUS } from '~/utils/leadHistory'
@@ -32,10 +32,15 @@ export interface DrillRequest {
   /** Как подписано число, по которому нажали, — заголовок слайдера. */
   title: string
   /**
-   * Условие поверх периода и фильтров отчёта: стадия, семантика, источник. У `dealScope: 'plain'`
-   * это ПОЛНЫЙ фильтр списка — там отчёт строит его сам, целиком (матрица менеджеров).
+   * Условие поверх периода и фильтров отчёта: стадия, семантика, источник, перечисление записей.
+   * У `dealScope: 'plain'` это ПОЛНЫЙ фильтр списка — там отчёт строит его сам, целиком
+   * (матрица менеджеров).
+   *
+   * ⚠ Числа в перечислении разрешены не для симметрии: идентификаторы записей портала приходят
+   * числами (`ID in (...)` у списка успешных сделок источника), и приведение их к строкам было бы
+   * лишним местом, где значение может потеряться.
    */
-  extra: Record<string, string | string[] | number>
+  extra: Record<string, string | number | Array<string | number>>
   /**
    * Сделки: из лидов (как в воронке — период по дате создания, фильтры отчёта действуют),
    * без лида (блок 7: по дате закрытия, `LEAD_ID` пуст, только успешные, фильтры не действуют)
@@ -153,14 +158,34 @@ export const drill = {
     reasonId === UNSPECIFIED_REASON
       ? lead(`Брак лидов: ${label}`, knownJunkIds.length ? { 'STATUS_SEMANTIC_ID': 'F', '!STATUS_ID': [...knownJunkIds] } : { STATUS_SEMANTIC_ID: 'F' })
       : lead(`Брак лидов: ${label}`, { STATUS_ID: reasonId }),
-  /** Разрез по источнику: лиды, брак, квалифицировано — лиды; успешные — сделки из лидов. */
-  bySource: (sourceId: string, part: 'leads' | 'junk' | 'qualified' | 'won', label: string): DrillRequest | undefined => {
+  /**
+   * Разрез по источнику: лиды, брак, квалифицировано — лиды; успешные — сделки из лидов.
+   *
+   * У лидов источник — их собственное поле, и условие спрашивается прямо. ⛔ А у СДЕЛОК его
+   * спрашивать нельзя: разрез считает продажу по источнику ЛИДА (`sourceRows`), собственный
+   * `SOURCE_ID` сделки бывает пуст или свой — 54 расхождения из 261 сделки на боевом портале
+   * (замер 2026-09-09). Условия «источник моего лида» у `crm.deal.list` нет вовсе, поэтому
+   * список открывается ПЕРЕЧИСЛЕНИЕМ тех самых сделок, что вошли в число (`wonDealIds` считается
+   * тем же проходом, что и `won` с выручкой). Это сильнее обычного «тем же условием»: списку
+   * с числом разойтись нечем.
+   *
+   * ⚠ Пустой список успешных сделок — число `0`, и оно некликабельно: пустой `ID: []` портал не
+   * видит вовсе и отдал бы ВЕСЬ период под заголовком одного источника.
+   *
+   * ⚠ Слишком длинное перечисление тоже некликабельно: `MAX_LIST_ITEMS` — потолок разбора
+   * нагрузки слайдера, и молча обрезанный список показал бы МЕНЬШЕ записей, чем число над ним.
+   * На боевом портале это ~160 успешных сделок из лидов в месяц на все источники разом, то есть
+   * упереться в потолок можно только очень длинным периодом.
+   */
+  bySource: (sourceId: string, part: 'leads' | 'junk' | 'qualified' | 'won', label: string, wonDealIds: readonly number[] = []): DrillRequest | undefined => {
     if (sourceId === UNSPECIFIED_SOURCE) return undefined
     switch (part) {
       case 'leads': return lead(`Лиды: ${label}`, { SOURCE_ID: sourceId })
       case 'junk': return lead(`Брак лидов: ${label}`, { SOURCE_ID: sourceId, STATUS_SEMANTIC_ID: 'F' })
       case 'qualified': return lead(`Квалифицировано: ${label}`, { SOURCE_ID: sourceId, STATUS_SEMANTIC_ID: 'S' })
-      case 'won': return dealFromLeads(`Успешные сделки из лидов: ${label}`, { SOURCE_ID: sourceId, STAGE_SEMANTIC_ID: 'S' })
+      case 'won': return wonDealIds.length && wonDealIds.length <= MAX_LIST_ITEMS
+        ? dealFromLeads(`Успешные сделки из лидов: ${label}`, { ID: [...wonDealIds] })
+        : undefined
     }
   },
   wonDeals: () => dealFromLeads('Успешные сделки из лидов', { STAGE_SEMANTIC_ID: 'S' }),

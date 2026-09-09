@@ -1,6 +1,6 @@
 import { getCurrentScope, onScopeDispose } from 'vue'
 import { mergeReasons } from '~/utils/reasonMerge'
-import type { ConversionBase, ReportDataset, ReportDeal, ReportFilters, ReportMetrics, ReportPeriod } from '~/types/report'
+import type { ConversionBase, LeadAggregate, ReportDataset, ReportDeal, ReportFilters, ReportMetrics, ReportPeriod } from '~/types/report'
 import type { AdapterWarnings, B24CurrencyRow, B24LeadRow, B24StatusRow, B24DealRow } from '~/utils/b24Adapter'
 import {
   adaptDeals,
@@ -481,6 +481,15 @@ export function useReportData() {
    * не все лиды периода (их втрое больше), а только родителей прочитанных сделок.
    *
    * ⚠ Кусками по 500, как и сделки по лидам: длина `ID in (...)` проверена на боевом портале.
+   *
+   * ⚠ Читаем СМЕЩЕНИЕМ пакетами (`fetchAllPaged`), а не курсором, по той же причине, что
+   * успешные сделки без лида: курсор платит за сортировку. Курсором кусок в 500 лидов — это
+   * десять кругов по сети друг за другом, смещением — два запроса (страница + пакет остальных).
+   * Месяц заказчика (≈ 950 сделок из лидов) укладывается в два куска, то есть ЧЕТЫРЕ запроса.
+   *
+   * ⚠ Отказ этой выборки роняет всю выборку, и это намеренно: разрез по источникам без карты
+   * молча положил бы выручку не в свои строки — тот самый дефект, ради которого она заведена.
+   * Тип `LeadCounts` не даст собрать агрегат, «пропустив» карту.
    */
   async function fetchLeadSources(period: ReportPeriod, deals: readonly ReportDeal[], sourceIds: readonly string[], stale: () => boolean): Promise<Record<number, string>> {
     const ids = [...new Set(deals.map(deal => deal.leadId).filter((id): id is number => id !== undefined && id > 0))]
@@ -488,7 +497,7 @@ export function useReportData() {
     const rows: B24LeadRow[] = []
     for (const chunk of chunkIds(ids)) {
       if (stale()) break
-      rows.push(...await fetchAllUntil<B24LeadRow>('crm.lead.list', leadSourcesParams(period, chunk), stale))
+      rows.push(...await fetchAllPaged<B24LeadRow>('crm.lead.list', leadSourcesParams(period, chunk), stale))
     }
     return leadSourcesById(rows, sourceIds)
   }
@@ -574,11 +583,14 @@ export function useReportData() {
 
       if (mine !== seq) return
 
-      const leadAggregate = adaptLeadCounts({ totals: leadTotals, sourceIds, junkStatusIds, openStatusIds, leadFilter })
+      const leadCounts = adaptLeadCounts({ totals: leadTotals, sourceIds, junkStatusIds, openStatusIds, leadFilter })
       const adaptedDeals = adaptDeals(dealsFetched.rows, currencies, reasons.keyByCode)
       // ⚠ После сделок и ДО сборки набора: карта нужна разрезу источников с первого показа, а не
-      // фоном. Стоит она двух запросов на месяц — против 17 секунд самой выборки это ничто.
-      leadAggregate.leadSourceById = await fetchLeadSources(period, adaptedDeals.deals, sourceIds, () => mine !== seq)
+      // фоном. Стоит она четырёх запросов на месяц — против 17 секунд самой выборки это ничто.
+      const leadAggregate: LeadAggregate = {
+        ...leadCounts,
+        leadSourceById: await fetchLeadSources(period, adaptedDeals.deals, sourceIds, () => mine !== seq)
+      }
       if (mine !== seq) return
       const currencyId = baseCurrency(currencies)
       const dealsContext = dealTotals ? adaptDealsContext(dealTotals) : undefined

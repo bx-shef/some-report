@@ -5,7 +5,7 @@ import type {
   DealsContext,
   UnlinkedDeals,
   UnlinkedDealsRow,
-  LeadAggregate,
+  LeadCounts,
   ReportDeal
 } from '~/types/report'
 
@@ -401,7 +401,7 @@ export interface LeadCountsInput {
  * смыслу — стадия так и называется «Квалифицировано», — но на портале, где лиды конвертируют в
  * контакт без сделки, эти два числа разойдутся. Об этом сказано в `docs/METRICS.md`.
  */
-export function adaptLeadCounts(input: LeadCountsInput): LeadAggregate {
+export function adaptLeadCounts(input: LeadCountsInput): LeadCounts {
   const get = (key: string): number => Math.max(0, toNumber(input.totals[key]))
   const total = get(leadCountKey.total)
   const junk = get(leadCountKey.junk)
@@ -467,7 +467,9 @@ export function adaptLeadCounts(input: LeadCountsInput): LeadAggregate {
     ...(byOpenStage ? { byOpenStage } : {}),
     // «Обработано» по счётчику `NEW` — сразу; время и просрочка приходят позже, из истории.
     ...(unprocessed === undefined ? {} : { processing: processingFromCounts(total, unprocessed) })
-    // `leadSourceById` намеренно отсутствует: строк лидов нет.
+    // ⚠ Карты источников здесь нет и быть не может: счётчики знают только числа, лиды поимённо
+    // им неизвестны. Поэтому тип отдаётся без неё (`LeadCounts`) — приставит её тот, кто её
+    // прочитал (`useReportData.fetchLeadSources`).
   }
 }
 
@@ -479,11 +481,16 @@ export function adaptLeadCounts(input: LeadCountsInput): LeadAggregate {
  * карта отдала бы код, строки под который в разрезе нет, и сделка молча выпала бы из таблицы —
  * при полностью исправной выборке.
  *
+ * ⚠ Умолчания у `knownSourceIds` НЕТ намеренно: пустой справочник по этому правилу отправляет
+ * в остаток ВСЕ источники разом, то есть выручка целиком уходит в «Другие источники» — ровно тот
+ * дефект, ради которого карта и заводилась. Забытый аргумент должен быть ошибкой компиляции, а
+ * не правдоподобной таблицей.
+ *
  * @param knownSourceIds коды источников из справочника: по ним же спрашивались счётчики лидов
  */
 export function leadSourcesById(
   rows: readonly B24LeadRow[],
-  knownSourceIds: readonly string[] = []
+  knownSourceIds: readonly string[]
 ): Record<number, string> {
   const known = new Set(knownSourceIds)
   // Без прототипа: ключи приходят из портала (см. `currencyRates`).

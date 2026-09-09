@@ -378,24 +378,23 @@ export function sourceRows(
   deals: ReportDeal[],
   options: ReportOptions
 ): SourceRow[] {
-  const acc = new Map<string, { leads: number, junk: number, qualified: number, won: number, revenue: number }>()
+  const acc = new Map<string, { leads: number, junk: number, qualified: number, won: number, revenue: number, wonDealIds: number[] }>()
   for (const [sourceId, row] of Object.entries(leads.bySource)) {
-    acc.set(sourceId, { ...row, won: 0, revenue: 0 })
+    acc.set(sourceId, { ...row, won: 0, revenue: 0, wonDealIds: [] })
   }
 
   for (const deal of deals) {
     if (deal.outcome !== 'won' || deal.leadId === undefined) continue
     /**
-     * Источник сделки: у ЛИДА, когда лиды известны построчно; иначе — у самой сделки.
+     * Источник сделки — ТОЛЬКО у её лида, запасного пути нет.
      *
-     * ⚠ Второе — не компромисс наугад: при конвертации лида Битрикс24 копирует `SOURCE_ID` в
-     * сделку, так что для сделки ИЗ ЛИДА это тот же источник. А вот сделка, чей лид известен,
-     * но в выборку не попал (создан до периода, удалён), в разрез не входит — иначе выручка
-     * легла бы на источник, которого в таблице лидов нет, и итоги разошлись бы со сводкой.
+     * ⛔ Прежде здесь стояло «нет карты — берём у самой сделки», и обоснование звучало разумно:
+     * при конвертации лида Битрикс24 копирует `SOURCE_ID` в сделку. На боевом портале это
+     * оказалось неверно: «Заказ покупателя» из 1С приходит БЕЗ источника и привязывается к лиду
+     * руками, и вся выручка блока 5 уезжала в «Другие источники» (замер 2026-09-09). Ветка была
+     * не запасной, а единственной боевой — счётчики лидов карту не давали никогда.
      */
-    const sourceId = leads.leadSourceById
-      ? leads.leadSourceById[deal.leadId]
-      : sourceKey(deal.sourceId)
+    const sourceId = leads.leadSourceById[deal.leadId]
     if (sourceId === undefined) continue
     // ⚠ Источник без единого лида за период строки не получает — ни в одном из режимов. Иначе
     // сделка по лиду прошлого месяца рисовала бы строку «лидов 0, успешных 1, конверсия 0 %», а
@@ -404,6 +403,8 @@ export function sourceRows(
     if (!row) continue
     row.won += 1
     row.revenue += deal.amount
+    // Список за числом собирается ЗДЕСЬ же, одним проходом с самим числом: разойтись им негде.
+    row.wonDealIds.push(deal.id)
   }
 
   return [...acc.entries()]
@@ -418,7 +419,8 @@ export function sourceRows(
         crToDeal: share(row.qualified, base),
         won: row.won,
         crToSale: share(row.won, base),
-        revenue: row.revenue
+        revenue: row.revenue,
+        wonDealIds: row.wonDealIds
       }
     })
     .sort((a, b) => b.leads - a.leads || a.sourceId.localeCompare(b.sourceId))
