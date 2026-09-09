@@ -1,6 +1,6 @@
 # some-report — отчёты по CRM для Битрикс24
 
-> Last reviewed: 2026-09-06
+> Last reviewed: 2026-09-08
 
 Приложение Битрикс24 с ТРЕМЯ отчётами по CRM. Встраивается в раздел **CRM-аналитика** портала и
 открывается там же, где штатные отчёты. Nuxt 4 (SSG), данные CRM только читает (в портал пишет
@@ -144,8 +144,8 @@ pnpm typecheck    # два прохода: приложение + тесты
 pnpm test         # Vitest (unit + nuxt)
 pnpm check        # lint + typecheck + test — основная часть проверок CI
 pnpm generate     # сборка статики → .output/public
-pnpm smoke        # после generate: открыть сборку браузером под боевым CSP (в CI — отдельный шаг)
-pnpm smoke:image http://localhost:8080   # то же на поднятом контейнере из образа
+pnpm smoke        # после generate: браузером под боевым CSP + проверка встраивания в портал
+pnpm smoke:image http://localhost:8080   # то же на контейнере из образа + заголовки локаций nginx
 ```
 
 Перед пушем прогоняйте `pnpm check`.
