@@ -1,3 +1,4 @@
+import { plainParams } from '~/utils/b24Params'
 import { getCurrentScope, onScopeDispose } from 'vue'
 import type { BatchCommand } from '~/utils/b24Query'
 import { hasRateLimit, isRateLimit, RATE_LIMIT_MESSAGE, retryDelayMs } from '~/utils/b24Errors'
@@ -109,7 +110,10 @@ export function useB24Batch() {
       }
       try {
         const result = await b24.getOrThrow().actions.v2.batch.make<T>({
-          calls: chunk,
+          // ⛔ `plainParams` на ГРАНИЦЕ с SDK: команды пакета собираются из отбора на экране, а он
+          // реактивен. Перечисление (стадии, идентификаторы) приезжает `Proxy`-массивом, и
+          // `postMessage` роняет ВЕСЬ пакет — см. `app/utils/b24Params.ts`.
+          calls: plainParams(chunk),
           options: { isHaltOnError: false, returnAjaxResult: true }
         })
         if (result.isSuccess) return result

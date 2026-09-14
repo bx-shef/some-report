@@ -58,7 +58,7 @@ function batchAnswer(commands: Record<string, unknown>) {
 mockNuxtImport('usePortalSlider', () => () => ({
   openDrill: (payload: { title: string }) => {
     portal.sliderTitles.push(payload.title)
-    return true
+    return { opened: true }
   },
   drillPayload: () => undefined
 }))

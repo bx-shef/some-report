@@ -36,6 +36,11 @@ const resolved = ref(false)
  * Нагрузка слайдера детализации, если фрейм открыт ею. `undefined` — обычное открытие приложения.
  *
  * ⚠ Разбор проверяющий (`drillSlider.ts`): значение приходит от портала, то есть снаружи.
+ *
+ * ⚠ Во фрейме слайдера у экранов этой страницы есть МИНИМАЛЬНАЯ высота в пикселях. Высоту фрейма
+ * задаём мы сами (`fitWindow` меряет содержимое), и короткий экран — «Загрузка…» или плашка
+ * отказа — сжимал слайдер в полоску в две строки. На боевом это выглядело так, будто вместе со
+ * списком сломался и сам слайдер.
  */
 const drill = ref<DrillSliderPayload | undefined>(undefined)
 /**
@@ -130,6 +135,7 @@ async function openRow(row: DrillRow): Promise<void> {
   <main
     v-else-if="!resolved"
     class="mx-auto max-w-4xl p-3 sm:p-4 lg:p-6"
+    :class="{ 'min-h-[600px]': slider.drillRequested() }"
   >
     <p class="text-sm opacity-70">
       Загрузка…
@@ -138,7 +144,7 @@ async function openRow(row: DrillRow): Promise<void> {
 
   <main
     v-else-if="drillBroken"
-    class="mx-auto max-w-4xl p-3 sm:p-4 lg:p-6"
+    class="mx-auto min-h-[600px] max-w-4xl p-3 sm:p-4 lg:p-6"
   >
     <B24Alert
       color="air-primary-alert"

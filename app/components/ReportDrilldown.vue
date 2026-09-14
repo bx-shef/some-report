@@ -24,6 +24,14 @@ const props = defineProps<{
   pending: boolean
   error?: string
   done: boolean
+  /**
+   * Почему список показывает ЭТУ панель, а не настоящий слайдер портала.
+   *
+   * ⚠ Панель — запасной путь, и человек видит разницу сразу: окно другое. Молчаливая подмена
+   * читается как поломка отчёта, а отличить «портал не дал» от «условие одним фильтром не
+   * выразить» без подписи нельзя ни ему, ни нам.
+   */
+  sliderRefusal?: string
 }>()
 
 const open = defineModel<boolean>('open', { default: false })
@@ -70,6 +78,13 @@ onBeforeUnmount(() => observer?.disconnect())
     :b24ui="{ content: 'sm:max-w-[760px]', body: 'scrollbar-thin' }"
   >
     <template #body>
+      <p
+        v-if="sliderRefusal"
+        class="mb-3 text-xs opacity-60"
+      >
+        Список показан внутри отчёта: {{ sliderRefusal }}.
+      </p>
+
       <B24Alert
         v-if="error"
         color="air-primary-alert"

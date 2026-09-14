@@ -1,3 +1,4 @@
+import { plainParams } from '~/utils/b24Params'
 import type { CategoryRef, ManagerFilters, ManagerLoadReport, ManagerRef, CompanyRef, StageRef } from '~/types/managers'
 import type { ReportDictionaries } from '~/types/report'
 import { statusNames, type B24StatusRow } from '~/utils/b24Adapter'
@@ -171,7 +172,7 @@ export function useManagerReport(options: { today?: Date } = {}) {
 
   /** Одиночный запрос к порталу; строки — из конверта `result`. */
   async function call<T>(method: string, params: object): Promise<T[]> {
-    const result = await b24.getOrThrow().actions.v2.call.make<T[]>({ method, params })
+    const result = await b24.getOrThrow().actions.v2.call.make<T[]>({ method, params: plainParams(params) })
     if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
     const rows = result.getData()?.result
     return Array.isArray(rows) ? rows as T[] : []

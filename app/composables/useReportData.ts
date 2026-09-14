@@ -1,3 +1,4 @@
+import { plainParams } from '~/utils/b24Params'
 import { getCurrentScope, onScopeDispose } from 'vue'
 import { mergeReasons } from '~/utils/reasonMerge'
 import type { ConversionBase, LeadAggregate, ReportDataset, ReportDeal, ReportFilters, ReportMetrics, ReportPeriod } from '~/types/report'
@@ -246,7 +247,7 @@ export function useReportData() {
    * и десятками секунд.
    */
   async function fetchAll<T>(method: string, params: object): Promise<T[]> {
-    const result = await b24.getOrThrow().actions.v2.callList.make<T>({ method, params })
+    const result = await b24.getOrThrow().actions.v2.callList.make<T>({ method, params: plainParams(params) })
     if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
     return (result.getData() ?? []) as T[]
   }
@@ -271,7 +272,7 @@ export function useReportData() {
     while (!stale()) {
       const result = await b24.getOrThrow().actions.v2.call.make<T[] | { items?: T[] }>({
         method,
-        params: { ...params, order: { ID: 'ASC' }, filter: { ...params.filter, '>ID': lastId }, start: -1 }
+        params: plainParams({ ...params, order: { ID: 'ASC' }, filter: { ...params.filter, '>ID': lastId }, start: -1 })
       })
       if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
       // ⚠ Конверт разный: списки CRM отдают `result: [...]`, а `crm.stagehistory.list` —
@@ -404,7 +405,7 @@ export function useReportData() {
   ): Promise<{ rows: T[], total: number }> {
     const result = await b24.getOrThrow().actions.v2.call.make<T[] | { items?: T[] }>({
       method,
-      params: { ...params, start }
+      params: plainParams({ ...params, start })
     })
     if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
     const rows = expectRows<T>(result.getData()?.result, method)

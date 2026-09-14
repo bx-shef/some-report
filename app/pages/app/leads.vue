@@ -42,7 +42,7 @@ const { pending: exportPending, error: exportError, exportExcel, exportPdf } = u
 
 /** Детализация по клику: список записей за числом — под ПРИМЕНЁННЫМИ фильтрами, а не выбранными. */
 const {
-  open: drillOpen, request: drillRequest, rows: drillRows, pending: drillPending, error: drillError, done: drillDone,
+  open: drillOpen, request: drillRequest, rows: drillRows, pending: drillPending, error: drillError, done: drillDone, sliderRefusal: drillSliderRefusal,
   show: showDrill, loadMore: drillMore, openRow: openDrillRow
 } = useDrilldown({ dataset, filters: appliedFilters })
 
@@ -378,6 +378,7 @@ async function fit() {
           :rows="drillRows"
           :pending="drillPending"
           :error="drillError"
+          :slider-refusal="drillSliderRefusal"
           :done="drillDone"
           @more="drillMore"
           @open-row="openDrillRow"

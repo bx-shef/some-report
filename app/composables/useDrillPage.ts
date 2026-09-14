@@ -1,3 +1,4 @@
+import { plainParams } from '~/utils/b24Params'
 import type { ReportDictionaries } from '~/types/report'
 import { statusNames, type B24StatusRow } from '~/utils/b24Adapter'
 import { dictionaryBatch } from '~/utils/b24Query'
@@ -223,7 +224,11 @@ export function useDrillPage() {
       if (mine !== seq) return
       const frame = b24.getOrThrow()
       const request = pageRequest(current, afterId)
-      const result = await frame.actions.v2.call.make<DrillPortalRow[]>(request)
+      // ⛔ `plainParams` обязателен: условие приехало в нагрузке и лежит в `ref`, то есть
+      // за `payload.value.filter` стоит `Proxy`. Разворот снимает обёртку только с верхнего
+      // уровня — перечисление кодов стадий внутри остаётся `Proxy`-массивом, а `postMessage`
+      // такое не клонирует. Так список причины провала и падал на боевом с «structuredClone».
+      const result = await frame.actions.v2.call.make<DrillPortalRow[]>(plainParams(request))
       if (mine !== seq) return
       if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
       const page = (result.getData()?.result ?? []) as DrillPortalRow[]

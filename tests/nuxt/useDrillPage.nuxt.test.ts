@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockNuxtImport } from '@nuxt/test-utils/runtime'
 import { useDrillPage } from '~/composables/useDrillPage'
 import type { DrillSliderPayload } from '~/utils/drillSlider'
+import { asPortalWire } from '../helpers/portalWire'
 
 /**
  * Список записей в настоящем слайдере портала: страницы курсором по `ID`, справочники один раз.
@@ -64,6 +65,8 @@ mockNuxtImport('useB24', () => () => ({
         call: {
           make: async ({ method, params }: { method: string, params: Record<string, unknown> }) => {
             portal.calls.push({ method, params })
+            // Как портал: `postMessage` клонирует нагрузку структурно — см. `portalWire`.
+            asPortalWire(params)
             const next = portal.pages.shift()
             // Ворота: тест может задержать ОТВЕТ, оставив запрос в полёте. Только так проверяется
             // сторож от гонки — иначе второй старт успевает раньше, чем первый дойдёт до портала.
@@ -117,6 +120,29 @@ describe('useDrillPage', () => {
     expect(drill.rows.value).toHaveLength(3)
     expect(drill.rows.value[0]).toMatchObject({ id: 1, stage: 'Новая', source: 'Звонок', manager: 'Иванов Иван' })
     expect(drill.done.value).toBe(true)
+  })
+
+  /**
+   * ⛔ Боевой отказ 2026-09-14 — ИМЕННО ЗДЕСЬ. Клик по причине проигрыша открывал слайдер с верным
+   * заголовком и красной плашкой вместо списка:
+   *
+   * > Failed to execute 'structuredClone' on 'Window': [object Object] could not be cloned.
+   *
+   * Условие приезжает нагрузкой и ложится в `ref`, значит за ним стоит `Proxy`. Разворот
+   * (`{ ...filter }`) снимает обёртку только с верхнего уровня: строковые условия работали, а
+   * первое же ПЕРЕЧИСЛЕНИЕ (коды стадий одной причины, идентификаторы сделок источника)
+   * доезжало до `postMessage` `Proxy`-массивом — и запрос падал целиком.
+   *
+   * ⚠ Ловит это не сам тест, а СТЕНД: он клонирует нагрузку структурно, как браузер. Стенд,
+   * берущий объект как есть, щедрее SDK и зеленеет на выборке, которой на боевом портале нет.
+   */
+  it('перечисление в условии доезжает до портала, а не роняет запрос', async () => {
+    portal.pages = [page(2)]
+    const drill = useDrillPage()
+    await drill.start({ ...PAYLOAD, filter: { 'STAGE_ID': ['LOSE', 'C4:APOLOGY'], '!LEAD_ID': null } })
+    expect(drill.error.value).toBeUndefined()
+    expect(drill.rows.value).toHaveLength(2)
+    expect((portal.calls[0]!.params.filter as Record<string, unknown>).STAGE_ID).toEqual(['LOSE', 'C4:APOLOGY'])
   })
 
   /**

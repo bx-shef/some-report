@@ -1,3 +1,4 @@
+import { plainParams } from '~/utils/b24Params'
 import type { Ref } from 'vue'
 import type { ManagerFilters } from '~/types/managers'
 import type { ReportDictionaries } from '~/types/report'
@@ -80,7 +81,7 @@ export function useManagerDrilldown(input: {
     }, () => mine === seq)
     // ⚠ Пока ждали запись, могли нажать другое число: тогда эта панель уже не наша.
     if (mine !== seq) return
-    if (asked) {
+    if (asked.opened) {
       // Панель прошлого клика гаснет: иначе она осталась бы под слайдером с чужим заголовком.
       open.value = false
       return
@@ -99,7 +100,9 @@ export function useManagerDrilldown(input: {
       const dictionaries = input.dictionaries.value
       const result = await b24.getOrThrow().actions.v2.call.make<unknown[]>({
         method: params.method,
-        params: { select: params.select, filter: { ...params.filter, '>ID': afterId }, order: { ID: 'ASC' }, start: -1 }
+        // ⛔ `plainParams` — см. `app/utils/b24Params.ts`: реактивный массив в условии роняет
+        // весь запрос на `postMessage`, а выглядит это как отказ портала.
+        params: plainParams({ select: params.select, filter: { ...params.filter, '>ID': afterId }, order: { ID: 'ASC' }, start: -1 })
       })
       if (mine !== seq) return
       if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))

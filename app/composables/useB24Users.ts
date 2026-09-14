@@ -1,3 +1,4 @@
+import { plainParams } from '~/utils/b24Params'
 import { adaptUserDepartments, adaptUsers, type B24UserRow } from '~/utils/b24Adapter'
 import { userListParams } from '~/utils/b24Query'
 
@@ -71,7 +72,7 @@ export function useB24Users() {
         try {
           const result = await b24.getOrThrow().actions.v2.callList.make<B24UserRow>({
             method: 'user.get',
-            params: userListParams(active)
+            params: plainParams(userListParams(active))
           })
           const rows = result.getData()
           const read = Array.isArray(rows) ? rows as B24UserRow[] : []

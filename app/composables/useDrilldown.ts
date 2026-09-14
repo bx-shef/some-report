@@ -1,3 +1,4 @@
+import { plainParams } from '~/utils/b24Params'
 import type { Ref } from 'vue'
 import type { ReportDataset, ReportFilters } from '~/types/report'
 import {
@@ -36,6 +37,14 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
   const error = ref<string | undefined>(undefined)
   /** Все страницы прочитаны (или список демо-набора собран целиком). */
   const done = ref(false)
+  /**
+   * Почему список показывает ПАНЕЛЬ, а не настоящий слайдер портала.
+   *
+   * ⚠ Человек видит разницу сразу — окно другое, — и молчаливый отказ читается как поломка
+   * отчёта. Пустая строка значит «так и задумано»: условие по списку ID лидов одним фильтром не
+   * выражается, и панель здесь штатный путь, объяснять нечего.
+   */
+  const sliderRefusal = ref<string | undefined>(undefined)
 
   /** Номер открытого списка: ответ страницы закрытого или сменённого списка выбрасывается. */
   let seq = 0
@@ -121,6 +130,7 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
     rows.value = []
     error.value = undefined
     done.value = false
+    sliderRefusal.value = undefined
     // Страница закрытого списка ещё могла идти: её «читаем…» не наш, иначе новая первая
     // страница не стартовала бы никогда (сторож от двух страниц с одним курсором).
     pending.value = false
@@ -143,8 +153,9 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
       }, () => mine === seq)
       // ⚠ Пока ждали запись, могли нажать другое число: тогда эта панель уже не наша.
       if (mine !== seq) return
-      // Случай 3: попросить не вышло — показываем панель, как раньше.
-      if (asked) {
+      // Случай 3: попросить не вышло — показываем панель, как раньше, но НАЗЫВАЕМ причину.
+      sliderRefusal.value = asked.reason
+      if (asked.opened) {
         // Панель, открытая прошлым кликом, гаснет: иначе она осталась бы ПОД слайдером с пустым
         // списком и чужим заголовком, и человек нашёл бы её, закрыв слайдер.
         open.value = false
@@ -188,7 +199,10 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
         }
         const result = await b24.getOrThrow().actions.v2.call.make<unknown[]>({
           method: params.method,
-          params: { select: params.select, filter, order: { ID: 'ASC' }, start: -1 }
+          // ⛔ `plainParams` обязателен: `filter` собран из справочников НАБОРА, а он реактивен.
+          // Коды стадий одной причины провала приезжают сюда `Proxy`-массивом, а `postMessage`
+          // клонировать `Proxy` не умеет — список падал с «structuredClone … could not be cloned».
+          params: plainParams({ select: params.select, filter, order: { ID: 'ASC' }, start: -1 })
         })
         if (mine !== seq) return
         if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
@@ -243,5 +257,5 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
     return opened
   }
 
-  return { open, request, rows, pending, error, done, show, loadMore: () => loadMore(), openRow }
+  return { open, request, rows, pending, error, done, sliderRefusal, show, loadMore: () => loadMore(), openRow }
 }

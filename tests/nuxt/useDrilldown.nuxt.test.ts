@@ -5,6 +5,7 @@ import { useDrilldown } from '~/composables/useDrilldown'
 import type { ReportDataset, ReportFilters } from '~/types/report'
 import { drill } from '~/utils/drilldown'
 import { buildMockDataset } from '~/utils/mockReport'
+import { asPortalWire } from '../helpers/portalWire'
 
 /**
  * Листание списка детализации: курсор по ID, куски по 500 под фильтром по лиду, устаревшие
@@ -31,11 +32,11 @@ mockNuxtImport('usePortalSlider', () => () => ({
   // задержать ответ (`portal.openGate`) и проверить, что вытесненный клик портал не беспокоит.
   openDrill: async (payload: { title: string, filter: Record<string, unknown> }, stillWanted: () => boolean = () => true) => {
     await portal.openGate
-    if (portal.sliderFails) return false
+    if (portal.sliderFails) return { opened: false, reason: 'портал не принял условие списка (user.option.set)' }
     // ⚠ Сторож спрашивается ПОСЛЕ записи и ДО открытия — так же, как в настоящем композабле.
-    if (!stillWanted()) return true
+    if (!stillWanted()) return { opened: true }
     portal.sliderPages.push({ place: 'app-drill', ...payload })
-    return true
+    return { opened: true }
   },
   readDrill: async () => ({ ok: false as const, reason: 'не детализация' }),
   drillRequested: () => false
@@ -57,6 +58,10 @@ mockNuxtImport('useB24', () => () => ({
         call: {
           make: ({ method, params }: { method: string, params: { filter: Record<string, unknown> } }) => {
             portal.calls.push({ method, filter: params.filter })
+            // ⚠ Как настоящий портал: нагрузка уезжает через `postMessage` и клонируется
+            // СТРУКТУРНО. Стенд, берущий объект как есть, щедрее SDK — и остаётся зелёным при
+            // выборке, которая на боевом падает с «structuredClone … could not be cloned».
+            asPortalWire(params)
             return new Promise((resolve) => {
               portal.pending.push(rows => resolve(rows instanceof Error
                 ? { isSuccess: false, getData: () => undefined, getErrorMessages: () => [rows.message] }
@@ -83,7 +88,10 @@ const AUGUST = { from: '2026-08-01', to: '2026-08-31' }
 function live(extra: Partial<ReportDataset> = {}, filters: ReportFilters = {}) {
   const mock = buildMockDataset()
   const dataset = ref<ReportDataset>({ ...mock, leads: [], deals: [], period: AUGUST, dictionaries: { ...mock.dictionaries, users: { 562: 'Иванова Анна' } }, ...extra })
-  return useDrilldown({ dataset, filters: ref(filters) })
+  // ⚠ Набор отдаётся наружу, потому что в бою условие числа собирает КОМПОНЕНТ — и берёт
+  // справочники отсюда же, из реактивного набора. Тест, подсунувший вместо них обычный объект,
+  // проверяет не тот путь: реактивность до портала не доезжает, и дефект остаётся невидимым.
+  return { ...useDrilldown({ dataset, filters: ref(filters) }), dataset }
 }
 
 /**
@@ -270,6 +278,49 @@ describe('useDrilldown', () => {
     expect(filter['!LEAD_ID']).toBeNull()
     // Оба кода одной причины подписаны ОДНИМ каноничным именем — тем, что стоит в отчёте.
     expect(sent.stageNames).toEqual({ 'LOSE': 'Отказ - Дорого', 'C4:APOLOGY': 'Отказ - Дорого' })
+  })
+
+  /**
+   * ⚠ Отказ слайдера НАЗЫВАЕТ причину. Человек видит разницу сразу — окно другое, — и молчаливая
+   * подмена читается как поломка отчёта. Разбирательство по скриншотам «почему не тот слайдер»
+   * заняло полдня ровно потому, что отличить «портал не дал» от «условие одним фильтром не
+   * выразить» было нечем.
+   */
+  it('панель поднялась вместо слайдера — причина названа, а не умолчана', async () => {
+    const d = panel()
+    d.show(drill.junk())
+    await vi.waitFor(() => expect(d.open.value).toBe(true))
+    expect(d.sliderRefusal.value).toContain('user.option.set')
+  })
+
+  /** А штатная панель (условие по списку ID лидов) ничего не объясняет: объяснять нечего. */
+  it('панель по списку ID лидов причины не выдумывает', async () => {
+    const d = live({ filteredLeadIds: [1, 2] }, { assignedById: 562 })
+    d.show(drill.wonDeals())
+    await vi.waitFor(() => expect(d.open.value).toBe(true))
+    expect(d.sliderRefusal.value).toBeUndefined()
+  })
+
+  /**
+   * ⛔ Боевой отказ 2026-09-14: клик по причине проигрыша открывал слайдер с верным заголовком и
+   * красной плашкой вместо списка — «Failed to execute 'structuredClone' on 'Window'».
+   *
+   * Коды стадий одной причины берёт КОМПОНЕНТ из справочников набора, а набор реактивен: до
+   * портала доезжал `Proxy`-массив, а `postMessage` клонирует нагрузку структурно и `Proxy` не
+   * умеет. Разворот объекта (`{ ...filter }`) снимает обёртку только с верхнего уровня, поэтому
+   * строковые условия работали годами, а первое же ПЕРЕЧИСЛЕНИЕ роняло запрос целиком.
+   *
+   * ⚠ Коды здесь берутся ОТТУДА ЖЕ, откуда их берёт компонент, — из набора. Подсунь тест обычный
+   * объект, и он проверял бы не тот путь: реактивность до портала просто не доехала бы.
+   */
+  it('перечисление кодов из набора доезжает до портала, а не роняет запрос', async () => {
+    const d = panel({ dictionaries: { ...buildMockDataset().dictionaries, lossReasons: { LOSE: 'Отказ - Дорого' }, lossReasonCodes: { LOSE: ['LOSE', 'C4:APOLOGY'] } } })
+    const codes = d.dataset.value.dictionaries.lossReasonCodes!
+    d.show(drill.lossReason('LOSE', 'Отказ - Дорого', codes))
+    await vi.waitFor(() => expect(portal.calls).toHaveLength(1))
+    expect(portal.calls[0]!.filter).toMatchObject({ STAGE_ID: ['LOSE', 'C4:APOLOGY'] })
+    // Запрос ушёл целиком: отказ «проволоки» выглядел бы плашкой поверх пустого списка.
+    expect(d.error.value).toBeUndefined()
   })
 
   // Списку ЛИДОВ подписи причин провала не нужны: у лида стадии свои, и лишнее в нагрузке — вес.

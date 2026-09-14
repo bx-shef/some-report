@@ -26,6 +26,18 @@ import {
  * страницы. Открывающая сторона обязана иметь запасной путь — у нас это прежняя панель b24ui
  * внутри отчёта. Поэтому `openDrill` возвращает `false`, а не бросает.
  */
+/**
+ * Чем закончилась просьба открыть слайдер.
+ *
+ * ⚠ `opened: true` значит «портал попросили», а не «человек увидел список»: промис открытия
+ * разрешается при ЗАКРЫТИИ слайдера, и ждать его нельзя (см. `openDrill`).
+ */
+export interface SliderOpenResult {
+  opened: boolean
+  /** Почему не открылся — текстом для человека. Есть только при `opened: false`. */
+  reason?: string
+}
+
 export function usePortalSlider() {
   const b24 = useB24()
   const options = useUserOptions()
@@ -36,8 +48,12 @@ export function usePortalSlider() {
    * @param stillWanted — «нас ещё ждут?». Спрашивается после записи условия и до открытия: клик,
    *   который человек успел заменить другим, портал беспокоить не должен. Ответ при этом `true`:
    *   запасная панель этому клику тоже не нужна, его вытеснили.
-   * @returns удалось ли ПОПРОСИТЬ портал открыть слайдер. `false` — вызывающий показывает список
-   *   сам, своей панелью.
+   * @returns удалось ли ПОПРОСИТЬ портал открыть слайдер, и ПОЧЕМУ не удалось.
+   *
+   * ⚠ Причина возвращается вместе с отказом — по той же причине, что у `readDrill`. Отказ видит
+   * человек: вместо слайдера портала поднимается панель внутри отчёта, и выглядит это как «не то
+   * окно». Пока отказ был молчаливым, отличить «портал не дал» от «условие не выразить одним
+   * фильтром» было нельзя ни ему, ни нам — разбирательство по скриншотам заняло полдня.
    *
    * ⚠ Промис `openSliderAppPage` НЕ ждём, и это принципиально. У `BX24.openApplication` он
    * разрешается, когда слайдер ЗАКРЫЛИ, а не когда открыли: дождавшись его, мы объявили бы
@@ -49,7 +65,7 @@ export function usePortalSlider() {
    * `title` уезжают в `PLACEMENT_OPTIONS` как обычные данные приложения и молча игнорируются:
    * слайдер открывается стандартной ширины с пустой шапкой.
    */
-  async function openDrill(payload: DrillSliderPayload, stillWanted: () => boolean = () => true): Promise<boolean> {
+  async function openDrill(payload: DrillSliderPayload, stillWanted: () => boolean = () => true): Promise<SliderOpenResult> {
     const frame = (() => {
       try {
         // ⚠ Чтение фрейма — ВНУТРИ try: у SDK своя жизнь, и падение на подступах к слайдеру
@@ -60,20 +76,22 @@ export function usePortalSlider() {
         return undefined
       }
     })()
-    if (!frame) return false
+    if (!frame) return { opened: false, reason: 'портал недоступен: приложение открыто не во фрейме' }
 
     // ⚠ Запись ДОЖИДАЕМСЯ, и это не перестраховка: открывшийся фрейм читает условие из портала
     // сразу. Открой мы слайдер раньше, чем портал принял запись, — он прочитал бы условие
     // ПРОШЛОГО нажатия и показал бы чужой список под верным заголовком.
     const nonce = newDrillNonce()
-    if (!await options.writeNow(DRILL_OPTION_KEY, encodeDrillHandoff(nonce, payload))) return false
+    if (!await options.writeNow(DRILL_OPTION_KEY, encodeDrillHandoff(nonce, payload))) {
+      return { opened: false, reason: 'портал не принял условие списка (user.option.set)' }
+    }
 
     // ⚠ Проверка «нас ещё ждут» стоит ЗДЕСЬ, между записью и открытием, а не у вызывающего после
     // возврата. Запись уходит в сеть, и за это время человек успевает нажать другое число: к
     // моменту, когда управление вернулось бы наружу, портал уже открыл бы лишний фрейм. Хуже
     // того, запись второго клика могла лечь раньше первой — и «условие устарело» показал бы
     // слайдер НУЖНОГО нажатия, а лишний открылся бы с данными.
-    if (!stillWanted()) return true
+    if (!stillWanted()) return { opened: true }
 
     try {
       void frame.slider.openSliderAppPage({
@@ -84,9 +102,9 @@ export function usePortalSlider() {
         // то», и её успевают закрыть.
         bx24_title: payload.title
       }).catch(() => undefined)
-      return true
-    } catch {
-      return false
+      return { opened: true }
+    } catch (error) {
+      return { opened: false, reason: `портал отказал в открытии слайдера: ${error instanceof Error ? error.message : String(error)}` }
     }
   }
 
