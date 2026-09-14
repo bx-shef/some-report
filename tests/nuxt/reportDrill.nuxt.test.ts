@@ -121,8 +121,19 @@ describe('ReportDrill', () => {
   it('конец списка показался на экране — просит следующую страницу; дочитанный и читающий молчат', async () => {
     const original = window.IntersectionObserver
     let fire: (() => void) | undefined
+    /**
+     * ⛔ Окно наблюдения запоминаем ОТДЕЛЬНО и проверяем ниже.
+     *
+     * Страница листается ВНУТРИ себя (`h-screen` + `overflow-y-auto`): высоту фрейма слайдера мы
+     * больше не подгоняем под содержимое, иначе настоящий слайдер выглядит модальным окошком.
+     * Значит метка конца списка «показывается» относительно КОНТЕЙНЕРА, а не экрана. Прежний
+     * мок принимал только колбэк — верни кто-нибудь `new IntersectionObserver(callback)` без
+     * второго аргумента, и автоподгрузка молча перестала бы работать при зелёном тесте.
+     */
+    let watched: Element | Document | null | undefined
     window.IntersectionObserver = class {
-      constructor(callback: IntersectionObserverCallback) {
+      constructor(callback: IntersectionObserverCallback, options?: IntersectionObserverInit) {
+        watched = options?.root
         fire = () => callback([{ isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver)
       }
 
@@ -137,6 +148,9 @@ describe('ReportDrill', () => {
     } as unknown as typeof IntersectionObserver
     try {
       const view = await render({ done: false })
+      // Наблюдаем контейнер прокрутки страницы, а не экран, — см. объяснение у мока выше.
+      expect(watched).toBe(view.find('.overflow-y-auto').element)
+      expect((watched as Element).className).toContain('h-screen')
       fire?.()
       expect(view.emitted('more')).toHaveLength(1)
 

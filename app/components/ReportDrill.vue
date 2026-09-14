@@ -104,6 +104,11 @@ watch(sentinel, (el) => {
     if (entries.some(entry => entry.isIntersecting) && !props.pending && !props.done) emit('more')
   // ⚠ Окно наблюдения — КОНТЕЙНЕР прокрутки, а не экран: страница листается внутри себя, и
   // относительно экрана метка конца списка не «показывается» никогда.
+  //
+  // ⚠ `?? null` — не «на всякий случай»: этот вотчер с `flush: 'post'` срабатывает уже после
+  // патча DOM, а контейнер рисуется всегда (метка — нет, она под `v-if`), так что ссылка здесь
+  // заполнена. Запасной путь оставлен затем, что откат на экран НЕ ломает автоподгрузку:
+  // контейнер занимает весь экран, и наблюдатель всё равно учитывает прокрутку предков.
   }, { root: scroller.value ?? null })
   observer.observe(el)
 }, { flush: 'post' })
@@ -123,7 +128,7 @@ onBeforeUnmount(() => observer?.disconnect())
        иначе «показать ещё» не срабатывало бы никогда — метка вне окна прокрутки страницы. -->
   <div
     ref="scroller"
-    class="h-screen overflow-y-auto bg-[color:var(--chart-surface)] p-4"
+    class="h-screen overflow-y-auto overscroll-y-contain bg-[color:var(--chart-surface)] p-4"
   >
     <header class="mb-4">
       <h1 class="text-lg font-semibold">
