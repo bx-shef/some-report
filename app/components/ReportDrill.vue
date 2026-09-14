@@ -88,6 +88,8 @@ const hasAmount = computed(() => isDeal.value || isCall.value)
 const booting = computed(() => props.pending && !props.rows.length)
 
 const sentinel = useTemplateRef<HTMLElement>('sentinel')
+/** Контейнер прокрутки — он же окно наблюдения: страница листается внутри себя, а не в портале. */
+const scroller = useTemplateRef<HTMLElement>('scroller')
 let observer: IntersectionObserver | undefined
 
 // ⚠ Конец списка показался на экране — просим следующую страницу, как это делала панель. Без
@@ -100,7 +102,9 @@ watch(sentinel, (el) => {
   if (!el || typeof IntersectionObserver === 'undefined') return
   observer = new IntersectionObserver((entries) => {
     if (entries.some(entry => entry.isIntersecting) && !props.pending && !props.done) emit('more')
-  })
+  // ⚠ Окно наблюдения — КОНТЕЙНЕР прокрутки, а не экран: страница листается внутри себя, и
+  // относительно экрана метка конца списка не «показывается» никогда.
+  }, { root: scroller.value ?? null })
   observer.observe(el)
 }, { flush: 'post' })
 
@@ -108,12 +112,19 @@ onBeforeUnmount(() => observer?.disconnect())
 </script>
 
 <template>
-  <!-- ⛔ Высота — в ПИКСЕЛЯХ, а не `min-h-screen`. Страница живёт во фрейме слайдера, и фрейму
-       высоту задаём мы сами (`fitWindow` меряет содержимое). С `100vh` это замыкалось само на
-       себя: короткое содержимое — фрейм сжимается — `100vh` становится ещё меньше, и слайдер
-       съезжал в полоску высотой с одну плашку. Ровно так выглядел на боевом отказ чтения:
-       список не открылся, и вместе с ним «сломался» сам слайдер. -->
-  <div class="drill-frame bg-[color:var(--chart-surface)] p-4">
+  <!-- ⛔ Высота — ВЕСЬ ЭКРАН, а прокрутка ВНУТРИ страницы. Фрейм слайдера портал открывает
+       высотой в экран, и подгонять её под содержимое (`fitWindow`) нельзя: короткий список
+       схлопывал окно до размера содержимого, и настоящий слайдер выглядел модальным окошком
+       посреди экрана. На боевом это читалось как «открылся не тот слайдер» — девять сделок
+       давали окно на треть экрана, а сотня лидов — нормальное.
+
+       ⚠ Раз высоту больше не подгоняем, длинный список обязан листаться ЗДЕСЬ: прокрутка живёт
+       на этом контейнере, а не в портале. Наблюдатель конца списка смотрит в него же (`root`),
+       иначе «показать ещё» не срабатывало бы никогда — метка вне окна прокрутки страницы. -->
+  <div
+    ref="scroller"
+    class="h-screen overflow-y-auto bg-[color:var(--chart-surface)] p-4"
+  >
     <header class="mb-4">
       <h1 class="text-lg font-semibold">
         {{ payload.title }}
