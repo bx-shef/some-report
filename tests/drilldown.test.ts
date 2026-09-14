@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ReportDictionaries } from '~/types/report'
-import { activityDrillRow, callDrillRow, crmPath, dealDrillRow, drill, drillListParams, leadDrillRow, ownerSection, plainDealListParams } from '~/utils/drilldown'
+import type { DrillListParams } from '~/utils/drilldown'
+import { activityDrillRow, callDrillRow, crmPath, dealDrillRow, drill, drillListParams, leadDrillRow, localPanelReason, ownerSection, plainDealListParams } from '~/utils/drilldown'
 import { DEFAULT_ID_CHUNK } from '~/utils/filters'
 import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
 import { buildMockDataset } from '~/utils/mockReport'
@@ -155,6 +156,42 @@ describe('drillListParams', () => {
     const params = drillListParams(drill.unlinkedSource('CALL', 'Звонок')!, AUGUST, { assignedById: 562, sourceId: 'EMAIL' }, {})
     expect(params.filter).toEqual({ '>=CLOSEDATE': '2026-08-01', '<CLOSEDATE': '2026-09-01', 'LEAD_ID': '', 'STAGE_SEMANTIC_ID': 'S', 'SOURCE_ID': 'CALL' })
     expect(params.byLeadIds).toBe(false)
+  })
+})
+
+/**
+ * ⛔ Правило одно на все ветки: в слайдер уезжает условие, которое ПОМЕЩАЕТСЯ В ОДИН ЗАПРОС.
+ *
+ * Прежде правило было грубее — «фильтр по полю лида ⇒ панель», — и оно разводило соседние числа
+ * одного экрана: «Квалифицировано в сделку» (лиды) открывалось слайдером, а «Успешные сделки из
+ * лидов» — панелью, потому что сделки под таким фильтром отбираются списком ID лидов. Два разных
+ * окна на двух соседних плитках читались как поломка отчёта.
+ */
+describe('localPanelReason: почему панель, а не слайдер', () => {
+  const params = (patch: Partial<DrillListParams> = {}): DrillListParams => ({
+    method: 'crm.deal.list', select: [], filter: {}, byLeadIds: false, empty: false, ...patch
+  })
+
+  it('условие самодостаточно — причины нет, список открывает слайдер', () => {
+    expect(localPanelReason(params(), 0)).toBeUndefined()
+    // Список ID лидов в ОДИН кусок — такое же обычное условие, как стадия или источник.
+    expect(localPanelReason(params({ byLeadIds: true }), 1)).toBeUndefined()
+  })
+
+  /** ⚠ Ноль кусков — это НЕ «пустое условие»: `LEAD_ID: []` портал не видит и отдал бы всё. */
+  it('лидов под фильтром нет — панель, и причина об этом говорит', () => {
+    expect(localPanelReason(params({ byLeadIds: true }), 0)).toContain('лидов нет')
+  })
+
+  it('лидов больше одного куска — панель: целиком условие в слайдер не помещается', () => {
+    expect(localPanelReason(params({ byLeadIds: true }), 2)).toContain(String(DEFAULT_ID_CHUNK))
+  })
+
+  /** Спор условия числа с фильтром: список пуст по построению, портал не спрашивают. */
+  it('спор с фильтром отчёта объясняется, а не показывается пустотой молча', () => {
+    expect(localPanelReason(params({ empty: true }), 1)).toContain('спорит с выбранным фильтром')
+    // ⚠ Спор ВАЖНЕЕ всего остального: под ним записей нет независимо от того, сколько лидов.
+    expect(localPanelReason(params({ empty: true, byLeadIds: true }), 0)).toContain('спорит')
   })
 })
 

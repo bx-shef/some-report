@@ -293,12 +293,52 @@ describe('useDrilldown', () => {
     expect(d.sliderRefusal.value).toContain('user.option.set')
   })
 
-  /** А штатная панель (условие по списку ID лидов) ничего не объясняет: объяснять нечего. */
-  it('панель по списку ID лидов причины не выдумывает', async () => {
+  /**
+   * ⛔ Список ID лидов, влезающий в ОДИН запрос, уезжает в слайдер как обычное условие.
+   *
+   * Прежде фильтр по полю лида всегда уводил в панель — и соседние плитки одного экрана
+   * открывались по-разному: «Квалифицировано в сделку» (лиды) слайдером, «Успешные сделки из
+   * лидов» (сделки по тем же лидам) панелью. Человек читал это как поломку отчёта.
+   */
+  it('лиды под фильтром влезли в один запрос — список открывает слайдер, а не панель', async () => {
     const d = live({ filteredLeadIds: [1, 2] }, { assignedById: 562 })
     d.show(drill.wonDeals())
-    await vi.waitFor(() => expect(d.open.value).toBe(true))
+    await vi.waitFor(() => expect(portal.sliderPages).toHaveLength(1))
+    expect(d.open.value).toBe(false)
+    expect(portal.calls).toEqual([])
+    expect((portal.sliderPages[0]!.filter as Record<string, unknown>).LEAD_ID).toEqual([1, 2])
     expect(d.sliderRefusal.value).toBeUndefined()
+  })
+
+  /**
+   * ⚠ А когда не влезает — панель, и она НАЗЫВАЕТ причину. Молчаливая подмена окна и была тем,
+   * из-за чего разбирательство «почему не тот слайдер» заняло несколько заходов.
+   */
+  it('лидов больше одного куска — панель, и причина названа', async () => {
+    const d = panel({ filteredLeadIds: Array.from({ length: 600 }, (_, i) => i + 1) }, { assignedById: 562 })
+    d.show(drill.wonDeals())
+    await vi.waitFor(() => expect(d.open.value).toBe(true))
+    expect(portal.sliderPages).toEqual([])
+    expect(d.sliderRefusal.value).toContain('больше 500')
+  })
+
+  /** Лидов под фильтром нет — сделок нет; портал об этом не спрашивают, но и молчать нельзя. */
+  it('лидов под фильтром нет — панель говорит об этом, портал не спрашиваем', async () => {
+    const d = live({ filteredLeadIds: [] }, { assignedById: 562 })
+    d.show(drill.wonDeals())
+    await vi.waitFor(() => expect(d.open.value).toBe(true))
+    expect(portal.sliderPages).toEqual([])
+    expect(portal.calls).toEqual([])
+    expect(d.sliderRefusal.value).toContain('лидов нет')
+  })
+
+  /** Условие числа спорит с фильтром — список пуст по построению, и это тоже объясняется. */
+  it('спор условия с фильтром — панель называет причину, а не показывает пустоту молча', async () => {
+    const d = live({}, { junkReasonId: 'JUNK' })
+    d.show(drill.unprocessed())
+    await vi.waitFor(() => expect(d.open.value).toBe(true))
+    expect(portal.sliderPages).toEqual([])
+    expect(d.sliderRefusal.value).toContain('спорит с выбранным фильтром')
   })
 
   /**
