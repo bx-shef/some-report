@@ -4,6 +4,7 @@ import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
 import { useManagerReport } from '~/composables/useManagerReport'
 import ManagersPage from '~/pages/app/managers.vue'
 import { COMPANY_UNSET } from '~/utils/managerLoad'
+import { asPortalWire } from '../helpers/portalWire'
 
 /**
  * «Сегодня» и текущий месяц вокруг него.
@@ -99,7 +100,7 @@ function dealList(params: Record<string, unknown>) {
 mockNuxtImport('usePortalSlider', () => () => ({
   openDrill: (payload: { title: string }) => {
     portal.sliderTitles.push(payload.title)
-    return true
+    return { opened: true }
   },
   drillPayload: () => undefined
 }))
@@ -162,6 +163,7 @@ mockNuxtImport('useB24', () => () => ({
          */
         callList: {
           make: async ({ method, params }: { method: string, params: Record<string, unknown> }) => {
+            asPortalWire(params)
             if (method !== 'user.get') throw new Error(`неожиданный callList ${method}`)
             portal.userFetches++
             if (portal.usersFail) throw new Error('insufficient_scope')
@@ -174,6 +176,7 @@ mockNuxtImport('useB24', () => () => ({
         },
         call: {
           make: async ({ method, params }: { method: string, params: Record<string, unknown> }) => {
+            asPortalWire(params)
             const ok = (result: unknown) => ({ isSuccess: true, getData: () => ({ result }), getErrorMessages: () => [] })
             if (method === 'crm.category.list') return ok({ categories: portal.categories })
             if (method === 'crm.status.list') return ok(portal.stages)

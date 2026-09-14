@@ -4,6 +4,7 @@ import { mockNuxtImport } from '@nuxt/test-utils/runtime'
 import { useManagerDrilldown } from '~/composables/useManagerDrilldown'
 import type { ManagerFilters } from '~/types/managers'
 import type { ReportDictionaries } from '~/types/report'
+import { asPortalWire } from '../helpers/portalWire'
 
 /**
  * Список сделок за числом матрицы: тем же условием, страницами, со ссылками в CRM.
@@ -30,10 +31,10 @@ mockNuxtImport('usePortalSlider', () => () => ({
   // запись ждут. Сторож `stillWanted` спрашивается между записью и открытием — вытесненный клик
   // портал беспокоить не должен.
   openDrill: async (payload: { title: string, filter: Record<string, unknown> }, stillWanted: () => boolean = () => true) => {
-    if (portal.sliderFails) return false
-    if (!stillWanted()) return true
+    if (portal.sliderFails) return { opened: false, reason: 'портал не принял условие списка (user.option.set)' }
+    if (!stillWanted()) return { opened: true }
     portal.sliderPages.push({ place: 'app-drill', ...payload })
-    return true
+    return { opened: true }
   },
   readDrill: async () => ({ ok: false as const, reason: 'не детализация' }),
   drillRequested: () => false
@@ -56,6 +57,8 @@ mockNuxtImport('useB24', () => () => ({
         call: {
           make: ({ method, params }: { method: string, params: { filter: Record<string, unknown> } }) => {
             portal.calls.push({ method, filter: params.filter })
+            // Как портал: `postMessage` клонирует нагрузку структурно — см. `portalWire`.
+            asPortalWire(params)
             return new Promise((resolve) => {
               portal.pending.push(rows => resolve(rows instanceof Error
                 ? { isSuccess: false, getData: () => undefined, getErrorMessages: () => [rows.message] }

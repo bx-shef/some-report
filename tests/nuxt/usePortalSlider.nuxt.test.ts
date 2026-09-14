@@ -102,7 +102,7 @@ describe('usePortalSlider', () => {
    */
   it('в слайдер уезжает короткий ключ, условие — в user.option', async () => {
     sdk.frame = frame(new Promise(() => {}))
-    expect(await usePortalSlider().openDrill(PAYLOAD)).toBe(true)
+    expect(await usePortalSlider().openDrill(PAYLOAD)).toEqual({ opened: true })
     const params = sdk.calls[0]!
     expect(params.place).toBe(DRILL_SLIDER_PLACE)
     const nonce = String(params[DRILL_PAYLOAD_KEY])
@@ -123,7 +123,7 @@ describe('usePortalSlider', () => {
   it('слайдер не открывается, пока условие не записано', async () => {
     sdk.frame = frame(new Promise(() => {}))
     sdk.writeFails = true
-    expect(await usePortalSlider().openDrill(PAYLOAD)).toBe(false)
+    expect(await usePortalSlider().openDrill(PAYLOAD)).toMatchObject({ opened: false, reason: expect.any(String) })
     expect(sdk.writes).toBe(1)
     expect(sdk.calls).toHaveLength(0)
   })
@@ -135,7 +135,7 @@ describe('usePortalSlider', () => {
    */
   it('вытесненный клик не просит портал открывать слайдер', async () => {
     sdk.frame = frame(new Promise(() => {}))
-    expect(await usePortalSlider().openDrill(PAYLOAD, () => false)).toBe(true)
+    expect(await usePortalSlider().openDrill(PAYLOAD, () => false)).toEqual({ opened: true })
     expect(sdk.calls).toHaveLength(0)
     // Условие при этом записано — второе нажатие его тут же перезапишет своим.
     expect(sdk.writes).toBe(1)
@@ -147,7 +147,7 @@ describe('usePortalSlider', () => {
    */
   it('отказ портала после записи не выбрасывает исключение', async () => {
     sdk.frame = frame(Promise.reject(new Error('слайдер закрыт')))
-    expect(await usePortalSlider().openDrill(PAYLOAD)).toBe(true)
+    expect(await usePortalSlider().openDrill(PAYLOAD)).toEqual({ opened: true })
     await Promise.resolve()
   })
 
@@ -175,7 +175,7 @@ describe('usePortalSlider', () => {
     ['SDK падает синхронно', () => { sdk.throws = true }]
   ])('%s — запасной путь, а не поломка клика', async (_name, prepare) => {
     prepare()
-    expect(await usePortalSlider().openDrill(PAYLOAD)).toBe(false)
+    expect(await usePortalSlider().openDrill(PAYLOAD)).toMatchObject({ opened: false, reason: expect.any(String) })
     expect(sdk.calls).toHaveLength(0)
     // Условие в портал не пишем, раз открывать нечем.
     expect(sdk.writes).toBe(0)

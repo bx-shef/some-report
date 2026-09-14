@@ -79,8 +79,10 @@ async function openDrill(pick: { row: ActivityRow, cell: ActivityCell, total: nu
   }
   const opened = await slider.openDrill(payload, () => mine === drillSeq)
   if (mine !== drillSeq) return
-  if (!opened) {
-    sliderError.value = 'Портал не открыл список. Так бывает в мобильном приложении Битрикс24 — откройте отчёт в браузере.'
+  if (!opened.opened) {
+    // ⚠ Причина от портала дописывается к объяснению, а не заменяет его: человеку нужно, что
+    // делать, а нам — что чинить. Без неё разбирательство шло по скриншотам вслепую.
+    sliderError.value = `Портал не открыл список. Так бывает в мобильном приложении Битрикс24 — откройте отчёт в браузере.${opened.reason ? ` Причина: ${opened.reason}.` : ''}`
   }
 }
 

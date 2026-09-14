@@ -38,7 +38,7 @@ const savedOptions = useUserOptions()
 
 const {
   open: drillOpen, request: drillRequest, rows: drillRows, pending: drillPending,
-  error: drillError, done: drillDone, show: showDrill, loadMore: drillMore, openRow: openDrillRow, cellRequest
+  error: drillError, done: drillDone, sliderRefusal: drillSliderRefusal, show: showDrill, loadMore: drillMore, openRow: openDrillRow, cellRequest
 } = useManagerDrilldown({ filters: appliedFilters, dictionaries })
 
 // Детализацию открывает настоящий слайдер портала — вне фрейма её нет совсем, и числа там
@@ -225,6 +225,7 @@ async function fit() {
           :rows="drillRows"
           :pending="drillPending"
           :error="drillError"
+          :slider-refusal="drillSliderRefusal"
           :done="drillDone"
           @more="drillMore"
           @open-row="openDrillRow"

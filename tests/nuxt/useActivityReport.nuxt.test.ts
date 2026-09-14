@@ -5,6 +5,7 @@ import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
 import ActivityPage from '~/pages/app/activity.vue'
 import { CALL_MAX_PAGES, useActivityReport } from '~/composables/useActivityReport'
 import { NO_USER_LABEL, totalCalls } from '~/utils/activityLoad'
+import { asPortalWire } from '../helpers/portalWire'
 
 /**
  * Выборка отчёта «Активность пользователей» из портала.
@@ -138,6 +139,7 @@ mockNuxtImport('useB24', () => () => ({
         },
         callList: {
           make: async ({ method, params }: { method: string, params: Record<string, unknown> }) => {
+            asPortalWire(params)
             // ⛔ `callList` годится ТОЛЬКО для `user.get`: у `department.get` нет `filter` вовсе,
             // и курсор `>ID` там молча не применится (замер боевого портала).
             if (method !== 'user.get') throw new Error(`callList не для ${method}: курсор уедет в никуда`)
@@ -148,6 +150,7 @@ mockNuxtImport('useB24', () => () => ({
         },
         call: {
           make: async ({ method, params }: { method: string, params: Record<string, unknown> }) => {
+            asPortalWire(params)
             const ok = (result: unknown) => ({ isSuccess: true, getData: () => ({ result }), getErrorMessages: () => [] })
             if (method === 'user.get') throw new Error('user.get одиночным вызовом: сотрудников читает callList')
             if (method === 'user.option.get') return ok(portal.options)

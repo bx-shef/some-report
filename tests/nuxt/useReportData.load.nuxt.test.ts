@@ -4,6 +4,7 @@ import { effectScope } from 'vue'
 import { mockNuxtImport } from '@nuxt/test-utils/runtime'
 import { useReportData } from '~/composables/useReportData'
 import { leadCountKey } from '~/utils/b24Adapter'
+import { asPortalWire } from '../helpers/portalWire'
 
 /**
  * Загрузка живых данных: порядок вызовов и гонка ответов.
@@ -81,6 +82,8 @@ function pagedKey(method: string, filter: Record<string, unknown>): string | und
 
 /** Пустой, но исправный ответ пакета: у каждой команды `getTotal()` и `getData()`. */
 function batchAnswer(commands: Record<string, unknown>) {
+  // ⚠ Как настоящий портал: пакет уезжает через `postMessage` и клонируется СТРУКТУРНО.
+  asPortalWire(commands)
   const data: Record<string, { getTotal: () => number, getData: () => { result: unknown[] } }> = {}
   for (const [key, command] of Object.entries(commands)) {
     const filter = (command as { params?: { filter?: Record<string, unknown> } }).params?.filter
@@ -120,6 +123,8 @@ mockNuxtImport('useB24', () => () => ({
         batch: { make: async ({ calls }: { calls: Record<string, unknown> }) => batchAnswer(calls) },
         call: {
           make: ({ method, params }: { method: string, params: { filter?: Record<string, string> } }) => {
+            // Как портал: нагрузка клонируется структурно — см. `portalWire`.
+            asPortalWire(params)
             // Справка блока 7 — своим курсором по ID (отменяемая выборка), страница за страницей.
             // Курсорные выборки (`start: -1`): справка блока 7, строки лидов и история стадий блока 6.
             const cursor = (params as { start?: number }).start === -1
@@ -211,6 +216,7 @@ mockNuxtImport('useB24', () => () => ({
         },
         callList: {
           make: ({ method, params }: { method: string, params: { filter: Record<string, unknown> } }) => {
+            asPortalWire(params)
             // ⚠ Полная выборка SDK: он листает сам и отдаёт ВСЕ строки одним массивом. Именно
             // так читаются сотрудники — и лиды со сделками ниже.
             if (method === 'user.get') {

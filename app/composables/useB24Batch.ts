@@ -1,3 +1,4 @@
+import { plainParams } from '~/utils/b24Params'
 import { getCurrentScope, onScopeDispose } from 'vue'
 import type { BatchCommand } from '~/utils/b24Query'
 import { hasRateLimit, isRateLimit, RATE_LIMIT_MESSAGE, retryDelayMs } from '~/utils/b24Errors'
@@ -89,6 +90,15 @@ export function useB24Batch() {
    * запрос в тот момент, когда портал уже просит реже.
    */
   async function runChunk<T>(chunk: Record<string, BatchCommand>, budget: { leftMs: number }, retry: boolean) {
+    /**
+     * ⛔ Копия пакета БЕЗ реактивных обёрток — и она делается ОДИН раз, до цикла повторов.
+     *
+     * Команды собираются из отбора на экране, а он реактивен: перечисление (коды стадий,
+     * идентификаторы лидов) приезжает `Proxy`-массивом, и `postMessage` роняет ВЕСЬ пакет — см.
+     * `app/utils/b24Params.ts`. Внутри цикла те же полсотни команд копировались бы заново на
+     * каждой попытке, а между попытками они не меняются.
+     */
+    const calls = plainParams(chunk)
     let lastError: unknown
     for (let attempt = 0; attempt <= RATE_LIMIT_RETRY_DELAYS_MS.length; attempt++) {
       if (attempt > 0) {
@@ -109,7 +119,7 @@ export function useB24Batch() {
       }
       try {
         const result = await b24.getOrThrow().actions.v2.batch.make<T>({
-          calls: chunk,
+          calls,
           options: { isHaltOnError: false, returnAjaxResult: true }
         })
         if (result.isSuccess) return result

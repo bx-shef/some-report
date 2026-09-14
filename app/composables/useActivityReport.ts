@@ -1,3 +1,4 @@
+import { plainParams } from '~/utils/b24Params'
 import { getCurrentScope, onScopeDispose } from 'vue'
 import type {
   ActivityFilters,
@@ -228,7 +229,7 @@ export function useActivityReport(options: { today?: Date } = {}) {
         if (mine !== seq) break
         const result = await b24.getOrThrow().actions.v2.call.make<B24DepartmentRow[]>({
           method: 'department.get',
-          params: { start: page * DEPARTMENT_PAGE_SIZE }
+          params: plainParams({ start: page * DEPARTMENT_PAGE_SIZE })
         })
         if (!result.isSuccess) break
         const payload = result.getData()?.result
@@ -252,7 +253,7 @@ export function useActivityReport(options: { today?: Date } = {}) {
   async function fetchCallTotal(period: ActivityFilters['period']): Promise<number> {
     const result = await b24.getOrThrow().actions.v2.call.make<B24CallRow[]>({
       method: 'voximplant.statistic.get',
-      params: callListParams(period)
+      params: plainParams(callListParams(period))
     })
     if (!result.isSuccess) throw new Error(result.getErrorMessages().join('; '))
     const total = result.getTotal?.()

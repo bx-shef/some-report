@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockNuxtImport, mountSuspended } from '@nuxt/test-utils/runtime'
 import AppPage from '~/pages/app/leads.vue'
 import ReportFilters from '~/components/ReportFilters.vue'
+import { asPortalWire } from '../helpers/portalWire'
 
 /** Библиотеки экспорта подменены: страница обязана отдать снимку САМ корень отчёта. */
 const exportLib = vi.hoisted(() => ({ snapshot: undefined as HTMLElement | undefined }))
@@ -58,7 +59,7 @@ function batchAnswer(commands: Record<string, unknown>) {
 mockNuxtImport('usePortalSlider', () => () => ({
   openDrill: (payload: { title: string }) => {
     portal.sliderTitles.push(payload.title)
-    return true
+    return { opened: true }
   },
   drillPayload: () => undefined
 }))
@@ -81,6 +82,7 @@ mockNuxtImport('useB24', () => () => ({
         },
         call: {
           make: ({ method, params }: { method: string, params: { filter?: Record<string, string>, options?: Record<string, unknown> } }) => {
+            asPortalWire(params)
             if (method === 'user.option.get') {
               return Promise.resolve({ isSuccess: true, getData: () => ({ result: portal.options }), getErrorMessages: () => [] })
             }
@@ -108,6 +110,7 @@ mockNuxtImport('useB24', () => () => ({
         },
         callList: {
           make: ({ method, params }: { method: string, params: { filter: Record<string, string> } }) => {
+            asPortalWire(params)
             // ⚠ Сотрудников тоже читает `callList`. Этой странице их имена не нужны — но ответить
             // ему надо, иначе выборка сотрудников встаёт в очередь выборок отчёта и ломает счёт.
             if (method === 'user.get') return Promise.resolve({ isSuccess: true, getData: () => [], getErrorMessages: () => [] })

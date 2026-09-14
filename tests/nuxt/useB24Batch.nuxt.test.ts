@@ -1,9 +1,10 @@
 // @vitest-environment nuxt
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockNuxtImport } from '@nuxt/test-utils/runtime'
-import { effectScope } from 'vue'
+import { effectScope, reactive } from 'vue'
 import { BATCH_LIMIT, RATE_LIMIT_JITTER, RATE_LIMIT_RETRY_DELAYS_MS, useB24Batch } from '~/composables/useB24Batch'
 import type { BatchCommand } from '~/utils/b24Query'
+import { asPortalWire } from '../helpers/portalWire'
 
 /**
  * Пакетные запросы — общая механика всех отчётов.
@@ -48,6 +49,10 @@ mockNuxtImport('useB24', () => () => ({
       v2: {
         batch: {
           make: async ({ calls }: { calls: Record<string, BatchCommand> }) => {
+            // ⚠ Как настоящий портал: пакет уезжает через `postMessage` и клонируется СТРУКТУРНО.
+            // Это ОБЩИЙ путь всех трёх отчётов, и стенд, берущий команды как есть, щедрее SDK:
+            // сними кто-нибудь очистку в `useB24Batch`, и дефект вернулся бы сразу везде.
+            asPortalWire(calls)
             const keys = Object.keys(calls)
             portal.calls.push(keys)
             if (portal.rateLimitFirstOfEach && !portal.seenChunks.has(keys[0] as string)) {
@@ -341,5 +346,23 @@ describe('общий бюджет ожидания', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  /**
+   * ⛔ Пакет — ОБЩИЙ путь всех трёх отчётов, и условие в его командах собирают те же реактивные
+   * справочники, что и в детализации. Боевой отказ 2026-09-14: `postMessage` клонирует нагрузку
+   * структурно и `Proxy` (реактивность Vue) копировать не умеет — запрос падает целиком с
+   * «Failed to execute 'structuredClone' on 'Window'».
+   *
+   * ⚠ Ловит это стенд: он клонирует пакет так же, как браузер. Сними очистку в `useB24Batch` —
+   * и тест покраснеет здесь, а не на боевом портале заказчика.
+   */
+  it('реактивное условие в команде пакета доезжает до портала, а не роняет запрос', async () => {
+    const stages = reactive(['LOSE', 'C4:APOLOGY'])
+    const { batchTotals } = useB24Batch()
+    await expect(batchTotals({
+      lost: { method: 'crm.deal.list', params: { filter: { STAGE_ID: stages } } }
+    })).resolves.toBeDefined()
+    expect(portal.calls).toEqual([['lost']])
   })
 })

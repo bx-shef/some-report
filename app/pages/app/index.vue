@@ -33,9 +33,23 @@ const inPortal = ref(false)
  */
 const resolved = ref(false)
 /**
+ * Фрейм открыт КАК детализация — признаком, а не вызовом функции из шаблона.
+ *
+ * ⚠ `drillRequested()` не реактивна: позови её прямо в разметке — класс минимальной высоты
+ * пересчитается лишь тогда, когда рендер и так перезапустится по другой причине. Сегодня это
+ * случайно работает (рядом меняется `inPortal`), а уберут соседнюю плашку — и слайдер на экране
+ * «Загрузка…» снова съедет в полоску, причём не воспроизводимо.
+ */
+const drillRequested = ref(false)
+/**
  * Нагрузка слайдера детализации, если фрейм открыт ею. `undefined` — обычное открытие приложения.
  *
  * ⚠ Разбор проверяющий (`drillSlider.ts`): значение приходит от портала, то есть снаружи.
+ *
+ * ⚠ Во фрейме слайдера у экранов этой страницы есть МИНИМАЛЬНАЯ высота в пикселях. Высоту фрейма
+ * задаём мы сами (`fitWindow` меряет содержимое), и короткий экран — «Загрузка…» или плашка
+ * отказа — сжимал слайдер в полоску в две строки. На боевом это выглядело так, будто вместе со
+ * списком сломался и сам слайдер.
  */
 const drill = ref<DrillSliderPayload | undefined>(undefined)
 /**
@@ -71,6 +85,7 @@ onMounted(async () => {
   // ⚠ Признак «это фрейм детализации» читается ДО await: за время чтения условия из портала
   // страница не должна успеть показать оглавление тому, кто ждёт список.
   const requested = slider.drillRequested()
+  drillRequested.value = requested
   drillBroken.value = requested
   const read = await slider.readDrill()
   drill.value = read.ok ? read.payload : undefined
@@ -130,6 +145,7 @@ async function openRow(row: DrillRow): Promise<void> {
   <main
     v-else-if="!resolved"
     class="mx-auto max-w-4xl p-3 sm:p-4 lg:p-6"
+    :class="{ 'drill-frame': drillRequested }"
   >
     <p class="text-sm opacity-70">
       Загрузка…
@@ -138,7 +154,7 @@ async function openRow(row: DrillRow): Promise<void> {
 
   <main
     v-else-if="drillBroken"
-    class="mx-auto max-w-4xl p-3 sm:p-4 lg:p-6"
+    class="mx-auto drill-frame max-w-4xl p-3 sm:p-4 lg:p-6"
   >
     <B24Alert
       color="air-primary-alert"
