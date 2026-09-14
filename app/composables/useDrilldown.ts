@@ -9,7 +9,8 @@ import {
   type DrillRow,
   dealDrillRow,
   drillListParams,
-  leadDrillRow
+  leadDrillRow,
+  localPanelReason
 } from '~/utils/drilldown'
 import { chunkIds } from '~/utils/filters'
 import { MAX_STAGE_NAMES } from '~/utils/drillSlider'
@@ -40,9 +41,10 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
   /**
    * Почему список показывает ПАНЕЛЬ, а не настоящий слайдер портала.
    *
-   * ⚠ Человек видит разницу сразу — окно другое, — и молчаливый отказ читается как поломка
-   * отчёта. `undefined` значит «так и задумано»: условие по списку ID лидов одним фильтром не
-   * выражается, и панель здесь штатный путь, объяснять нечего.
+   * ⚠ Человек видит разницу сразу — окно другое, — и молчаливая подмена читается как поломка
+   * отчёта. Поэтому причина есть у КАЖДОЙ поднятой панели: либо наша (`localPanelReason` —
+   * условие не помещается в один запрос), либо портала (отказ на записи или открытии).
+   * `undefined` тут значит только одно: панель не поднималась, список открыл слайдер.
    */
   const sliderRefusal = ref<string | undefined>(undefined)
 
@@ -139,13 +141,17 @@ export function useDrilldown(input: { dataset: Ref<ReportDataset>, filters: Ref<
     chunks = params.byLeadIds ? chunkIds(dataset.value.filteredLeadIds ?? []) : []
     chunkIndex = 0
     afterId = 0
-    // Случай 2: условие живёт не только в фильтре — слайдеру его не передать.
-    if (!params.byLeadIds && !params.empty) {
+    // Случай 2: условие мы сами отдать слайдеру не можем — и ПОЧЕМУ, говорим человеку.
+    sliderRefusal.value = localPanelReason(params, chunks.length)
+    if (!sliderRefusal.value) {
       const stageNames = next.entity === 'deal' ? stageNamesFor(params.filter) : undefined
       const asked = await slider.openDrill({
         entity: next.entity,
         title: next.title,
-        filter: params.filter,
+        // ⛔ Список ID лидов, влезающий в ОДИН кусок, — обычное условие, и слайдер его принимает.
+        // Прежде такой список всегда уводил в панель, и соседние плитки одного экрана открывались
+        // по-разному: «Квалифицировано в сделку» слайдером, «Успешные сделки из лидов» панелью.
+        filter: params.byLeadIds ? { ...params.filter, LEAD_ID: chunks[0]! } : params.filter,
         ...(next.dealScope === undefined ? {} : { dealScope: next.dealScope }),
         ...(stageNames === undefined ? {} : { stageNames }),
         ...(next.sourceName === undefined ? {} : { sourceName: next.sourceName }),
