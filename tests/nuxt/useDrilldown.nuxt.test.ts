@@ -315,7 +315,9 @@ describe('useDrilldown', () => {
    * из-за чего разбирательство «почему не тот слайдер» заняло несколько заходов.
    */
   it('лидов больше одного куска — панель, и причина названа', async () => {
-    const d = panel({ filteredLeadIds: Array.from({ length: 600 }, (_, i) => i + 1) }, { assignedById: 562 })
+    // ⚠ Слайдер здесь ИСПРАВЕН (`live`, а не `panel`): проверяем, что его не зовут ВОВСЕ, а не
+    // что он отказал. С форсированным отказом тест не различал бы эти два механизма.
+    const d = live({ filteredLeadIds: Array.from({ length: 600 }, (_, i) => i + 1) }, { assignedById: 562 })
     d.show(drill.wonDeals())
     await vi.waitFor(() => expect(d.open.value).toBe(true))
     expect(portal.sliderPages).toEqual([])
