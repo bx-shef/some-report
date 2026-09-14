@@ -113,7 +113,7 @@ onBeforeUnmount(() => observer?.disconnect())
        себя: короткое содержимое — фрейм сжимается — `100vh` становится ещё меньше, и слайдер
        съезжал в полоску высотой с одну плашку. Ровно так выглядел на боевом отказ чтения:
        список не открылся, и вместе с ним «сломался» сам слайдер. -->
-  <div class="min-h-[600px] bg-[color:var(--chart-surface)] p-4">
+  <div class="drill-frame bg-[color:var(--chart-surface)] p-4">
     <header class="mb-4">
       <h1 class="text-lg font-semibold">
         {{ payload.title }}

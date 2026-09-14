@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mockNuxtImport } from '@nuxt/test-utils/runtime'
 import { useUserOptions } from '~/composables/useUserOptions'
+import { asPortalWire } from '../helpers/portalWire'
 
 /**
  * Настройки отчёта, запомненные порталом за человеком.
@@ -31,6 +32,7 @@ mockNuxtImport('useB24', () => () => ({
       v2: {
         call: {
           make: async ({ method, params }: { method: string, params: Record<string, unknown> }) => {
+            asPortalWire(params)
             portal.calls.push({ method, params })
             if (portal.throws) throw new Error('слишком часто')
             if (portal.fails) return { isSuccess: false, getData: () => undefined, getErrorMessages: () => ['отказ'] }

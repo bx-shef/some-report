@@ -34,6 +34,14 @@ export function useManagerDrilldown(input: {
   const pending = ref(false)
   const error = ref<string | undefined>(undefined)
   const done = ref(false)
+  /**
+   * Почему список показывает ПАНЕЛЬ, а не настоящий слайдер портала.
+   *
+   * ⚠ У этого отчёта панель — ТОЛЬКО запасной путь: условие клетки матрицы выражается одним
+   * фильтром целиком, штатной причины открыть её нет. Значит любая подмена окна здесь означает
+   * отказ портала, и молчать о нём нельзя — окно другое, и это читается как поломка отчёта.
+   */
+  const sliderRefusal = ref<string | undefined>(undefined)
 
   /** Номер открытого списка: ответ закрытого или сменённого списка выбрасывается. */
   let seq = 0
@@ -81,6 +89,9 @@ export function useManagerDrilldown(input: {
     }, () => mine === seq)
     // ⚠ Пока ждали запись, могли нажать другое число: тогда эта панель уже не наша.
     if (mine !== seq) return
+    // ⚠ Причину отказа НАЗЫВАЕМ, как и в отчёте по лидам. Здесь она осмысленна ВСЕГДА: панель у
+    // этого отчёта поднимается только по отказу портала, штатного пути к ней нет.
+    sliderRefusal.value = asked.reason
     if (asked.opened) {
       // Панель прошлого клика гаснет: иначе она осталась бы под слайдером с чужим заголовком.
       open.value = false
@@ -151,5 +162,5 @@ export function useManagerDrilldown(input: {
     }
   }
 
-  return { open, request, rows, pending, error, done, show, loadMore: () => loadMore(), openRow, cellRequest }
+  return { open, request, rows, pending, error, done, sliderRefusal, show, loadMore: () => loadMore(), openRow, cellRequest }
 }
