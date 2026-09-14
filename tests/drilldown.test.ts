@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ReportDictionaries } from '~/types/report'
 import type { DrillListParams } from '~/utils/drilldown'
 import { activityDrillRow, callDrillRow, crmPath, dealDrillRow, drill, drillListParams, leadDrillRow, localPanelReason, ownerSection, plainDealListParams } from '~/utils/drilldown'
-import { DEFAULT_ID_CHUNK } from '~/utils/filters'
+import { DEFAULT_ID_CHUNK, chunkIds } from '~/utils/filters'
 import { UNSPECIFIED_REASON, UNSPECIFIED_SOURCE } from '~/utils/metrics'
 import { buildMockDataset } from '~/utils/mockReport'
 
@@ -185,6 +185,23 @@ describe('localPanelReason: почему панель, а не слайдер', 
 
   it('лидов больше одного куска — панель: целиком условие в слайдер не помещается', () => {
     expect(localPanelReason(params({ byLeadIds: true }), 2)).toContain(String(DEFAULT_ID_CHUNK))
+  })
+
+  /**
+   * ⛔ Граница проверяется НАСТОЯЩИМ разбиением, а не числом-заглушкой.
+   *
+   * Ровно `DEFAULT_ID_CHUNK` лидов — это ещё один кусок, и условие уезжает в слайдер целиком.
+   * Один лишний — уже два, и отправить первый кусок значило бы показать список УЖЕ числа, по
+   * которому нажали. Между этими двумя случаями и проходит всё правило; проверь мы его на 2 и 600
+   * (как было), сдвиг границы на единицу остался бы незамеченным.
+   */
+  it('граница ровно на DEFAULT_ID_CHUNK: 500 лидов — слайдер, 501 — панель', () => {
+    const ids = (count: number) => Array.from({ length: count }, (_, i) => i + 1)
+    expect(chunkIds(ids(DEFAULT_ID_CHUNK))).toHaveLength(1)
+    expect(localPanelReason(params({ byLeadIds: true }), chunkIds(ids(DEFAULT_ID_CHUNK)).length)).toBeUndefined()
+
+    expect(chunkIds(ids(DEFAULT_ID_CHUNK + 1))).toHaveLength(2)
+    expect(localPanelReason(params({ byLeadIds: true }), chunkIds(ids(DEFAULT_ID_CHUNK + 1)).length)).toContain(String(DEFAULT_ID_CHUNK))
   })
 
   /** Спор условия числа с фильтром: список пуст по построению, портал не спрашивают. */
