@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { formatDate } from '~/utils/format'
-import { LOCK_RELEASE_SECONDS, secondsLabel, type PaymentLockStage } from '~/utils/paymentLock'
+import { lockProgressPercent, secondsLabel, type PaymentLockStage } from '~/utils/paymentLock'
 
 /**
  * Экран блокировки приложения при неподписанных актах.
  *
  * Два лица одного экрана: `soft` — напоминание с отсчётом, которое само пропускает дальше;
  * `hard` — отказ без отсчёта. Решает, какое показать, не этот компонент: сюда приезжает готовая
- * стадия (`usePaymentLock`), а здесь только рисование. Формул на экране нет — ни одной.
+ * стадия (`usePaymentLock`), а здесь только рисование: даже доля полосы отсчёта считается снаружи,
+ * чистой функцией под тестом.
  *
  * ⛔ Высота НЕ подгоняется под содержимое и НЕ задаётся в `vh`. Это не вкусовщина, а уже
  * оплаченный урок: `fitWindow` меряет содержимое и схлопывает фрейм, а `100vh` внутри фрейма
@@ -33,8 +34,12 @@ const soft = computed(() => props.stage === 'soft')
  * ⚠ Полоса нужна не для красоты: двадцать секунд без видимого движения читаются как «зависло», и
  * человек жмёт F5 — то есть начинает отсчёт заново и злится. Движущаяся полоса говорит «идёт», а
  * не «сломалось».
+ *
+ * ⚠ Сама доля считается в `app/utils/paymentLock.ts`, а не здесь. Сначала она была написана прямо
+ * в этом файле — и это ровно тот дефект, который проект называет дефектом: формула в компоненте не
+ * покрыта тестом. Заметила её проверка PR, а не я.
  */
-const progress = computed(() => Math.round(Math.min(1, Math.max(0, props.remaining / LOCK_RELEASE_SECONDS)) * 100))
+const progress = computed(() => lockProgressPercent(props.remaining))
 </script>
 
 <template>

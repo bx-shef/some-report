@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+  LOCK_RELEASE_SECONDS,
   effectiveStage,
+  lockProgressPercent,
+  lockStageFor,
   lockAppliesTo,
   localDayKey,
   parseLockOverride,
@@ -212,5 +215,49 @@ describe('secondsLabel: склонения на отсчёте', () => {
     expect(secondsLabel(11)).toBe('11 секунд')
     expect(secondsLabel(12)).toBe('12 секунд')
     expect(secondsLabel(14)).toBe('14 секунд')
+  })
+})
+
+describe('lockStageFor: расписание, часы и обход вместе', () => {
+  const schedule = { softFrom: '2026-09-17', hardFrom: '2026-09-21' }
+
+  /** ⚠ Часы приходят параметром: функция остаётся чистой, а день считается по местному календарю. */
+  it('считает стадию по местному дню', () => {
+    expect(lockStageFor(new Date(2026, 8, 16, 12), schedule, undefined)).toBe('none')
+    expect(lockStageFor(new Date(2026, 8, 17, 0, 1), schedule, undefined)).toBe('soft')
+    expect(lockStageFor(new Date(2026, 8, 21, 0, 1), schedule, undefined)).toBe('hard')
+  })
+
+  /** ⛔ Та же гарантия, что у `effectiveStage`, но на живом стыке: обход только повышает. */
+  it('обход повышает, но не понижает', () => {
+    expect(lockStageFor(new Date(2026, 8, 16, 12), schedule, 'hard')).toBe('hard')
+    expect(lockStageFor(new Date(2026, 8, 21, 12), schedule, 'soft')).toBe('hard')
+    // ⚠ Роутер отдаёт повторённый параметр массивом — разбирается тем же путём.
+    expect(lockStageFor(new Date(2026, 8, 16, 12), schedule, ['soft', 'hard'])).toBe('hard')
+    expect(lockStageFor(new Date(2026, 8, 16, 12), schedule, 'none')).toBe('none')
+  })
+})
+
+describe('lockProgressPercent: полоса отсчёта', () => {
+  /**
+   * ⚠ Функция живёт в ядре, а не в шаблоне экрана, потому что сначала была написана именно там —
+   * и это ровно тот дефект, который проект называет дефектом: формула в компоненте не покрыта
+   * тестом. Нашла её проверка PR, а не автор.
+   */
+  it('полная полоса в начале и пустая в конце', () => {
+    expect(lockProgressPercent(LOCK_RELEASE_SECONDS)).toBe(100)
+    expect(lockProgressPercent(LOCK_RELEASE_SECONDS / 2)).toBe(50)
+    expect(lockProgressPercent(0)).toBe(0)
+  })
+
+  /**
+   * ⛔ Клэмп не «на всякий случай»: `remaining` приходит из таймера, и такт, пришедший после
+   * снятия блокировки, дал бы отрицательную ширину — то есть полосу, уехавшую за край карточки.
+   */
+  it('значения за границами не уводят полосу за край', () => {
+    expect(lockProgressPercent(-5)).toBe(0)
+    expect(lockProgressPercent(LOCK_RELEASE_SECONDS * 3)).toBe(100)
+    expect(lockProgressPercent(Number.NaN)).toBe(0)
+    expect(lockProgressPercent(10, 0)).toBe(0)
   })
 })

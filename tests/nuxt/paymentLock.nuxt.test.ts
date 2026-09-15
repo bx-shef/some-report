@@ -1,9 +1,9 @@
 // @vitest-environment nuxt
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mockNuxtImport, mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
+import { mountSuspended, registerEndpoint } from '@nuxt/test-utils/runtime'
 import { defineComponent, h } from 'vue'
 import PaymentLockScreen from '~/components/PaymentLockScreen.vue'
-import { usePaymentLock } from '~/composables/usePaymentLock'
+import { resolvePaymentLock, usePaymentLock, usePaymentLockHardFrom, usePaymentLockReleased, usePaymentLockResolved, usePaymentLockStage } from '~/composables/usePaymentLock'
 import { LOCK_RELEASE_SECONDS } from '~/utils/paymentLock'
 
 /**
@@ -18,28 +18,66 @@ const PAST = '2020-01-01'
 const FAR_FUTURE = '2999-01-01'
 
 const portal = vi.hoisted(() => ({
-  /** Путь и строка запроса текущей страницы. */
-  route: { path: '/app/leads', query: {} as Record<string, unknown> },
+  /** Путь и значение `?lock` — ровно то, что отдаёт роутер. */
+  pathname: '/app/leads',
+  lockParam: undefined as unknown,
   /** Что отвечает сервер на запрос настроек. `null` — отвечает отказом. */
   config: null as Record<string, string> | null,
   /** Сколько раз у сервера вообще спросили настройки. */
   asked: 0
 }))
 
-mockNuxtImport('useRoute', () => () => portal.route)
-
 registerEndpoint('/payment-lock.json', () => {
   portal.asked++
-  // ⚠ Отказ сервера обязан проверяться настоящим отказом, а не пустым ответом: это разные ветки,
-  // и «блокировки нет» должно получаться в обеих.
+  // ⚠ Отказ сервера проверяется настоящим отказом, а не пустым ответом: это разные ветки, и
+  // «блокировки нет» должно получаться в обеих.
   if (!portal.config) throw new Error('сервер настроек недоступен')
   return portal.config
 })
 
-/** Хозяин композабла: в приложении его зовёт `app.vue`, здесь — этот компонент. */
-const Host = defineComponent({
+/**
+ * Обещание решения — чтобы тесту не приходилось гадать, когда сервер ответил.
+ *
+ * ⚠ Ожидание здесь дважды оказывалось ложной проверкой: сначала ждали появления атрибута (он
+ * нарисован с первого кадра), потом крутили `nextTick` (ответ `$fetch` доезжает МАКРОзадачей).
+ * Оба раза тесты видели состояние ДО ответа и зеленели во всех ветках сразу. Теперь ждать нечего:
+ * берём то самое обещание, которое возвращает `resolvePaymentLock`.
+ */
+let decided: Promise<void>
+
+/**
+ * Снимок общего состояния «отсчёт отсижен», взятый ВНУТРИ приложения.
+ *
+ * ⚠ Нужен ровно для одной проверки — что размонтированный отсчёт больше ничего не трогает.
+ * Проверять это счётчиком таймеров нельзя: он считает и чужие (например, таймаут запроса), и
+ * покраснел бы от постороннего.
+ */
+let releasedOutside: Ref<boolean>
+
+/**
+ * Приложение — в точности как `app/app.vue`: состояние читается СИНХРОННО в setup, а решение
+ * принимается в `onMounted`, уже после монтирования.
+ *
+ * ⚠ Синхронность setup здесь принципиальна, и это не стиль стенда. Хуки, зарегистрированные после
+ * `await` в асинхронном setup, не цепляются ни за что: редакция, звавшая композабл после
+ * ожидания, оставляла `onScopeDispose` без области видимости — таймер не снимался, и тест
+ * «размонтирование останавливает отсчёт» краснел, обвиняя исправный код.
+ */
+const App = defineComponent({
   setup() {
-    const lock = usePaymentLock()
+    // ⚠ Состояние блокировки живёт в `useState`, то есть переживает размонтирование и утекло бы из
+    // теста в тест: вторая проверка видела бы решение первой. Чистим ТОЧЕЧНО, свои три ключа:
+    // `clearNuxtState()` стирает и чужое — на нём падал плагин темы b24ui, и падал не в тесте
+    // блокировки, а где-то рядом, необъяснимо.
+    usePaymentLockStage().value = 'none'
+    usePaymentLockHardFrom().value = undefined
+    usePaymentLockResolved().value = false
+    usePaymentLockReleased().value = false
+    releasedOutside = usePaymentLockReleased()
+    const lock = usePaymentLock(portal.pathname)
+    onMounted(() => {
+      decided = resolvePaymentLock(portal.pathname, portal.lockParam)
+    })
     return () => h('div', { 'data-stage': lock.stage.value, 'data-blocking': String(lock.blocking.value) }, [
       h('span', { 'data-testid': 'remaining' }, String(lock.remaining.value)),
       h('span', { 'data-testid': 'hard-from' }, lock.hardFrom.value ?? '')
@@ -48,31 +86,33 @@ const Host = defineComponent({
 })
 
 /**
- * Смонтировать хозяина и ДОЖДАТЬСЯ, пока настройки доедут и превратятся в стадию.
+ * Смонтированные приложения — чтобы убрать их за собой.
  *
- * ⚠ Ожидание здесь дважды переписывалось, и оба прежних варианта были ложными проверками.
- * Первый ждал появления атрибута — а он нарисован с первого кадра, так что ожидание кончалось
- * мгновенно. Второй крутил `nextTick` — а ответ `$fetch` доезжает МАКРОзадачей, и `nextTick`,
- * который крутит только микрозадачи, её не дожидается: проба показала шесть тактов подряд со
- * стадией ДО ответа. Отсюда уступка такта планировщику, а не ещё десяток `nextTick`.
+ * ⛔ Не гигиена ради гигиены. Состояние блокировки общее (`useState`), а отсчёт живёт в таймере:
+ * приложение, оставшееся смонтированным после своего теста, продолжает тикать и снимает блокировку
+ * СОСЕДНЕМУ тесту. Именно так и случилось — проверка «размонтирование останавливает отсчёт» падала
+ * от чужого таймера при совершенно исправном коде.
  */
-async function mountLock(expected: 'none' | 'soft' | 'hard') {
-  const wrapper = await mountSuspended(Host)
-  if (portal.route.path.startsWith('/app')) {
-    await vi.waitFor(() => expect(portal.asked).toBeGreaterThan(0))
-    await new Promise(resolve => setTimeout(resolve, 25))
-  }
-  await vi.waitFor(() => expect(wrapper.attributes('data-stage')).toBe(expected))
+const mounted: { unmount: () => void }[] = []
+
+/** Смонтировать приложение и дождаться решения — ровно того же обещания, что и в бою. */
+async function mountApp() {
+  const wrapper = await mountSuspended(App)
+  mounted.push(wrapper)
+  await decided
+  await nextTick()
   return wrapper
 }
 
 beforeEach(() => {
-  portal.route = { path: '/app/leads', query: {} }
+  portal.pathname = '/app/leads'
+  portal.lockParam = undefined
   portal.config = null
   portal.asked = 0
 })
 
 afterEach(() => {
+  while (mounted.length) mounted.pop()!.unmount()
   vi.useRealTimers()
 })
 
@@ -81,8 +121,9 @@ describe('расписание приезжает с сервера', () => {
   it('мягкая стадия держит экран и снимается через положенные секунды', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     portal.config = { softFrom: PAST, hardFrom: FAR_FUTURE, off: '' }
-    const wrapper = await mountLock('soft')
+    const wrapper = await mountApp()
 
+    expect(wrapper.attributes('data-stage')).toBe('soft')
     expect(wrapper.attributes('data-blocking')).toBe('true')
     expect(wrapper.get('[data-testid="hard-from"]').text()).toBe(FAR_FUTURE)
 
@@ -95,31 +136,64 @@ describe('расписание приезжает с сервера', () => {
   it('жёсткая стадия не снимается со временем', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     portal.config = { softFrom: PAST, hardFrom: PAST, off: '' }
-    const wrapper = await mountLock('hard')
+    const wrapper = await mountApp()
 
+    expect(wrapper.attributes('data-stage')).toBe('hard')
     await vi.advanceTimersByTimeAsync(5 * 60 * 1000)
     await nextTick()
     expect(wrapper.attributes('data-blocking')).toBe('true')
   })
 
+  /**
+   * ⛔ Таймер обязан сниматься вместе с компонентом.
+   *
+   * `onScopeDispose` регистрируется СИНХРОННО, в setup: внутри асинхронного хука он вызвался бы
+   * уже после первого `await`, когда активной области видимости эффектов нет, и не зацепился бы ни
+   * за что. Прежде единственным следом этого была строка предупреждения в выводе теста — то есть
+   * сторожила дефект внимательность читающего вывод, а не проверка.
+   */
+  it('размонтирование останавливает отсчёт, а не оставляет его тикать', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    portal.config = { softFrom: PAST, hardFrom: FAR_FUTURE, off: '' }
+    const wrapper = await mountApp()
+    expect(wrapper.attributes('data-stage')).toBe('soft')
+    expect(releasedOutside.value).toBe(false)
+
+    wrapper.unmount()
+    await vi.advanceTimersByTimeAsync(LOCK_RELEASE_SECONDS * 1000 + 600)
+    // ⚠ Проверяется ПОСЛЕДСТВИЕ, а не наличие таймера: уцелевший отсчёт снял бы общую блокировку
+    // у уже закрытой страницы — то есть пустил бы в портал того, кого экран держать обязан.
+    expect(releasedOutside.value).toBe(false)
+  })
+
   it('рубильник снимает блокировку при живых датах', async () => {
     portal.config = { softFrom: PAST, hardFrom: PAST, off: '1' }
-    await mountLock('none')
+    expect((await mountApp()).attributes('data-stage')).toBe('none')
   })
 
   /**
    * ⛔ Отказ сервера уводит В СТОРОНУ РАБОТАЮЩЕГО отчёта. Запереть оплатившего клиента из-за своей
    * же неполадки хуже, чем не показать напоминание: напоминание вернётся завтра, рабочий день — нет.
+   *
+   * ⚠ С обходом `?lock=hard`, и это НЕ украшение сценария. Прежде тест ждал стадию `none` — то
+   * есть ровно то значение, с которого стадия и начинается. Проверка тестов PR саботировала код,
+   * убрав `try/catch` вокруг запроса: исключение обрывало выполнение ДО присвоения стадии, стадия
+   * оставалась `none`, и все тесты файла остались зелёными. Теперь после отказа код обязан ДОЙТИ
+   * до присвоения — иначе `hard` не появится, и тест покраснеет по-настоящему.
    */
-  it('сервер не ответил — приложение работает', async () => {
+  it('сервер не ответил — приложение работает, а решение всё равно принимается', async () => {
     portal.config = null
-    await mountLock('none')
+    portal.lockParam = 'hard'
+    const wrapper = await mountApp()
     expect(portal.asked).toBeGreaterThan(0)
+    expect(wrapper.attributes('data-stage')).toBe('hard')
   })
 
   it('пустые настройки — это «блокировки нет»', async () => {
     portal.config = { softFrom: '', hardFrom: '', off: '' }
-    await mountLock('none')
+    const wrapper = await mountApp()
+    expect(portal.asked).toBeGreaterThan(0)
+    expect(wrapper.attributes('data-stage')).toBe('none')
   })
 })
 
@@ -130,18 +204,25 @@ describe('область действия и обход из адреса', () =
    * числе снимать саму блокировку.
    */
   it('на установщике настроек не спрашивают вовсе', async () => {
-    portal.route = { path: '/install', query: {} }
+    portal.pathname = '/install'
     portal.config = { softFrom: PAST, hardFrom: PAST, off: '' }
-    const wrapper = await mountLock('none')
+    const wrapper = await mountApp()
     expect(portal.asked).toBe(0)
     expect(wrapper.attributes('data-blocking')).toBe('false')
   })
 
-  /** Ради этого обход и заведён: посмотреть экран до наступления даты. */
-  it('?lock=hard показывает экран при пустом расписании', async () => {
-    portal.route = { path: '/app/leads', query: { lock: 'hard' } }
+  /**
+   * Ради этого обход и заведён: посмотреть экран до наступления даты.
+   *
+   * ⚠ Заодно проверяется, что срок НЕ ВЫДУМЫВАЕТСЯ. Обход поднимает стадию, но даты на сервере
+   * нет — значит экран обязан промолчать про срок, а не подставить что-нибудь правдоподобное.
+   */
+  it('?lock=hard показывает экран при пустом расписании и не выдумывает срок', async () => {
+    portal.lockParam = 'hard'
     portal.config = { softFrom: '', hardFrom: '', off: '' }
-    await mountLock('hard')
+    const wrapper = await mountApp()
+    expect(wrapper.attributes('data-stage')).toBe('hard')
+    expect(wrapper.get('[data-testid="hard-from"]').text()).toBe('')
   })
 
   /**
@@ -149,9 +230,9 @@ describe('область действия и обход из адреса', () =
    * понижает её до отсчёта. Иначе ссылка из адресной строки стала бы ключом от блокировки.
    */
   it('?lock=soft не понижает жёсткую блокировку', async () => {
-    portal.route = { path: '/app/leads', query: { lock: 'soft' } }
+    portal.lockParam = 'soft'
     portal.config = { softFrom: PAST, hardFrom: PAST, off: '' }
-    await mountLock('hard')
+    expect((await mountApp()).attributes('data-stage')).toBe('hard')
   })
 })
 
