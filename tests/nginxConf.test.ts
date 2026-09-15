@@ -85,12 +85,61 @@ describe('Dockerfile', () => {
     expect(value.trim().length).toBeGreaterThan(20)
   })
 
-  // ⚠ Без фильтра энтрипойнт подставляет в шаблон ВСЕ переменные окружения, а конфиг полон
-  // собственных `$uri` и `$host`: совпадение имён молча сломало бы конфиг.
   // ⚠ Ищем ДИРЕКТИВУ в начале строки, а не подстроку: закомментированная `# ENV …` содержит тот же
   // текст, а рантайм-подстановка при этом сломана — и подставлялись бы ВСЕ переменные окружения.
-  it('ограничивает подстановку одной переменной, с якорями', () => {
-    expect(dockerfile).toMatch(/^ENV NGINX_ENVSUBST_FILTER="\^B24_PORTAL_ORIGINS\$"$/m)
+  const envsubstFilter = /^ENV NGINX_ENVSUBST_FILTER="([^"]+)"$/m.exec(dockerfile)?.[1] ?? ''
+
+  it('фильтр подстановки вообще задан', () => {
+    expect(envsubstFilter).not.toBe('')
+  })
+
+  /**
+   * ⛔ Главная проверка фильтра, и она НЕ про конкретные имена. Список обязан покрывать КАЖДЫЙ
+   * `${…}` конфига: забытая переменная не роняет nginx и не пишет в лог — она доезжает до браузера
+   * текстом. `{"softFrom":"${PAYMENT_LOCK_SOFT_FROM}"}` разберётся как негодная настройка, и
+   * блокировка молча не включится, а список порталов текстом даст пустую область вместо отчёта.
+   *
+   * Проверка написана от КОНФИГА, а не от списка имён: добавится переменная — тест покраснеет сам,
+   * без правки здесь.
+   */
+  it('подставляет каждую переменную, которая есть в конфиге', () => {
+    const used = [...conf.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map(match => match[1]!)
+    expect(used.length).toBeGreaterThan(0)
+    const filter = new RegExp(envsubstFilter)
+    for (const name of new Set(used)) expect(filter.test(name)).toBe(true)
+  })
+
+  /**
+   * ⚠ И обратная сторона: фильтр не должен пускать СВОИ переменные nginx. Конфиг полон `$uri`,
+   * `$host`, `$request_uri`, и подстановка одноимённой переменной окружения молча съела бы их —
+   * `error_page 405 =200 $uri` превратился бы в `error_page 405 =200`, то есть портал снова увидел
+   * бы пустоту вместо отчёта.
+   */
+  it('не пускает под подстановку собственные переменные nginx', () => {
+    const filter = new RegExp(envsubstFilter)
+    for (const name of ['uri', 'host', 'request_uri', 'args', 'scheme', 'document_root']) {
+      expect(filter.test(name)).toBe(false)
+    }
+  })
+
+  /**
+   * ⚠ Якоря обязательны: без них под `B24_PORTAL_ORIGINS` попала бы и `SOMETHING_B24_PORTAL_ORIGINS_X`
+   * из окружения сервера — то есть подстановку задавал бы кто угодно, кроме нас.
+   */
+  it('фильтр заякорен с обоих концов', () => {
+    expect(envsubstFilter.startsWith('^')).toBe(true)
+    expect(envsubstFilter.endsWith('$')).toBe(true)
+  })
+
+  /**
+   * ⚠ Переменные блокировки в ОБРАЗЕ обязаны быть пустыми: даты живут только в `.env` сервера.
+   * Значение по умолчанию в Dockerfile означало бы, что блокировка уехала в репозиторий — а его
+   * видит заказчик.
+   */
+  it('даты блокировки в образе пустые — они задаются только на сервере', () => {
+    for (const name of ['PAYMENT_LOCK_SOFT_FROM', 'PAYMENT_LOCK_HARD_FROM', 'PAYMENT_LOCK_OFF']) {
+      expect(dockerfile).toMatch(new RegExp(`^ENV ${name}=""$`, 'm'))
+    }
   })
 
   it('кладёт конфиг шаблоном, чтобы подстановка случилась при старте', () => {
@@ -140,5 +189,40 @@ describe('validate-portal-origins.sh', () => {
     ['точка с запятой', 'https://a.example;']
   ])('отвергает: %s', (_name, value) => {
     expect(run(value).status).not.toBe(0)
+  })
+})
+
+describe('validate-payment-lock.sh', () => {
+  const script = join(import.meta.dirname, '..', 'deploy', 'validate-payment-lock.sh')
+  const run = (env: Record<string, string>) => spawnSync('sh', [script], {
+    env: { ...process.env, PAYMENT_LOCK_SOFT_FROM: '', PAYMENT_LOCK_HARD_FROM: '', PAYMENT_LOCK_OFF: '', ...env },
+    encoding: 'utf-8'
+  })
+
+  /** ⚠ Пустые значения — штатное состояние образа: блокировка настраивается только на сервере. */
+  it('пустые значения законны — это «блокировки нет»', () => {
+    const result = run({})
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('не настроена')
+  })
+
+  it('пропускает даты и рубильник', () => {
+    expect(run({ PAYMENT_LOCK_SOFT_FROM: '2026-09-17', PAYMENT_LOCK_HARD_FROM: '2026-09-21' }).status).toBe(0)
+    expect(run({ PAYMENT_LOCK_OFF: '1' }).stdout).toContain('снята рубильником')
+  })
+
+  /**
+   * ⚠ Значения уезжают ВНУТРЬ JSON-строки `return 200 '{"softFrom":"${…}"}'`: кавычка ломает либо
+   * JSON, либо сам конфиг nginx. А опечатка в формате даёт ТИХО неработающую блокировку —
+   * приложение на мусор отвечает «блокировки нет».
+   */
+  it.each([
+    ['русский формат даты', { PAYMENT_LOCK_SOFT_FROM: '17.09.2026' }],
+    ['дата без ведущих нулей', { PAYMENT_LOCK_SOFT_FROM: '2026-9-7' }],
+    ['кавычка в значении', { PAYMENT_LOCK_HARD_FROM: '2026-09-21","off":"1' }],
+    ['слово вместо даты', { PAYMENT_LOCK_HARD_FROM: 'завтра' }],
+    ['мусор в рубильнике', { PAYMENT_LOCK_OFF: 'ага' }]
+  ])('роняет контейнер: %s', (_name, env) => {
+    expect(run(env as Record<string, string>).status).not.toBe(0)
   })
 })

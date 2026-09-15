@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { PORTAL_HANDLER_ROUTES, PRERENDER_ROUTES } from '../app/config/routes'
 import { HASH_PLACEHOLDER, buildHashDirective, extractInlineScripts, missingHashes } from '../scripts/cspHashes'
-import { ASSET_CACHE_CONTROL, isViolationOf, ORIGINS_PLACEHOLDER, PAGES, cspProblems, directiveValue, embeddingProblems, extractCspHeader, firstAssetPath, headerProblems, isCspViolation, lostSecurityHeaders, markersInMarkup, parseOrigin, postPaths, routeOf, serve, substituteOrigins, uncoveredRoutes } from '../scripts/cspSmoke'
+import { ASSET_CACHE_CONTROL, lockConfigProblems, isViolationOf, ORIGINS_PLACEHOLDER, PAGES, cspProblems, directiveValue, embeddingProblems, extractCspHeader, firstAssetPath, headerProblems, isCspViolation, lostSecurityHeaders, markersInMarkup, parseOrigin, postPaths, routeOf, serve, substituteOrigins, uncoveredRoutes } from '../scripts/cspSmoke'
 
 /**
  * Чистые части смоука. Сам прогон браузером в юнит-тестах не гоняется — он в CI отдельным
@@ -434,19 +434,19 @@ describe('lostSecurityHeaders: что потерялось в локации', (
   }
 
   it('одинаковые наборы замечаний не дают', () => {
-    expect(lostSecurityHeaders(full, full)).toEqual([])
+    expect(lostSecurityHeaders(full, full, 'ассета /_nuxt/x.js')).toEqual([])
   })
 
   it('потерянный nosniff называет с подсказкой про наследование', () => {
     const { 'x-content-type-options': _drop, ...withoutNosniff } = full
-    const [problem] = lostSecurityHeaders(full, withoutNosniff) as [string]
+    const [problem] = lostSecurityHeaders(full, withoutNosniff, 'ассета /_nuxt/x.js') as [string]
     expect(problem).toContain('x-content-type-options')
     expect(problem).toContain('не наследует')
   })
 
   // ⛔ Ровно тот заголовок, о котором забыл я сам: локация повторяет его, а проверка знала два.
   it('потерянные Referrer-Policy и Permissions-Policy тоже ловятся', () => {
-    const problems = lostSecurityHeaders(full, { 'x-content-type-options': 'nosniff' })
+    const problems = lostSecurityHeaders(full, { 'x-content-type-options': 'nosniff' }, 'ассета /_nuxt/x.js')
     expect(problems).toHaveLength(2)
     expect(problems.join(' ')).toContain('referrer-policy')
     expect(problems.join(' ')).toContain('permissions-policy')
@@ -454,11 +454,11 @@ describe('lostSecurityHeaders: что потерялось в локации', (
 
   // Заголовка нет НИ У КОГО — это не потеря в локации, а другой разговор: молчим.
   it('заголовок, которого нет и у документа, потерей не считает', () => {
-    expect(lostSecurityHeaders({}, {})).toEqual([])
+    expect(lostSecurityHeaders({}, {}, 'ассета /_nuxt/x.js')).toEqual([])
   })
 
   it('регистр имён не мешает', () => {
-    expect(lostSecurityHeaders({ 'X-Content-Type-Options': 'nosniff' }, { 'x-content-type-options': 'nosniff' })).toEqual([])
+    expect(lostSecurityHeaders({ 'X-Content-Type-Options': 'nosniff' }, { 'x-content-type-options': 'nosniff' }, 'ассета /_nuxt/x.js')).toEqual([])
   })
 })
 
@@ -521,5 +521,50 @@ describe('isViolationOf: отказ по НАЗВАННОЙ директиве',
   // Обычное сообщение страницы отказом не считается — иначе проверка зеленела бы от любого лога.
   it('сообщение, не похожее на нарушение CSP, отказом не считает', () => {
     expect(isViolationOf('в directive: "connect-src" всё хорошо', 'connect-src')).toBe(false)
+  })
+})
+
+describe('lockConfigProblems: настройки блокировки с сервера', () => {
+  const headers = {
+    'x-content-type-options': 'nosniff',
+    'referrer-policy': 'strict-origin-when-cross-origin',
+    'permissions-policy': 'camera=()'
+  }
+  const good = '{"softFrom":"2026-09-17","hardFrom":"2026-09-21","off":""}'
+
+  it('годный ответ замечаний не даёт', () => {
+    expect(lockConfigProblems(headers, headers, good)).toEqual([])
+  })
+
+  it('пустые значения — норма: так собран образ', () => {
+    expect(lockConfigProblems(headers, headers, '{"softFrom":"","hardFrom":"","off":""}')).toEqual([])
+  })
+
+  /**
+   * ⛔ Ровно тот дефект, ради которого проверка и заведена: переменная не попала в
+   * `NGINX_ENVSUBST_FILTER`, приехала текстом, и блокировка молча не включилась. Ни nginx, ни лог,
+   * ни тесты исходников этого не видят.
+   */
+  it('неподставленная переменная называется поимённо', () => {
+    const [problem] = lockConfigProblems(headers, headers, '{"softFrom":"${PAYMENT_LOCK_SOFT_FROM}","hardFrom":"","off":""}') as [string]
+    expect(problem).toContain('PAYMENT_LOCK_SOFT_FROM')
+    expect(problem).toContain('молча не включится')
+  })
+
+  it('сломанный JSON называется, а не роняет смоук', () => {
+    const problems = lockConfigProblems(headers, headers, '{"softFrom":"2026-09-17}')
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('не JSON')
+  })
+
+  it('выпавшее поле замечается', () => {
+    expect(lockConfigProblems(headers, headers, '{"softFrom":"","off":""}').join(' ')).toContain('hardFrom')
+  })
+
+  /** ⚠ У локации своих `add_header` нет намеренно — чтобы наследовались серверные. */
+  it('потерянный заголовок безопасности называет локацию, а не ассет', () => {
+    const problems = lockConfigProblems(headers, { 'referrer-policy': 'x', 'permissions-policy': 'y' }, good)
+    expect(problems.join(' ')).toContain('/payment-lock.json')
+    expect(problems.join(' ')).not.toContain('_nuxt')
   })
 })
