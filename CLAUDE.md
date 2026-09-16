@@ -631,5 +631,6 @@ backend».
 | [`docs/METRICS.md`](docs/METRICS.md) | **формулы всех трёх отчётов, спорные места, что не решено** — читать первым |
 | [`docs/EMBEDDING.md`](docs/EMBEDDING.md) | встройка в CRM-аналитику, установка, типовые ошибки |
 | [`docs/PORTAL.md`](docs/PORTAL.md) | **что реально есть в портале** — замер по живому REST |
+| [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) | развернуть СВОЮ копию: что поменять в клоне, домен, портал, проверки |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | сборка образа, выкат в GHCR, CSP и `frame-ancestors` |
 | [`docs/README.md`](docs/README.md) | индекс документов |
