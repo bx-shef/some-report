@@ -7,7 +7,7 @@ import { resolvePaymentLock, usePaymentLock, usePaymentLockHardFrom, usePaymentL
 import { LOCK_RELEASE_SECONDS } from '~/utils/paymentLock'
 
 /**
- * Блокировка приложения при неподписанных актах — живой путь целиком: настройки приезжают С
+ * Приостановка приложения при незавершённом приёме работ — живой путь целиком: настройки приезжают С
  * СЕРВЕРА, складываются с обходом из адреса и превращаются в экран.
  *
  * ⚠ Даты здесь ЗАВЕДОМО прошлые и заведомо далёкие будущие, а не «через неделю». Дата «через
@@ -265,6 +265,29 @@ describe('экран блокировки', () => {
     expect(wrapper.get('[data-testid="payment-lock"]').attributes('data-stage')).toBe('hard')
     expect(wrapper.find('[data-testid="payment-lock-countdown"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="payment-lock-deadline"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('Приложение остановлено')
+    expect(wrapper.text()).toContain('Доступ к отчётам приостановлен')
+  })
+
+  /**
+   * ⛔ Формулировки НЕЙТРАЛЬНЫЕ — решение владельца 2026-09-16, и сторожить его надо тестом, а не
+   * комментарием.
+   *
+   * Экран видит ЛЮБОЙ сотрудник клиента, открывший отчёт: рядовой менеджер, а не тот, кто ведёт
+   * расчёты. Слово про деньги или долг выставило бы его работодателя должником перед собственным
+   * коллективом — приложение не имеет права вмешиваться в отношения внутри компании клиента. Слово
+   * «акт» убрано отдельно: это документ, которого у сотрудника перед глазами нет, и упоминание
+   * привязывает формальность к конкретной бумаге.
+   */
+  it.each([
+    ['soft' as const, 20],
+    ['hard' as const, 20]
+  ])('на экране (%s) нет ни денег, ни долга, ни актов', async (stage, remaining) => {
+    const wrapper = await mountSuspended(PaymentLockScreen, { props: { stage, remaining, hardFrom: '2026-09-21' } })
+    const text = wrapper.text().toLowerCase()
+    for (const forbidden of ['оплат', 'оплач', 'деньг', 'долг', 'задолж', 'счёт', 'акт', 'не заплат']) {
+      expect(text).not.toContain(forbidden)
+    }
+    // ⚠ И проверка «текст вообще есть»: пустой экран прошёл бы запрет на слова, ничего не сказав.
+    expect(text).toContain('приём')
   })
 })
