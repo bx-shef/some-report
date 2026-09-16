@@ -257,20 +257,58 @@ export function headerProblems(kind: ResponseKind, raw: Record<string, string>):
 }
 
 /**
- * Заголовки безопасности, которые есть у документа, но пропали у ассета.
+ * Заголовки безопасности, которые есть у документа, но пропали в другой локации.
  *
- * ⚠ Сверяем с ДОКУМЕНТОМ, а не со списком в коде: `location /_nuxt/` повторяет серверные
- * заголовки, и любой из них можно забыть при правке. Список в коде сторожил бы только те, что
- * автор проверки вспомнил, — а забывают как раз невспомненные.
+ * ⚠ Сверяем с ДОКУМЕНТОМ, а не со списком в коде: локация повторяет серверные заголовки, и любой
+ * из них можно забыть при правке. Список в коде сторожил бы только те, что автор проверки
+ * вспомнил, — а забывают как раз невспомненные.
+ *
+ * @param what что именно проверяем («ассет /_nuxt/…», «/payment-lock.json»). ⚠ Параметр
+ *   обязателен, а не «по умолчанию ассет»: локаций стало две, и замечание про ассет, выданное про
+ *   настройки блокировки, отправило бы чинить совсем другой участок конфига.
  */
-export function lostSecurityHeaders(document: Record<string, string>, asset: Record<string, string>): string[] {
+export function lostSecurityHeaders(document: Record<string, string>, other: Record<string, string>, what: string): string[] {
   const at = (headers: Record<string, string>, name: string): string | undefined => {
     for (const [key, value] of Object.entries(headers)) if (key.toLowerCase() === name) return value
     return undefined
   }
   return SECURITY_HEADERS
-    .filter(name => at(document, name) !== undefined && at(asset, name) === undefined)
-    .map(name => `у ассета /_nuxt/ нет заголовка ${name}, а у документа он есть — nginx не наследует add_header в локацию со своими заголовками`)
+    .filter(name => at(document, name) !== undefined && at(other, name) === undefined)
+    .map(name => `у ${what} нет заголовка ${name}, а у документа он есть — nginx не наследует add_header в локацию со своими заголовками`)
+}
+
+/**
+ * Настройки блокировки, отдаваемые сервером (`/payment-lock.json`).
+ *
+ * ⛔ Проверяется здесь то, чего не видит НИЧТО другое. Забытая в `NGINX_ENVSUBST_FILTER`
+ * переменная не роняет nginx и не пишет в лог — она доезжает до браузера ТЕКСТОМ
+ * (`"${PAYMENT_LOCK_SOFT_FROM}"`), приложение разбирает это как негодную настройку, и блокировка
+ * молча не включается. Выглядит это ровно как исправная работа.
+ *
+ * ⚠ И заголовки: у этой локации СВОИХ `add_header` нет намеренно, чтобы наследовались серверные.
+ * Добавь кто-нибудь сюда один заголовок — остальные пропадут молча, как уже было с `/_nuxt/`.
+ */
+export function lockConfigProblems(document: Record<string, string>, headers: Record<string, string>, body: string): string[] {
+  const problems: string[] = []
+  const placeholder = /\$\{[A-Za-z_][A-Za-z0-9_]*\}/.exec(body)?.[0]
+  if (placeholder) {
+    problems.push(`в настройках блокировки осталась неподставленная переменная ${placeholder} — её нет в NGINX_ENVSUBST_FILTER, и блокировка молча не включится`)
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    problems.push(`настройки блокировки — не JSON: «${body.slice(0, 120)}»; приложение прочитает это как «блокировки нет»`)
+    return problems
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    problems.push('настройки блокировки — не объект, приложение прочитает это как «блокировки нет»')
+    return problems
+  }
+  for (const key of ['softFrom', 'hardFrom', 'off']) {
+    if (!(key in (parsed as Record<string, unknown>))) problems.push(`в настройках блокировки нет поля ${key} — переменная выпала из конфига`)
+  }
+  return [...problems, ...lostSecurityHeaders(document, headers, '/payment-lock.json')]
 }
 
 /**
@@ -541,7 +579,16 @@ async function checkDocumentAndAsset(origin: string, withLocations: boolean): Pr
     const assetHeaders = headersOf(response)
     results.push({
       path: `заголовки ассета ${asset}`,
-      problems: [...headerProblems('asset', assetHeaders), ...lostSecurityHeaders(documentHeaders, assetHeaders)]
+      problems: [...headerProblems('asset', assetHeaders), ...lostSecurityHeaders(documentHeaders, assetHeaders, `ассета ${asset}`)]
+    })
+
+    // Настройки блокировки отдаёт nginx, а не сборка: в статике этого файла нет вовсе.
+    const lock = await fetch(`${origin}/payment-lock.json`, { signal: AbortSignal.timeout(15_000) })
+    results.push({
+      path: 'настройки блокировки /payment-lock.json',
+      problems: lock.status === 200
+        ? lockConfigProblems(documentHeaders, headersOf(lock), await lock.text())
+        : [`HTTP ${lock.status} — сервер не отдаёт настройки блокировки, приложение будет работать как без неё`]
     })
   } catch (error) {
     results.push({ path: 'заголовки ответа', problems: [`запрос не прошёл: ${error instanceof Error ? error.message.slice(0, 160) : String(error)}`] })

@@ -77,13 +77,18 @@ COPY --from=builder /app/.output/public /usr/share/nginx/html
 # своим доменом, без пересборки.
 COPY --from=builder /app/nginx.conf /etc/nginx/templates/default.conf.template
 
-# ⚠ Ограничиваем энтрипойнт ОДНОЙ переменной. По умолчанию он подставляет в шаблон ВСЕ
-# переменные окружения, а конфиг nginx полон собственных `$uri`, `$host`, `$request_uri`. Совпади
-# имя переменной окружения с именем директивы nginx — и конфиг молча поедет: `error_page 405 =200
-# $uri` превратился бы в `error_page 405 =200`, то есть портал снова увидел бы пустоту вместо
-# отчёта. Фильтр — регулярное выражение по имени, поэтому с якорями: без них под него попала бы и
-# `SOMETHING_B24_PORTAL_ORIGINS_X`.
-ENV NGINX_ENVSUBST_FILTER="^B24_PORTAL_ORIGINS$"
+# ⚠ Ограничиваем энтрипойнт ПОИМЁННЫМ списком переменных. По умолчанию он подставляет в шаблон
+# ВСЕ переменные окружения, а конфиг nginx полон собственных `$uri`, `$host`, `$request_uri`.
+# Совпади имя переменной окружения с именем директивы nginx — и конфиг молча поедет: `error_page
+# 405 =200 $uri` превратился бы в `error_page 405 =200`, то есть портал снова увидел бы пустоту
+# вместо отчёта. Фильтр — регулярное выражение по имени, поэтому с якорями: без них под него
+# попала бы и `SOMETHING_B24_PORTAL_ORIGINS_X`.
+#
+# ⚠ Список обязан покрывать КАЖДЫЙ `${…}` в nginx.conf. Забытая переменная не ломает конфиг и не
+# пишет в лог — она просто доезжает до браузера текстом: `{"softFrom":"${PAYMENT_LOCK_SOFT_FROM}"}`
+# разбирается как негодная настройка, и блокировка молча не включается. Сторожит это
+# `tests/nginxConf.test.ts`, сверяя плейсхолдеры конфига с фильтром.
+ENV NGINX_ENVSUBST_FILTER="^(B24_PORTAL_ORIGINS|PAYMENT_LOCK_SOFT_FROM|PAYMENT_LOCK_HARD_FROM|PAYMENT_LOCK_OFF)$"
 
 # Кто может встраивать отчёт (CSP `frame-ancestors`) и куда он ходит (`connect-src`).
 #
@@ -104,12 +109,29 @@ ENV NGINX_ENVSUBST_FILTER="^B24_PORTAL_ORIGINS$"
 # свою копию приложения у себя. В нашем выкате она не задаётся.
 ENV B24_PORTAL_ORIGINS="https://*.bitrix24.ru https://*.bitrix24.by https://*.bitrix24.com https://*.bitrix24.eu https://*.bitrix24.kz https://*.bitrix24.ua https://*.bitrix24.de https://*.bitrix24.fr https://*.bitrix24.it https://*.bitrix24.pl https://*.bitrix24.es https://*.bitrix24.uk https://*.bitrix24.com.br https://*.bitrix24.com.tr https://*.bitrix24.mx https://*.bitrix24.co https://*.bitrix24.cn https://*.bitrix24.in https://*.bitrix24.id https://*.bitrix24.jp https://*.bitrix24.vn https://*.bitrix24.tech https://bitrix.ankron.by"
 
+# --- Блокировка приложения по оплате ------------------------------------------------------------
+# ⚠ Пустые ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ — это и есть поведение образа: блокировки нет. Даты живут только
+# в `.env` сервера (deploy/docker-compose.prod.yml), потому что снимать блокировку нужно за минуту,
+# а пересборка образа — это минуты и коммит в `main`. И потому что репозиторий видит заказчик:
+# расписание блокировки не та вещь, которую стоит хранить в коде.
+#
+# `PAYMENT_LOCK_SOFT_FROM` — с какого дня показывать экран напоминания с отсчётом;
+# `PAYMENT_LOCK_HARD_FROM` — с какого дня приложение уже не открывается;
+# `PAYMENT_LOCK_OFF` — рубильник «оплачено»: снимает блокировку при любых датах.
+ENV PAYMENT_LOCK_SOFT_FROM=""
+ENV PAYMENT_LOCK_HARD_FROM=""
+ENV PAYMENT_LOCK_OFF=""
+
 # Значение переменной проверяется ПЕРЕД подстановкой — при каждом старте контейнера. envsubst
 # не понимает синтаксис nginx: кавычка или точка с запятой в значении разрывают строку заголовка
 # и выбрасывают из CSP `frame-ancestors` целиком, голая `*` снимает защиту без единой ошибки.
 # Скрипт роняет контейнер на плохом значении — это лучше, чем тихо отдавать испорченный заголовок.
 # Имя с `05-` ставит его раньше штатного `20-envsubst-on-templates.sh`.
 COPY deploy/validate-portal-origins.sh /docker-entrypoint.d/05-validate-portal-origins.sh
+
+# ⚠ Значения блокировки тоже проверяются ДО подстановки: они уезжают внутрь JSON-строки, и кавычка
+# в них сломала бы либо JSON, либо конфиг. Пустые значения законны — это «блокировки нет».
+COPY deploy/validate-payment-lock.sh /docker-entrypoint.d/06-validate-payment-lock.sh
 
 # ⚠ Проверяем ИТОГОВЫЙ конфиг на этапе сборки — с подставленными хешами И подставленной
 # переменной. Синтаксическая ошибка должна ронять образ здесь, а не всплывать при выкате, когда
@@ -118,7 +140,8 @@ COPY deploy/validate-portal-origins.sh /docker-entrypoint.d/05-validate-portal-o
 # Временный `default.conf` тут же удаляем: при старте его напишет энтрипойнт из шаблона, и файл,
 # оставшийся от сборки, читался бы как «конфиг уже есть» при разборе неполадок.
 RUN sh /docker-entrypoint.d/05-validate-portal-origins.sh \
-    && envsubst '${B24_PORTAL_ORIGINS}' \
+    && sh /docker-entrypoint.d/06-validate-payment-lock.sh \
+    && envsubst '${B24_PORTAL_ORIGINS} ${PAYMENT_LOCK_SOFT_FROM} ${PAYMENT_LOCK_HARD_FROM} ${PAYMENT_LOCK_OFF}' \
       < /etc/nginx/templates/default.conf.template > /etc/nginx/conf.d/default.conf \
     && nginx -t \
     && rm /etc/nginx/conf.d/default.conf
