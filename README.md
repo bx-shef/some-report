@@ -160,6 +160,9 @@ nginx-proxy (TLS — Let's Encrypt), дальше обновления подх�
 ⚠ Первый запуск контейнера — **ручной шаг**: Watchtower только обновляет существующие контейнеры.
 Пока его не сделали, домен отдаёт 503.
 
+**Разворачиваете СВОЮ копию** — на своём домене, из своего репозитория, для своего портала?
+Пошагово, с проверкой на каждом шаге: [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md).
+
 ## Разработка
 
 - **В `main` не пушим — только через Pull Request с зелёным CI.**
@@ -173,6 +176,7 @@ nginx-proxy (TLS — Let's Encrypt), дальше обновления подх�
 | [`docs/METRICS.md`](docs/METRICS.md) | формулы, расхождения макета с ТЗ, нерешённые вопросы |
 | [`docs/PORTAL.md`](docs/PORTAL.md) | **что реально есть в портале** — замер по живому REST |
 | [`docs/EMBEDDING.md`](docs/EMBEDDING.md) | встройка в CRM-аналитику, установка, типовые ошибки |
+| [`docs/SELF_HOSTING.md`](docs/SELF_HOSTING.md) | **развернуть свою копию** — пошагово: клон, домен, портал |
 | [`docs/DEPLOY.md`](docs/DEPLOY.md) | сборка образа, выкат, CSP и `frame-ancestors` |
 | [`CLAUDE.md`](./CLAUDE.md) | стек, архитектура, конвенции |
 | [`docs/README.md`](docs/README.md) | индекс документов |
