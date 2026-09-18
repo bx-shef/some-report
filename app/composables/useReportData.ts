@@ -1,7 +1,8 @@
 import { getCurrentScope, onScopeDispose } from 'vue'
 import { mergeReasons } from '~/utils/reasonMerge'
 import type { ConversionBase, LeadAggregate, ReportDataset, ReportDeal, ReportFilters, ReportMetrics, ReportPeriod } from '~/types/report'
-import type { AdapterWarnings, B24CurrencyRow, B24LeadRow, B24StatusRow, B24DealRow } from '~/utils/b24Adapter'
+import type { AdapterWarnings, B24LeadRow, B24StatusRow, B24DealRow } from '~/utils/b24Adapter'
+import { baseCurrency, type B24CurrencyRow } from '~/utils/b24Currency'
 import {
   adaptDeals,
   adaptDealsContext,
@@ -9,7 +10,6 @@ import {
   leadSourcesById,
   adaptUnlinkedWonDeals,
   openLeadStatusIds,
-  baseCurrency,
   lossStages,
   statusIdsBySemantic,
   statusNames
